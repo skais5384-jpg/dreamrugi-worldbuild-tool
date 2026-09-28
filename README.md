@@ -4,7 +4,7 @@
 
 ## 시작하기
 
-**첫 0.1.0 시험판 배포를 준비 중입니다.** 아직 일반 사용자가 다운로드할 수 있는 설치 파일은 없습니다. 배포가 공개되면 [Releases](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases)에 설치 파일과 대응 소스를 제공합니다.
+**0.1.0 Windows x64 시험판을 공개했습니다.** [설치 파일 다운로드](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/download/v0.1.0/Dreamrugi.Worldbuild.Tool_0.1.0_x64-setup.exe) 후 수동 설치하거나, [v0.1.0 시험판](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/tag/v0.1.0)에서 설치 파일·검증용 서명·대응 소스를 확인하십시오. 무료 공개 시험판이며 정식/stable 배포는 아닙니다.
 
 - [사용 안내 Wiki](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/wiki)
 - [시작하기](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/wiki/시작하기)

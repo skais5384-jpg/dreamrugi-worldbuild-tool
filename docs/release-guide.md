@@ -1,6 +1,6 @@
 # Windows 0.x 시험판 배포 안내
 
-공개 저장소는 [skais5384-jpg/dreamrugi-worldbuild-tool](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool)이며 기본 브랜치는 `main`입니다. 현재 첫 0.1.0 시험판 배포를 준비 중입니다. 일반 사용자 다운로드는 게시된 [Releases](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases)에서 제공하며, draft는 일반 사용자 설치 링크로 안내하지 않습니다.
+공개 저장소는 [skais5384-jpg/dreamrugi-worldbuild-tool](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool)이며 기본 브랜치는 `main`입니다. 현재 [v0.1.0 Windows x64 시험판](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/tag/v0.1.0)을 공개했습니다. 설치 파일은 내려받아 수동 설치합니다. 이 버전의 tag와 대응 소스는 실제 빌드 commit `307a2bdbf3186a6da81abdf7b93139f856bcb624`에 고정되어 있으며 최신 문서/배포 도구 main과 구별합니다. 이후 draft는 일반 사용자 설치 링크로 안내하지 않습니다.
 
 ## 고정 소스에서 빌드하기
 
@@ -31,7 +31,7 @@ GitHub Actions의 `prerelease-signing`과 `prerelease-draft` 환경은 소유 �
 
 ## 수동 Actions와 게시
 
-`Windows prerelease draft` workflow를 main에서 수동 실행합니다. `source_sha`는 검토한 공개 main HEAD의 40자리 SHA, `version`은 `0.1.0`입니다. validate는 비밀 없이 소스·버전을 확인하고, signing 환경 승인 뒤 build가 설치 파일·서명·소스 묶음을 생성합니다. draft 환경의 별도 승인 뒤 업로드합니다. validate/build는 contents read, draft job만 contents write를 갖습니다.
+`Windows prerelease draft` workflow를 main에서 수동 실행합니다. `source_sha`는 검토한 공개 main HEAD의 40자리 SHA, `version`은 그 소스 metadata와 일치하는 0.x 버전입니다. 이미 게시된 `v0.1.0` 태그로 새 draft를 만들지 않으며 이후 배포는 새 버전과 검토한 후보를 확정합니다. validate는 비밀 없이 소스·버전을 확인하고, signing 환경 승인 뒤 build가 설치 파일·서명·소스 묶음을 생성합니다. draft 환경의 별도 승인 뒤 업로드합니다. validate/build는 contents read, draft job만 contents write를 갖습니다.
 
 업로드하는 10개 asset은 설치 EXE, `.sig`, `corresponding-source.zip`, `third-party-source.zip`, `third-party-source.manifest.json`, `LICENSE`, `README.md`, `release-notes.md`, `updater-public.key.pub`, `release-manifest.json`입니다. `SOURCE.json`과 package metadata 등 빌드 추적 자료는 workflow artifact에서 확인합니다.
 
