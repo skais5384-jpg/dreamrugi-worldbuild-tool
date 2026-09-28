@@ -1,0 +1,114 @@
+.svn-toolbar {
+  margin-inline-start: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.svn-personal {
+  padding-inline: 10px;
+  font-size: var(--font-ui-smaller);
+}
+.svn-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+.svn-remote {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--colorNeutralStroke2, #d1d1d1);
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: var(--fontSizeBase200);
+  font-weight: var(--fontWeightSemibold);
+}
+.svn-remote-current,
+.svn-remote-unknown {
+  background: var(--colorNeutralBackground1, #fff);
+  color: var(--colorNeutralForeground2, #616161);
+}
+.svn-remote-incoming {
+  background: var(--colorStatusDangerBackground1, #fdf3f4);
+  color: var(--colorStatusDangerForeground1, #b10e1c);
+  border-color: var(--colorStatusDangerBorder1, #e37d86);
+}
+.svn-cleanup-needed {
+  color: var(--colorStatusDangerForeground1, #b10e1c);
+}
+.svn-cleanup-dialog {
+  max-width: min(440px, calc(100vw - 32px));
+}
+.svn-cleanup-dialog p {
+  margin-block: 0 16px;
+  line-height: 1.5;
+}
+.svn-cleanup-tip {
+  color: var(--colorNeutralForeground2, #616161);
+  font-size: var(--fontSizeBase200);
+}
+.svn-recovery-path {
+  display: grid;
+  gap: 4px;
+  color: var(--colorNeutralForeground2, #616161);
+  overflow-wrap: anywhere;
+}
+.svn-recovery-path span {
+  color: var(--colorNeutralForeground1, #242424);
+}
+.svn-overlay-normal {
+  color: #2e8b35;
+}
+.svn-overlay-modified {
+  color: #c22424;
+}
+.svn-overlay-conflicted {
+  color: #e9b308;
+}
+.svn-overlay-added {
+  color: #3277aa;
+}
+.svn-overlay-deleted {
+  color: #c22424;
+}
+.svn-overlay-lock {
+  color: #3277aa;
+}
+.svn-overlay-needs-lock,
+.svn-overlay-ignored {
+  color: #777;
+}
+.svn-overlay-unknown {
+  color: #777;
+}
+.svn-connection-icon {
+  position: relative;
+  display: inline-flex;
+}
+.svn-connection-icon > svg:last-child {
+  position: absolute;
+  right: -6px;
+  bottom: -5px;
+  width: 12px;
+  height: 12px;
+  background: var(--background-primary);
+  border-radius: 50%;
+}
+.svn-connection-ok {
+  color: #2e8b35;
+}
+.svn-connection-fail {
+  color: #c22424;
+}
+.svn-toolbar-error {
+  color: var(--text-error);
+  font-size: var(--font-ui-smaller);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

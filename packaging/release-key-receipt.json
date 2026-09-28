@@ -1,0 +1,9 @@
+{
+  "role": "Release",
+  "portableBackupVerified": true,
+  "newDeviceTested": false,
+  "publicKeySha256": "550ed07e613b88b7dfdd10c88c51183210f1a407b6b0cf5e43bd7dce231cd0f7",
+  "sampleSha256": "ac18e18cd9d5ebedec127e2a0dc59f9e25d733c745589e9d783ee10ac1c4c6f3",
+  "encryptedBackupSha256": "e420a0320db597786dfddd1603a84f61d95d32b96ef9a7aea5cc336fcee03871",
+  "verifiedUtc": "2026-09-28T03:20:26.6069624Z"
+}

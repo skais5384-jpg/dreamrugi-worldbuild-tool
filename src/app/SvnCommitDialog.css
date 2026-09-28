@@ -1,0 +1,92 @@
+.fui-DialogSurface.svn-commit-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(64rem, calc(100vw - 2rem));
+  max-width: min(64rem, calc(100vw - 2rem));
+  height: min(48rem, calc(100vh - 2rem));
+  min-height: min(40rem, calc(100vh - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: hidden;
+}
+.svn-commit-dialog .fui-DialogBody,
+.svn-commit-dialog .fui-DialogContent {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.svn-commit-dialog .fui-DialogBody {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.svn-commit-dialog .fui-DialogContent {
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.svn-commit-dialog .fui-DialogActions {
+  flex: 0 0 auto;
+}
+.svn-commit-selection {
+  margin-top: 1rem;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+.svn-commit-table {
+  border-collapse: collapse;
+  min-width: 44rem;
+  width: 100%;
+  font-size: var(--fontSizeBase200);
+}
+.svn-commit-table th {
+  position: sticky;
+  top: 0;
+  background: var(--colorNeutralBackground1);
+  text-align: start;
+  font-weight: var(--fontWeightSemibold, 600);
+}
+.svn-commit-table th,
+.svn-commit-table td {
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--colorNeutralStroke3);
+  vertical-align: middle;
+}
+.svn-commit-table small {
+  color: var(--colorNeutralForeground3);
+}
+.svn-commit-path {
+  min-width: 16rem;
+  max-width: 27rem;
+  overflow-wrap: anywhere;
+}
+.svn-commit-path > * {
+  display: block;
+}
+.svn-commit-path strong {
+  font-weight: var(--fontWeightSemibold, 600);
+}
+.svn-commit-item-name {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.svn-commit-item-name span,
+.svn-commit-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+}
+.svn-commit-item-name span {
+  cursor: help;
+}
+.svn-commit-dialog .fui-DialogContent > p,
+.svn-commit-dialog .svn-commit-selection > strong {
+  font-size: var(--fontSizeBase200);
+}
+.svn-commit-result {
+  display: grid;
+  gap: var(--spacingVerticalS, 8px);
+}
+.svn-commit-result p {
+  margin: 0;
+}

@@ -1,0 +1,35 @@
+.error-boundary {
+  min-height: 100vh;
+  padding: 16px;
+  color: var(--text-normal);
+  background: var(--background-secondary);
+}
+.error-boundary h1 {
+  margin: 0 0 12px;
+  font-size: var(--font-ui-large);
+}
+.error-boundary p {
+  margin: 8px 0 16px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+/* provider/Griffel 자체가 실패해도 복구 선택은 외부 boundary의 정적 CSS로 표시한다. */
+.emergency-button {
+  font: inherit;
+  min-height: 32px;
+  padding: 5px 12px;
+  color: #ffffff;
+  background: #0f6cbd;
+  border: 1px solid #0f6cbd;
+  border-radius: 4px;
+}
+.emergency-button:hover {
+  background: #115ea3;
+}
+.emergency-button:active {
+  background: #0c3b5e;
+}
+.emergency-button:focus-visible {
+  outline: 2px solid #242424;
+  outline-offset: 2px;
+}

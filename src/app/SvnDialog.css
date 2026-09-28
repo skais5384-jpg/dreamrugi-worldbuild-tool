@@ -1,0 +1,75 @@
+.svn-dialog {
+  max-width: min(720px, calc(100vw - 32px));
+}
+.svn-content {
+  display: grid;
+  gap: 16px;
+  max-height: min(70vh, 700px);
+  overflow: auto;
+}
+.svn-content section {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+  padding-bottom: 12px;
+}
+.svn-content h3 {
+  margin: 0;
+}
+.svn-content p {
+  margin: 0;
+}
+.svn-section-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.svn-verified {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--colorPaletteGreenForeground1, #107c10);
+  font-size: var(--fontSizeBase200);
+  font-weight: var(--fontWeightSemibold);
+}
+.svn-summary-list {
+  display: grid;
+  gap: 4px;
+}
+.svn-summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 4px 0;
+}
+.svn-summary-value {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.svn-summary-label {
+  color: var(--colorNeutralForeground3);
+  font-size: var(--fontSizeBase200);
+}
+.svn-path-text {
+  overflow-wrap: anywhere;
+}
+.svn-path-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.svn-path-picker > *:first-child {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 520px) {
+  .svn-summary-row,
+  .svn-path-picker {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

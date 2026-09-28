@@ -1,0 +1,94 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Dreamrugi Worldbuild Tool",
+  "version": "0.1.0",
+  "identifier": "com.dreamrugi.worldbuildtool",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Dreamrugi Worldbuild Tool",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "resizable": true,
+        "dragDropEnabled": false,
+        "center": true,
+        "maximized": false,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": {
+        "default-src": "'none'",
+        "script-src": "'self'",
+        "style-src": "'self'",
+        "style-src-attr": "'none'",
+        "font-src": "'self'",
+        "img-src": "'self' data: blob: https:",
+        "connect-src": "ipc: http://ipc.localhost",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'",
+        "frame-src": "https://www.youtube.com",
+        "media-src": "https:"
+      },
+      "devCsp": {
+        "default-src": "'none'",
+        "script-src": "'self' 'unsafe-inline'",
+        "style-src": "'self' 'unsafe-inline'",
+        "style-src-attr": "'none'",
+        "font-src": "'self'",
+        "img-src": "'self' data: blob: https:",
+        "connect-src": "ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'",
+        "frame-src": "https://www.youtube.com",
+        "media-src": "https:"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "license": "GPL-3.0-only",
+    "licenseFile": "../LICENSE",
+    "shortDescription": "세계관 개발 및 관리 도구",
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "nsis": { "installMode": "currentUser" }
+    },
+    "resources": {
+      "../LICENSE": "LICENSE",
+      "../README.md": "README.md",
+      "spellcheck/resources/hunspell-runner.exe": "spellcheck/hunspell-runner.exe",
+      "spellcheck/resources/ko.aff": "spellcheck/ko.aff",
+      "spellcheck/resources/ko.dic": "spellcheck/ko.dic",
+      "spellcheck/resources/dictionary-LICENSE.md": "spellcheck/dictionary-LICENSE.md",
+      "spellcheck/resources/dictionary-GPL-3.txt": "spellcheck/dictionary-GPL-3.txt",
+      "spellcheck/source/hunspell-1.7.3.tar.gz": "spellcheck/hunspell-1.7.3.tar.gz",
+      "spellcheck/source/hunspell-dict-ko-0.7.94-source.tar.gz": "spellcheck/hunspell-dict-ko-0.7.94-source.tar.gz",
+      "spellcheck/hunspell-runner.cpp": "spellcheck/hunspell-runner.cpp",
+      "spellcheck/build-windows.bat": "spellcheck/build-windows.bat",
+      "spellcheck/NOTICE.md": "spellcheck/NOTICE.md",
+      "about-notices/hunspell-MPL-1.1.txt": "about-notices/hunspell-MPL-1.1.txt",
+      "about-notices/hunspell-GPL-2.txt": "about-notices/hunspell-GPL-2.txt",
+      "about-notices/hunspell-LGPL-2.1.txt": "about-notices/hunspell-LGPL-2.1.txt",
+      "about-notices/lexical.txt": "about-notices/lexical.txt",
+      "about-notices/fluent-ui.txt": "about-notices/fluent-ui.txt",
+      "about-notices/obsidian-border.txt": "about-notices/obsidian-border.txt",
+      "about-notices/noto-cjk.txt": "about-notices/noto-cjk.txt"
+    },
+    "icon": [
+      "icons/icon.ico"
+    ]
+  }
+}

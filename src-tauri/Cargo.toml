@@ -1,0 +1,47 @@
+[package]
+name = "worldbuild-tool"
+version = "0.1.0"
+description = "세계관 개발 및 관리 도구"
+license = "GPL-3.0-only"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "worldbuild_tool_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+serde_json = "=1.0.151"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "=2.6.0"
+serde = { version = "1", features = ["derive"] }
+# Private transport namespace 방어가 이 backend 동작을 전제로 하므로 conformance 재감사 전에는 올리지 않는다.
+serde_json = { version = "=1.0.151", features = ["arbitrary_precision", "raw_value"] }
+sha2 = "0.10"
+# 원본을 재인코딩하지 않고 공통 이미지와 애니메이션을 검증한다. 기본 feature는
+# 불필요한 codec과 병렬 실행을 포함하므로 지원 계약에 필요한 형식만 연다.
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+base64 = "=0.22.1"
+time = { version = "0.3", default-features = false, features = ["formatting", "macros", "parsing"] }
+uuid = { version = "1.26.0", features = ["v4"] }
+# 일괄 바꾸기의 '단어 전체' 경계는 ASCII가 아니라 Unicode XID_Continue
+# (문자·숫자·결합부호·underscore/연결 문자)로 판정한다. 이미 lockfile의
+# 전이 의존성으로 고정된 crate를 직접 사용해 matcher와 preview/apply가 공유한다.
+unicode-ident = "1"
+quick-xml = "=0.41.0"
+url = "=2.5.8"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+webview2-com = "=0.38.2"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+png = "=0.18.1"

@@ -1,0 +1,74 @@
+.fui-DialogSurface.svn-register-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(64rem, calc(100vw - 2rem));
+  max-width: min(64rem, calc(100vw - 2rem));
+  height: min(48rem, calc(100vh - 2rem));
+  min-height: min(40rem, calc(100vh - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: hidden;
+}
+.svn-register-dialog .fui-DialogBody,
+.svn-register-dialog .fui-DialogContent {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.svn-register-dialog .fui-DialogBody,
+.svn-register-dialog .fui-DialogContent,
+.svn-register-preview,
+.svn-register-table-wrap {
+  flex: 1 1 auto;
+}
+.svn-register-dialog .fui-DialogBody {
+  overflow: hidden;
+}
+.svn-register-dialog .fui-DialogContent {
+  overflow-y: auto;
+}
+.svn-register-dialog .fui-DialogActions {
+  flex: 0 0 auto;
+}
+.svn-register-root {
+  overflow-wrap: anywhere;
+  color: var(--colorNeutralForeground3);
+}
+.svn-register-preview {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.svn-register-table-wrap {
+  min-height: 0;
+  overflow: auto;
+}
+.svn-register-table-wrap table {
+  width: 100%;
+  min-width: 44rem;
+  border-collapse: collapse;
+  font-size: var(--fontSizeBase200);
+}
+.svn-register-table-wrap th {
+  position: sticky;
+  top: 0;
+  background: var(--colorNeutralBackground1);
+  font-weight: var(--fontWeightSemibold, 600);
+}
+.svn-register-table-wrap th,
+.svn-register-table-wrap td {
+  text-align: start;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--colorNeutralStroke3);
+  vertical-align: middle;
+}
+.svn-register-table-wrap th:first-child,
+.svn-register-table-wrap td:first-child,
+.svn-register-table-wrap th:last-child,
+.svn-register-table-wrap td:last-child {
+  white-space: nowrap;
+}
+.svn-register-table-wrap td:nth-child(2) {
+  min-width: 24rem;
+  overflow-wrap: anywhere;
+}

@@ -1,0 +1,97 @@
+.fui-DialogSurface.activity-log-dialog {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--colorNeutralStroke1);
+  box-shadow: var(--shadow28);
+  width: min(64rem, calc(100vw - 2rem));
+  max-width: min(64rem, calc(100vw - 2rem));
+  height: min(44rem, calc(100vh - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: hidden;
+}
+.activity-log-dialog .fui-DialogBody,
+.activity-log-dialog .fui-DialogContent {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+.activity-log-dialog .fui-DialogActions {
+  flex: 0 0 auto;
+}
+.activity-log {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.activity-log p {
+  margin: 0 0 0.7rem;
+}
+.activity-log-table-wrap {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+}
+.activity-log table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  min-width: 40rem;
+  font-size: var(--fontSizeBase200);
+}
+.activity-log-time-column {
+  width: 10.5rem;
+}
+.activity-log-level-column {
+  width: 4.25rem;
+}
+.activity-log-work-column {
+  width: 8rem;
+}
+.activity-log th {
+  position: sticky;
+  top: 0;
+  background: var(--colorNeutralBackground1);
+  text-align: start;
+}
+.activity-log td,
+.activity-log th {
+  padding: 0.55rem 0.5rem;
+  border-bottom: 1px solid var(--colorNeutralStroke3);
+  vertical-align: top;
+}
+.activity-log time {
+  color: var(--colorNeutralForeground3);
+  white-space: nowrap;
+}
+.activity-log td {
+  overflow-wrap: anywhere;
+}
+.activity-log summary {
+  cursor: pointer;
+}
+.activity-log dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.25rem 0.7rem;
+  margin: 0.5rem 0 0;
+  overflow-wrap: anywhere;
+}
+.activity-log dd {
+  margin: 0;
+}
+.activity-log-setting-action {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+}
+.activity-log-setting-action p {
+  margin: 0;
+  flex: 1 1 20rem;
+}

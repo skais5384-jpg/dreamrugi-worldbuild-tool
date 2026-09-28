@@ -1,0 +1,790 @@
+.app-shell {
+  min-height: 100vh;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: var(--size-4-4);
+}
+.app-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  border-radius: var(--card-radius);
+  background: var(--background-primary);
+  box-shadow: var(--card-shadow);
+}
+.app-toolbar h1 {
+  margin: 0;
+  font-size: var(--font-ui-medium);
+}
+.app-toolbar > .actions {
+  margin-left: auto;
+}
+.project-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.project-bar strong {
+  font-size: var(--font-ui-small);
+  font-weight: 500;
+}
+.project-open {
+  margin-top: 16px;
+  padding: 20px 24px;
+  background: var(--background-primary);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  text-align: center;
+}
+.project-open h1 {
+  margin: 0 0 4px;
+  font-size: var(--font-ui-large);
+  font-weight: 600;
+}
+.project-open > p {
+  margin: 0 auto 16px;
+  max-width: 520px;
+}
+.project-start-actions {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 320px);
+  margin: 0 auto;
+}
+.project-start-actions > button {
+  min-height: 40px;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+}
+.project-open > .fui-Checkbox {
+  justify-content: center;
+  margin: 12px auto 0;
+}
+
+.project-data-dialog {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.project-data-dialog .fui-DialogActions {
+  flex-wrap: nowrap;
+}
+
+.project-data-dialog .fui-DialogActions > button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.backup-create-section {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 20px;
+}
+
+.backup-location-row {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.backup-location-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--colorNeutralForeground2);
+  font-size: var(--font-ui-smaller);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-help {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: -4px 0 0;
+  color: var(--colorNeutralForeground3);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.backup-help svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.backup-history {
+  padding-top: 16px;
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+
+.backup-history h3 {
+  margin: 0 0 8px;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+}
+
+.backup-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(320px, 40vh);
+  overflow: auto;
+}
+
+.backup-list > p {
+  margin: 8px 0;
+  color: var(--colorNeutralForeground3);
+  font-size: var(--font-ui-smaller);
+}
+
+.backup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 16px;
+  justify-content: stretch;
+  min-height: 64px;
+  padding: 10px 12px;
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusMedium);
+  text-align: left;
+}
+
+.backup-row > strong,
+.backup-row > .backup-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-row > .backup-kind {
+  color: var(--colorNeutralForeground2);
+  font-size: var(--font-ui-smaller);
+}
+
+.backup-row > .backup-meta {
+  grid-column: 1 / -1;
+  color: var(--colorNeutralForeground3);
+  font-size: 12px;
+}
+
+.backup-row[aria-pressed="true"] {
+  border-color: var(--colorBrandStroke1);
+  background: var(--colorBrandBackground2);
+}
+
+@media (max-width: 520px) {
+  .backup-location-row {
+    grid-template-columns: 1fr;
+  }
+
+  .backup-location-value {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+.default-project-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  min-width: 0;
+}
+.default-project-summary p {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.project-open .fui-MessageBar {
+  margin-top: 12px;
+}
+.project-open .fui-MessageBarBody > .actions {
+  margin-top: 8px;
+}
+.project-open .project-path {
+  flex: 1 1 240px;
+}
+.project-open p,
+.app-status {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.app-status {
+  margin: 8px 0;
+  min-height: 18px;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.app-provider .compact-command-menu,
+.app-provider .fui-MenuList,
+.app-provider .fui-MenuItem,
+.app-provider .fui-MenuItem__content {
+  /* Portal 메뉴 본문도 문서 트리 제목과 같은 Fluent caption 단계다. */
+  font-size: var(--fontSizeBase200) !important;
+  line-height: var(--lineHeightBase200) !important;
+}
+.fui-DialogActions {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 16px;
+  border-top: 1px solid var(--colorNeutralStroke2);
+}
+.fui-DialogSurface {
+  width: min(560px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusXLarge);
+  box-shadow: var(--shadow28);
+}
+.fui-DialogBody {
+  min-height: 0;
+  row-gap: 16px;
+}
+.fui-DialogTitle {
+  font-size: var(--fontSizeBase500);
+  line-height: var(--lineHeightBase500);
+  font-weight: var(--fontWeightSemibold);
+}
+.fui-DialogContent {
+  display: grid;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  color: var(--colorNeutralForeground2);
+}
+.fui-DialogContent > p {
+  margin: 0;
+}
+.icon-command {
+  min-width: 36px;
+  width: 36px;
+  height: 36px;
+  padding: 8px;
+  flex: 0 0 36px;
+}
+.panel-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px 12px;
+}
+.panel-heading > div {
+  min-width: 0;
+}
+.panel-heading h2,
+.panel-heading h3 {
+  margin: 0;
+}
+.workspace {
+  display: grid;
+  grid-template-columns: 256px minmax(0, 1fr);
+  gap: var(--card-gap);
+  align-items: start;
+}
+.panel {
+  min-width: 0;
+  padding: 16px;
+  border-radius: var(--card-radius);
+  background: var(--background-primary);
+  box-shadow: var(--card-shadow);
+}
+.panel h2 {
+  font-size: var(--font-ui-medium);
+  margin: 0 0 12px;
+  white-space: pre-wrap;
+}
+.panel h3 {
+  font-size: var(--font-ui-medium);
+  margin: 16px 0 8px;
+}
+.panel-heading h2,
+.panel-heading h3 {
+  margin: 0;
+}
+.template-list > .actions {
+  margin-top: 12px;
+}
+.template-list {
+  position: sticky;
+  top: 16px;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+.template-list ul,
+.fields {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+}
+.template-list li {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+}
+.template-list li + li {
+  margin-top: 8px;
+}
+.template-list .template-choice {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+  padding: var(--size-4-2);
+}
+.template-list strong {
+  display: block;
+  font-weight: 500;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.template-list .template-choice > span:not(.template-status),
+.fields span {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 4px;
+}
+.template-list .template-status {
+  align-self: flex-start;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+.identifier {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.app-shell .identifier {
+  font-size: var(--font-ui-smaller);
+}
+.empty {
+  padding: 16px 0;
+  color: var(--text-muted);
+  text-align: center;
+}
+.eyebrow {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin: 0 0 4px;
+}
+.editor {
+  background: var(--background-secondary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--input-radius);
+  padding: 12px;
+  margin-bottom: 16px;
+}
+.editor .actions {
+  margin-top: 8px;
+}
+.editor p {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.fields li {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 8px 0;
+  line-height: var(--line-height-tight);
+}
+.fields button {
+  text-align: left;
+  white-space: pre-wrap;
+}
+.field-readback {
+  margin-top: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  overflow-wrap: anywhere;
+  font-size: var(--font-ui-smaller);
+}
+.field-readback strong {
+  display: block;
+  margin-top: 8px;
+  font-size: var(--font-ui-small);
+  font-weight: 500;
+}
+.field-readback ul {
+  padding-left: 16px;
+}
+.field-forms {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  margin-top: 4px;
+}
+/* 속성별 저장 단위는 그대로 두고, 제목/큰 내부 카드 대신 라벨과 구분선을 쓴다. */
+.field-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  background: transparent;
+}
+.field-editor fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-1);
+  min-width: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  grid-column: 1;
+}
+.field-editor > p {
+  grid-column: 1 / -1;
+}
+.field-editor > .actions {
+  grid-column: 2;
+  grid-row: 1;
+  margin: 0;
+  align-self: center;
+}
+.field-editor h3 {
+  margin: 0 0 8px;
+  grid-column: 1 / -1;
+}
+.field-editor.management-form,
+.field-editor.field-create {
+  display: block;
+}
+.field-editor.management-form .actions,
+.field-editor.field-create .actions {
+  margin-top: 8px;
+}
+.draft-meta {
+  font-size: var(--font-ui-smaller);
+  line-height: var(--line-height-tight);
+}
+.literal,
+.field-readback li,
+.order-input li {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.order-input ol {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 4px;
+  list-style: none;
+}
+.order-input li {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--input-radius);
+  background: var(--background-primary-alt);
+}
+.order-input li[draggable="true"] {
+  cursor: grab;
+}
+.order-input li:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+.archive-input {
+  display: grid;
+  gap: 8px;
+}
+.option-row {
+  display: grid;
+  gap: 4px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.option-row .actions {
+  margin-top: 0;
+}
+.template-management {
+  border-left: 3px solid var(--colorBrandStroke1);
+}
+.template-management > h2 {
+  font-size: var(--font-ui-medium);
+}
+/* 내용만 스크롤하고 명시적 실행/취소는 하단에 남긴다. */
+.template-management {
+  max-height: min(560px, calc(100dvh - 64px));
+  overflow-y: auto;
+  scroll-padding-bottom: 64px;
+}
+.template-management > .actions {
+  position: sticky;
+  bottom: -12px;
+  background: var(--background-secondary-alt);
+  padding: 8px 0;
+}
+.confirm {
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  overflow-wrap: anywhere;
+}
+.confirm-content {
+  overflow-y: auto;
+  min-height: 0;
+}
+.confirm .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+}
+.definition-actions {
+  margin: var(--size-4-3) 0;
+}
+.fui-DialogSurface.follow-up-dialog {
+  width: min(520px, calc(100vw - 32px));
+}
+.follow-up-floating {
+  position: fixed;
+  left: 60px;
+  bottom: 12px;
+  z-index: 90;
+  max-width: min(440px, calc(100vw - 76px));
+  padding: 12px;
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusLarge);
+  background: var(--colorNeutralBackground1);
+  box-shadow: var(--shadow16);
+}
+.follow-up-actions {
+  display: grid;
+  gap: 12px;
+}
+.follow-up-action {
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 12px 0 0;
+  overflow-wrap: anywhere;
+}
+.follow-up-action > button {
+  margin: 8px 8px 0 0;
+}
+.error,
+.editor .error {
+  color: var(--danger);
+}
+@media (max-width: 900px) {
+  .workspace {
+    grid-template-columns: 224px minmax(0, 1fr);
+  }
+  .field-editor {
+    display: block;
+  }
+  .field-editor > .actions {
+    margin-top: 8px;
+  }
+}
+@media (max-width: 640px) {
+  .template-list {
+    position: static;
+    max-height: none;
+  }
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .app-toolbar {
+    align-items: flex-start;
+  }
+  .app-toolbar > .actions {
+    margin-left: 0;
+  }
+}
+.rich-editor {
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: var(--borderRadiusMedium);
+}
+.rich-toolbar {
+  flex-wrap: wrap;
+  display: none;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+}
+.rich-editor:focus-within .rich-toolbar {
+  display: flex;
+}
+.rich-tool {
+  display: inline-flex;
+  align-items: center;
+}
+.rich-toolbar button[aria-pressed="true"] {
+  background: var(--colorBrandBackground2);
+  color: var(--colorBrandForeground2);
+  border-color: var(--colorBrandStroke1);
+}
+.rich-toolbar button[aria-pressed="true"]:hover {
+  background: var(--colorBrandBackground2Hover);
+}
+.rich-input {
+  min-height: 120px;
+  padding: 8px 12px;
+  outline-offset: -2px;
+  white-space: pre-wrap;
+}
+.rich-input,
+.rich-read {
+  font-size: var(--fontSizeBase300);
+  line-height: var(--lineHeightBase300);
+}
+/* 기존 H1/H2 원문도 보존하되 문서 부제목(20px)보다 작은 위계로 표시한다. */
+.document-body :is(.rich-input, .rich-read) h1,
+:is(.rich-input, .rich-read) :is(h1, h2, h3) {
+  font-size: var(--fontSizeBase400);
+  line-height: var(--lineHeightBase400);
+  font-weight: var(--fontWeightSemibold);
+  margin: 16px 0 8px;
+}
+:is(.rich-input, .rich-read) :is(h4, h5, h6) {
+  font-size: var(--fontSizeBase300);
+  line-height: var(--lineHeightBase300);
+  font-weight: var(--fontWeightSemibold);
+  margin: 12px 0 8px;
+}
+.rich-input p {
+  margin: 0 0 8px;
+}
+.rich-bold {
+  font-weight: 700;
+}
+.rich-italic,
+.rich-read em {
+  font-style: italic;
+  /* 로컬 글꼴은 정자체만 제공하므로 서식 본문에 한해 기울임 합성을 허용한다. */
+  font-synthesis: style;
+}
+.rich-input blockquote,
+.rich-read blockquote {
+  position: relative;
+  margin: 12px 0;
+  padding: 8px 12px 8px 32px;
+  border-left: 3px solid var(--colorNeutralStroke1);
+  background: var(--colorNeutralBackground2);
+}
+.rich-input blockquote::before,
+.rich-read blockquote::before {
+  content: "“";
+  position: absolute;
+  left: 8px;
+  top: 0;
+  color: var(--colorNeutralForeground3);
+  font-size: var(--fontSizeBase500);
+  line-height: var(--lineHeightBase500);
+}
+.rich-underline {
+  text-decoration: underline;
+}
+.rich-strike {
+  text-decoration: line-through;
+}
+.rich-underline-strike {
+  text-decoration: underline line-through;
+}
+.rich-task-list {
+  list-style: none;
+}
+.rich-task-list > li {
+  position: relative;
+}
+.rich-task-list > li::before {
+  position: absolute;
+  left: -1.4em;
+  content: "☐";
+  cursor: pointer;
+}
+.rich-task-list > li[data-checked="true"]::before {
+  content: "☑";
+}
+
+.document-section {
+  margin: 24px 0 12px;
+  font-size: var(--fontSizeBase500);
+  font-weight: 500;
+}
+.presentation-quiet .property-content {
+  color: var(--colorNeutralForeground2);
+}
+.presentation-emphasis .property-content {
+  font-weight: 500;
+}
+.feedback-toast {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 8px 10px 8px 14px;
+  border: 1px solid var(--colorNeutralStroke2, #d1d1d1);
+  border-radius: 8px;
+  background: var(--colorNeutralBackground1, #fff);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+  color: var(--colorNeutralForeground1, #242424);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* DialogSurface is transformed by Fluent, so fixed children use its box. */
+.feedback-toast-dialog {
+  left: calc(16px - 50vw + 50%);
+  bottom: calc(16px - 50vh + 50%);
+}
+
+.pdf-completion-toast.with-feedback {
+  bottom: 76px;
+}
+.document-progress-toast.with-feedback,
+.document-progress-toast.with-pdf {
+  bottom: 76px;
+}
+.document-progress-toast.with-feedback.with-pdf {
+  bottom: 136px;
+}
+
+.feedback-toast > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.feedback-toast .feedback-toast-command {
+  flex: 0 0 36px;
+  min-width: 36px;
+  width: 36px;
+  height: 36px;
+  padding: 8px;
+}
+
+.backup-view-switch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.backup-view-switch > button {
+  flex: 0 0 auto;
+  min-height: 32px;
+  width: auto;
+  padding-inline: 12px;
+  white-space: nowrap;
+}
+.backup-view-switch > button[aria-pressed="true"] {
+  background: var(--colorBrandBackground2);
+  border-color: var(--colorBrandStroke1);
+  color: var(--colorBrandForeground1);
+  font-weight: 600;
+}

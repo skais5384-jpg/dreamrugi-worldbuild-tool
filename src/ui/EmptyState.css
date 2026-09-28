@@ -1,0 +1,27 @@
+.content-empty-state {
+  display: flex;
+  min-width: 0;
+  min-height: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacingVerticalM);
+  padding: var(--spacingVerticalXXL) var(--spacingHorizontalXXL);
+  color: var(--colorNeutralForeground3);
+  text-align: center;
+}
+
+.content-empty-state img {
+  display: block;
+  width: 125px;
+  height: 125px;
+  object-fit: contain;
+}
+
+.content-empty-state p {
+  max-width: 36rem;
+  margin: 0;
+  font-size: var(--fontSizeBase300);
+  line-height: var(--lineHeightBase300);
+}

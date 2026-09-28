@@ -1,0 +1,18 @@
+.input-help {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacingHorizontalXS, 4px);
+  margin-top: var(--spacingVerticalXS, 4px);
+  min-width: 0;
+  color: var(--colorNeutralForeground4, #707070);
+  font-size: var(--fontSizeBase200, 12px);
+  font-weight: var(--fontWeightRegular, 400);
+  line-height: var(--lineHeightBase200, 16px);
+}
+.input-help > svg {
+  flex: 0 0 16px;
+}
+.input-help > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

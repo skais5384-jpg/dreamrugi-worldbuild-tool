@@ -1,0 +1,97 @@
+@font-face {
+  font-family: "Noto Sans";
+  src: url("../assets/fonts/NotoSansCJKkr-Regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Noto Sans";
+  src: url("../assets/fonts/NotoSansCJKkr-Medium.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Noto Sans";
+  src: url("../assets/fonts/NotoSansCJKkr-Bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root,
+.app-provider {
+  color-scheme: light;
+  --background-primary: var(--colorNeutralBackground1, #ffffff);
+  --background-primary-alt: var(--colorNeutralBackground2, #fafafa);
+  --background-secondary: var(--colorNeutralBackground3, #f5f5f5);
+  --background-secondary-alt: var(--colorNeutralBackground2, #fafafa);
+  --text-normal: var(--colorNeutralForeground1, #242424);
+  --text-muted: var(--colorNeutralForeground2, #424242);
+  --background-modifier-border: var(--colorNeutralStroke2, #e0e0e0);
+  --interactive-accent: var(--colorBrandBackground, #0f6cbd);
+  --card-radius: var(--borderRadiusLarge, 6px);
+  --card-gap: var(--spacingHorizontalL, 16px);
+  --card-shadow: var(--shadow2, 0 1px 2px #00000024);
+  --input-radius: var(--borderRadiusMedium, 4px);
+  --font-ui-small: var(--fontSizeBase300, 14px);
+  --font-ui-smaller: var(--fontSizeBase200, 12px);
+  --font-ui-medium: var(--fontSizeBase400, 16px);
+  --font-ui-large: var(--fontSizeBase500, 20px);
+  --line-height-normal: var(--lineHeightBase300, 20px);
+  --line-height-tight: 1.4;
+  --size-4-1: var(--spacingHorizontalXS, 4px);
+  --size-4-2: var(--spacingHorizontalS, 8px);
+  --size-4-3: var(--spacingHorizontalM, 12px);
+  --size-4-4: var(--spacingHorizontalL, 16px);
+  --danger: var(--colorStatusDangerForeground1, #b10e1c);
+}
+:root {
+  font-family: "Noto Sans", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+  font-size: var(--font-ui-small);
+  font-weight: 400;
+  line-height: var(--line-height-normal);
+  color: var(--text-normal);
+  background: var(--background-secondary);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+}
+/* Fluent는 Provider 클래스를 portal에도 전달한다. 화면 배경/높이는 앱 본체만 소유한다. */
+#root > .app-provider {
+  min-height: 100vh;
+  background: var(--background-secondary);
+}
+h1,
+h2,
+h3,
+p {
+  overflow-wrap: anywhere;
+}
+h1,
+h2,
+h3 {
+  font-weight: 700;
+  line-height: var(--line-height-tight);
+}
+p {
+  margin: 4px 0 0;
+}
+a {
+  color: var(--colorBrandForegroundLink, #115ea3);
+  text-underline-offset: 3px;
+}

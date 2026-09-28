@@ -1,0 +1,154 @@
+{
+  "begin": {
+    "body": {
+      "composing": false,
+      "fields": [],
+      "name": {
+        "intent": "keep"
+      }
+    },
+    "deposited": false,
+    "document": "cdb7b05c-fef5-4f04-af53-ec507cf456ef",
+    "editable": [],
+    "field": null,
+    "generation": "1",
+    "kind": "editing",
+    "outcome": null,
+    "owner": "c7b3003c-0870-4a0c-b9b8-17e6a9aeec09",
+    "problem": null,
+    "read": {
+      "fields": [],
+      "id": "cdb7b05c-fef5-4f04-af53-ec507cf456ef",
+      "kind": "read",
+      "name": "base",
+      "template": {
+        "fieldOrder": [],
+        "fields": [],
+        "id": "df1bed3f-3268-4737-8c0d-344e666b12a3",
+        "lifecycle": "Active",
+        "name": "G13 template",
+        "presentation": null,
+        "revision": "1"
+      },
+      "warnings": []
+    },
+    "saved_generation": "1",
+    "source": "cd51d2431a403fe485324a8cc46a4cc508668f0568f3aa4a9ac1445fd5dfa167"
+  },
+  "refresh": {
+    "error": {
+      "code": "runtime_rejected",
+      "nextAction": "입력과 작업 ID를 보존하고 상태와 원 결과를 확인한 뒤 명시적으로 다음 작업을 선택하세요"
+    },
+    "input_retained": true,
+    "kind": "rejected"
+  },
+  "saved": {
+    "body": {
+      "composing": false,
+      "fields": [],
+      "name": {
+        "intent": "set",
+        "value": "submitted S"
+      }
+    },
+    "deposited": false,
+    "document": "cdb7b05c-fef5-4f04-af53-ec507cf456ef",
+    "editable": [],
+    "field": null,
+    "generation": "2",
+    "kind": "editing",
+    "outcome": {
+      "artifact": "cdb7b05c-fef5-4f04-af53-ec507cf456ef",
+      "changed": null,
+      "cleanup_failed": true,
+      "diagnostic": {
+        "category": null,
+        "lockCategory": null,
+        "nextAction": "적용 결과와 편집 내용을 보존하고 명시적으로 프로젝트 복구를 실행하세요. 이전 저장을 자동 반복하지 마세요",
+        "sessionState": "Editing",
+        "stage": "Commit"
+      },
+      "disk": "committed",
+      "error": null,
+      "kind": "write",
+      "recovery_required": true,
+      "session": "c7b3003c-0870-4a0c-b9b8-17e6a9aeec09",
+      "warnings": []
+    },
+    "owner": "c7b3003c-0870-4a0c-b9b8-17e6a9aeec09",
+    "problem": "SavedReadRequired",
+    "read": {
+      "fields": [],
+      "id": "cdb7b05c-fef5-4f04-af53-ec507cf456ef",
+      "kind": "read",
+      "name": "base",
+      "template": {
+        "fieldOrder": [],
+        "fields": [],
+        "id": "df1bed3f-3268-4737-8c0d-344e666b12a3",
+        "lifecycle": "Active",
+        "name": "G13 template",
+        "presentation": null,
+        "revision": "1"
+      },
+      "warnings": []
+    },
+    "saved_generation": "2",
+    "source": "cd51d2431a403fe485324a8cc46a4cc508668f0568f3aa4a9ac1445fd5dfa167"
+  },
+  "success": {
+    "body": {
+      "composing": false,
+      "fields": [],
+      "name": {
+        "intent": "set",
+        "value": "submitted S"
+      }
+    },
+    "deposited": false,
+    "document": "cdb7b05c-fef5-4f04-af53-ec507cf456ef",
+    "editable": [],
+    "field": null,
+    "generation": "2",
+    "kind": "editing",
+    "outcome": {
+      "artifact": "cdb7b05c-fef5-4f04-af53-ec507cf456ef",
+      "changed": null,
+      "cleanup_failed": true,
+      "diagnostic": {
+        "category": null,
+        "lockCategory": null,
+        "nextAction": "적용 결과와 편집 내용을 보존하고 명시적으로 프로젝트 복구를 실행하세요. 이전 저장을 자동 반복하지 마세요",
+        "sessionState": "Editing",
+        "stage": "Commit"
+      },
+      "disk": "committed",
+      "error": null,
+      "kind": "write",
+      "recovery_required": true,
+      "session": "c7b3003c-0870-4a0c-b9b8-17e6a9aeec09",
+      "warnings": []
+    },
+    "owner": "c7b3003c-0870-4a0c-b9b8-17e6a9aeec09",
+    "problem": null,
+    "read": {
+      "fields": [],
+      "id": "cdb7b05c-fef5-4f04-af53-ec507cf456ef",
+      "kind": "read",
+      "name": "submitted S",
+      "template": {
+        "fieldOrder": [],
+        "fields": [],
+        "id": "df1bed3f-3268-4737-8c0d-344e666b12a3",
+        "lifecycle": "Active",
+        "name": "G13 template",
+        "presentation": null,
+        "revision": "1"
+      },
+      "warnings": []
+    },
+    "saved_generation": "2",
+    "source": "79ace7166144799ee7e792761a8d004427d84d0acb80c7e68133cd41eeb03931"
+  }
+}

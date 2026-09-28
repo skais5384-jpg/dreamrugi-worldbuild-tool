@@ -1,0 +1,34 @@
+.inline-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacingHorizontalXS);
+  margin: var(--spacingVerticalXS) 0;
+  font-size: var(--fontSizeBase200);
+  line-height: var(--lineHeightBase200);
+}
+
+.inline-notice > svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.inline-notice > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.inline-notice.info {
+  color: var(--colorNeutralForeground3);
+}
+
+.inline-notice.warning,
+.inline-notice.error {
+  color: var(--colorStatusDangerForeground1);
+}
+
+.inline-notice small {
+  color: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
