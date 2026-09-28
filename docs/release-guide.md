@@ -33,7 +33,7 @@ GitHub Actions의 `prerelease-signing`과 `prerelease-draft` 환경은 소유 �
 
 `Windows prerelease draft` workflow를 main에서 수동 실행합니다. `source_sha`는 검토한 공개 main HEAD의 40자리 SHA, `version`은 `0.1.0`입니다. validate는 비밀 없이 소스·버전을 확인하고, signing 환경 승인 뒤 build가 설치 파일·서명·소스 묶음을 생성합니다. draft 환경의 별도 승인 뒤 업로드합니다. validate/build는 contents read, draft job만 contents write를 갖습니다.
 
-업로드하는 9개 asset은 설치 EXE, `.sig`, `corresponding-source.zip`, `third-party-source.zip`, `third-party-source.manifest.json`, `LICENSE`, `README.md`, `release-notes.md`, `updater-public.key.pub`입니다. `release-manifest.json` 등의 추적 자료는 workflow artifact에 있으며 현재 공개 asset 9개와 구별합니다.
+업로드하는 10개 asset은 설치 EXE, `.sig`, `corresponding-source.zip`, `third-party-source.zip`, `third-party-source.manifest.json`, `LICENSE`, `README.md`, `release-notes.md`, `updater-public.key.pub`, `release-manifest.json`입니다. `SOURCE.json`과 package metadata 등 빌드 추적 자료는 workflow artifact에서 확인합니다.
 
 draft의 target/candidate·예정 tag ref 부재·각 API digest와 실제 다운로드, 대응 소스·서명·작은 설치 표본을 검증한 뒤 사람이 게시 여부를 판단합니다. draft 생성은 Release 게시나 stable/latest 승격이 아닙니다. Windows Authenticode 미서명과 updater 서명을 구별합니다. 앱 내 자동 업데이트와 Store 배포는 현재 제공하지 않습니다.
 

@@ -42,6 +42,9 @@ try {
     & python (Join-Path $source 'scripts/release-candidate.py') verify-source --folder $source
     if ($LASTEXITCODE -ne 0) { throw 'Build changed a fixed source input' }
     if (-not $DependencySourceDirectory) {
+        # Source collection includes locked dependencies for every target.
+        & cargo fetch --locked --manifest-path 'src-tauri/Cargo.toml'
+        if ($LASTEXITCODE -ne 0) { throw 'Locked dependency prefetch failed' }
         & python (Join-Path $source 'scripts/export-third-party-source.py') (Join-Path $out 'third-party-source.zip')
         if ($LASTEXITCODE -ne 0) { throw 'Third-party source collection failed' }
     }
