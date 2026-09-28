@@ -129,13 +129,21 @@ class ReleaseTests(unittest.TestCase):
             with self.assertRaises(ValueError): self.call_draft(execute=True,expected_public_key='f'*64)
 
     def remote_case(self, *, existing=True, refs=None, changed=None, partial=False,
-                    lookup_error=None, final_error=False, upload_error=False, corrupt_asset=False):
+                    lookup_error=None, final_error=False, upload_error=False, corrupt_asset=False,
+                    normalize_names=False, duplicate_alias=False, unknown_rename=False):
         manifest = self.candidate()
         assets = [{'name':a['name'], 'digest':'sha256:'+a['sha256']} for a in manifest['assets']]
         assets.append({'name':'release-manifest.json','digest':'sha256:'+r.digest((self.folder/'release-manifest.json').read_bytes())})
         remote = {'id':1,'tag_name':'v0.1.0','target_commitish':HEAD,'draft':True,'prerelease':True,
                   'body':'<!-- worldbuild-candidate:'+manifest['candidate_id']+' -->',
                   'assets':copy.deepcopy(assets[:2] if partial else assets),'html_url':'https://example.invalid/draft'}
+        if normalize_names:
+            for asset in remote['assets']:
+                asset['name'] = asset['name'].replace(' ', '.')
+        if duplicate_alias:
+            remote['assets'].append(copy.deepcopy(assets[0]))
+        if unknown_rename:
+            remote['assets'][0]['name'] = assets[0]['name'].replace(' ', '_')
         if corrupt_asset:
             remote['assets'][-1]['digest'] = 'sha256:' + '0' * 64
         original = copy.deepcopy(remote['assets'])
@@ -147,7 +155,10 @@ class ReleaseTests(unittest.TestCase):
             if args[1:3] == ('release','upload'):
                 mutations.append(('upload',Path(args[4]).name))
                 if upload_error: raise RuntimeError('upload failed')
-                remote['assets'].append(copy.deepcopy(next(a for a in assets if a['name']==Path(args[4]).name)))
+                uploaded = copy.deepcopy(next(a for a in assets if a['name']==Path(args[4]).name))
+                if normalize_names:
+                    uploaded['name'] = uploaded['name'].replace(' ', '.')
+                remote['assets'].append(uploaded)
                 if changed: remote.update(changed)
                 return b''
             if 'git/matching-refs' in str(args):
@@ -221,6 +232,37 @@ class ReleaseTests(unittest.TestCase):
         self.assertIsInstance(result,ValueError)
         self.assertEqual(mutations,[])
         self.assertEqual(len(remote['assets']),2)
+
+    def test_github_renamed_assets_support_create_resume_and_partial_uploads(self):
+        # This name pair was observed in the real GitHub RELEASE001 draft.
+        for existing, partial in [(False, False), (True, False), (True, True)]:
+            with self.subTest(existing=existing, partial=partial):
+                result, mutations, remote = self.remote_case(existing=existing,
+                    partial=partial, normalize_names=True)
+                self.assertIsInstance(result, dict)
+                self.assertEqual(len(remote['assets']), 10)
+                self.assertIn('Dreamrugi.Worldbuild.Tool_0.1.0_x64-setup.exe',
+                    [a['name'] for a in remote['assets']])
+                if existing and not partial:
+                    self.assertEqual(mutations, [])
+
+    def test_normalized_asset_corruption_prevents_all_uploads(self):
+        result, mutations, _ = self.remote_case(partial=True,
+            normalize_names=True, corrupt_asset=True)
+        self.assertIsInstance(result, ValueError)
+        self.assertIn('Remote asset differs', str(result))
+        self.assertEqual(mutations, [])
+
+    def test_duplicate_original_and_normalized_aliases_prevent_uploads(self):
+        result, mutations, _ = self.remote_case(normalize_names=True, duplicate_alias=True)
+        self.assertIsInstance(result, ValueError)
+        self.assertIn('Duplicate remote asset', str(result))
+        self.assertEqual(mutations, [])
+
+    def test_unrecognized_rename_prevents_all_uploads(self):
+        result, mutations, _ = self.remote_case(normalize_names=True, unknown_rename=True)
+        self.assertIsInstance(result, ValueError)
+        self.assertEqual(mutations, [])
 
 
 if __name__ == '__main__': unittest.main()

@@ -303,6 +303,32 @@ def draft_request(folder, repo, target, tag, execute=False, expected_public_key=
     # Secrets are used only by gh; argument lists contain no credential or shell fragments.
     def gh(*args):
         return json.loads(run('gh', 'api', *args))
+    allowed = {a['name']: a for a in manifest['assets']}
+    if len(allowed) != len(manifest['assets']):
+        raise ValueError('Duplicate local asset name')
+    manifest_bytes = (folder / 'release-manifest.json').read_bytes()
+    allowed['release-manifest.json'] = {'name': 'release-manifest.json', 'bytes': len(manifest_bytes), 'sha256': digest(manifest_bytes)}
+    # GitHub renamed the official installer spaces to periods in a real upload.
+    # Accept only the original name or that exact alias, with unchanged digest.
+    remote_aliases = {}
+    for name in allowed:
+        for alias in {name, name.replace(' ', '.')}:
+            if alias in remote_aliases and remote_aliases[alias] != name:
+                raise ValueError('Ambiguous remote asset name')
+            remote_aliases[alias] = name
+
+    def assets_by_local_name(release):
+        result = {}
+        for asset in release['assets']:
+            name = asset.get('name') if isinstance(asset, dict) else None
+            if not isinstance(name, str) or name not in remote_aliases:
+                raise ValueError('Remote draft has unexpected assets')
+            local_name = remote_aliases[name]
+            if local_name in result:
+                raise ValueError('Duplicate remote asset name or alias')
+            result[local_name] = asset
+        return result
+
     def require_absent_tag():
         pages = gh('--paginate', '--slurp', f'repos/{repo}/git/matching-refs/tags/{tag}')
         if not isinstance(pages, list) or not pages or any(not isinstance(page, list) for page in pages):
@@ -335,16 +361,7 @@ def draft_request(folder, repo, target, tag, execute=False, expected_public_key=
         request_path.write_text(json.dumps(request, ensure_ascii=False), encoding='utf-8')
         release = gh(f'repos/{repo}/releases', '--method', 'POST', '--input', str(request_path))
         require_candidate(release)
-    allowed = {a['name']: a for a in manifest['assets']}
-    if len(allowed) != len(manifest['assets']):
-        raise ValueError('Duplicate local asset name')
-    manifest_bytes = (folder / 'release-manifest.json').read_bytes()
-    allowed['release-manifest.json'] = {'name': 'release-manifest.json', 'bytes': len(manifest_bytes), 'sha256': digest(manifest_bytes)}
-    remote_assets = {a['name']: a for a in release['assets']}
-    if len(remote_assets) != len(release['assets']):
-        raise ValueError('Duplicate remote asset name')
-    if set(remote_assets) - set(allowed):
-        raise ValueError('Remote draft has unexpected assets')
+    remote_assets = assets_by_local_name(release)
     for name, asset in remote_assets.items():
         if asset.get('digest') != 'sha256:' + allowed[name]['sha256']:
             raise ValueError('Remote asset differs; refusing overwrite')
@@ -353,7 +370,7 @@ def draft_request(folder, repo, target, tag, execute=False, expected_public_key=
             run('gh', 'release', 'upload', tag, str(folder / name), '--repo', repo)
     fresh = gh(f'repos/{repo}/releases/{release["id"]}')
     require_candidate(fresh)
-    remote_assets = {a['name']: a for a in fresh['assets']}
+    remote_assets = assets_by_local_name(fresh)
     if len(remote_assets) != len(fresh['assets']) or set(remote_assets) != set(allowed) or any(remote_assets[n].get('digest') != 'sha256:' + a['sha256'] for n, a in allowed.items()):
         raise ValueError('Remote draft asset verification failed')
     # A tag/release may change while assets are uploaded. This is a final
