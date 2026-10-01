@@ -23,6 +23,35 @@ beforeEach(() => {
 });
 
 describe("whole template workspace", () => {
+  it("keeps local work available without YouTube consent and exposes privacy settings in Help", async () => {
+    const fixture = transportFixture();
+    const shell = new TemplateController(
+      new GuardedClient(fixture.transport),
+      vi.fn(),
+    );
+    render(<WorkspaceApp controller={new WorkspaceController(shell)} />);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: text("app.message07") }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: text("about.menu") }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: text("privacy.title") }),
+    );
+    expect(
+      screen.getByRole("checkbox", { name: text("privacy.acceptPolicy") }),
+    ).not.toBeChecked();
+    expect(
+      screen.getByRole("button", { name: text("privacy.allow") }),
+    ).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: text("privacy.deny") }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: text("app.message07") }),
+      ).toBeEnabled(),
+    );
+  });
   it("실제 홈에서 기존 프로젝트와 단일 SVN 연결에 접근할 수 있다", async () => {
     const fixture = transportFixture();
     const picker = vi.fn().mockResolvedValue("C:\\existing-project");

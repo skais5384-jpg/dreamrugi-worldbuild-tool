@@ -77,6 +77,7 @@ import { FollowUp } from "./FollowUp";
 import { ProjectHealth } from "./ProjectHealth";
 import { ProjectFiles } from "./ProjectFiles";
 import { AboutDialog } from "./AboutDialog";
+import { PrivacyDialog } from "./PrivacyDialog";
 import { UpdateDialog, updateMessage } from "./UpdateDialog";
 import { updaterController } from "./updaterClient";
 import { TemplateManagement } from "./TemplateManagement";
@@ -186,6 +187,7 @@ export default function WorkspaceApp({
   >(state.draft ? "templates" : "documents");
   const [openAsDefault, setOpenAsDefault] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [privacyOpen, setPrivacyOpen] = useState(false);
   const [policyRoot, setPolicyRoot] = useState<string | null>(null);
   const [dismissedPolicy, setDismissedPolicy] = useState<string | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -568,6 +570,7 @@ export default function WorkspaceApp({
   };
   const locked =
     prompted ||
+    privacyOpen ||
     documentState.prompt ||
     !!documentState.editPrompt ||
     app.closing;
@@ -1050,6 +1053,13 @@ export default function WorkspaceApp({
                     onClick={() => setAboutOpen(true)}
                   >
                     {text("about.title")}
+                  </MenuItem>
+                  <MenuItem
+                    icon={<Info16Regular />}
+                    disabled={locked}
+                    onClick={() => setPrivacyOpen(true)}
+                  >
+                    {text("privacy.title")}
                   </MenuItem>
                   <MenuItem
                     icon={<ArrowSync20Regular />}
@@ -2826,6 +2836,7 @@ export default function WorkspaceApp({
           />
         )}
       </main>
+      <PrivacyDialog open={privacyOpen} close={() => setPrivacyOpen(false)} />
     </MediaContext.Provider>
   );
 }

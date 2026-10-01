@@ -47,6 +47,12 @@ pub(crate) fn about_open_link<R: Runtime>(
     let url = match target.as_str() {
         "blog" => "https://dreamrugi.tistory.com/",
         "email" => "mailto:skais5384@naver.com",
+        "google_privacy" => "https://policies.google.com/privacy",
+        "microsoft_privacy" => "https://www.microsoft.com/en-us/privacy/privacystatement",
+        "webview_privacy" => "https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/data-privacy",
+        "github_privacy" => "https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement",
+        "naver_privacy" => "https://policy.naver.com/policy/privacy.html",
+        "youtube_terms" => "https://www.youtube.com/t/terms",
         "source" => "https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool",
         _ => return Err("연락처 선택이 올바르지 않습니다.".into()),
     };

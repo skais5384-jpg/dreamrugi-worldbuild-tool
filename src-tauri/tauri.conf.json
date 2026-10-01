@@ -36,7 +36,7 @@
         "object-src": "'none'",
         "base-uri": "'none'",
         "form-action": "'none'",
-        "frame-src": "https://www.youtube.com",
+        "frame-src": "https://www.youtube-nocookie.com",
         "media-src": "https:"
       },
       "devCsp": {
@@ -50,7 +50,7 @@
         "object-src": "'none'",
         "base-uri": "'none'",
         "form-action": "'none'",
-        "frame-src": "https://www.youtube.com",
+        "frame-src": "https://www.youtube-nocookie.com",
         "media-src": "https:"
       }
     }

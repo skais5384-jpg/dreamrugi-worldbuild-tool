@@ -16,8 +16,13 @@ import {
 import { CreationValue } from "./CreationValue";
 import type { Field } from "../bridge/types";
 import { text } from "../strings";
+import { youtubeConsentStore, YOUTUBE_CONSENT_KEY } from "./youtubeConsent";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  localStorage.removeItem(YOUTUBE_CONSENT_KEY);
+  youtubeConsentStore().refresh();
+});
 describe("M3-7 media", () => {
   it("accepts direct HTTPS media and rejects credentials, local addresses and active pages", () => {
     expect(mediaKind("https://example.com/clip.MP4?quality=low")).toBe("video");
@@ -47,7 +52,7 @@ describe("M3-7 media", () => {
       "https://m.youtube.com/embed/dQw4w9WgXcQ?t=90",
     ]) {
       const embed = new URL(youtubeEmbed(url)!);
-      expect(embed.origin).toBe("https://www.youtube.com");
+      expect(embed.origin).toBe("https://www.youtube-nocookie.com");
       expect(embed.pathname).toBe("/embed/dQw4w9WgXcQ");
       expect(embed.searchParams.get("start")).toBe("90");
       expect(embed.searchParams.get("si")).toBeNull();
@@ -63,6 +68,7 @@ describe("M3-7 media", () => {
       expect(youtubeEmbed(url)).toBeNull();
   });
   it("isolates the YouTube player and keeps the original address visible", () => {
+    youtubeConsentStore().choose(true);
     const url = "https://youtu.be/dQw4w9WgXcQ?si=kept-in-original";
     const { container } = render(<UrlRead value={url} />);
     const frame = container.querySelector("iframe")!;

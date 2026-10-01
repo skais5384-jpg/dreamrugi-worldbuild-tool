@@ -13,10 +13,13 @@ import { TestTransport } from "./testTransport";
 import { GuardedClient } from "../bridge/client";
 import type { Command } from "../bridge/types";
 import { MediaActiveContext, UrlRead, mediaKind } from "./MediaValue";
+import { youtubeConsentStore, YOUTUBE_CONSENT_KEY } from "./youtubeConsent";
 
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  localStorage.removeItem(YOUTUBE_CONSENT_KEY);
+  youtubeConsentStore().refresh();
 });
 async function fixture() {
   const transport = new TestTransport();
@@ -260,6 +263,7 @@ it.each(["png", "mp4"])(
 it.each(["https://example.com/a.mp4", "https://youtu.be/M7lc1UVf-VE?t=5"])(
   "unmounts only the hidden player and returns without autoplay: %s",
   (value) => {
+    youtubeConsentStore().choose(true);
     const view = (active: boolean) => (
       <MediaActiveContext.Provider value={active}>
         <input defaultValue="raw" />

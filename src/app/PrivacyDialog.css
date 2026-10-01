@@ -1,0 +1,32 @@
+.privacy-surface {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+}
+.privacy-content {
+  overflow-y: auto;
+  min-height: 0;
+}
+.privacy-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.privacy-policy {
+  font: inherit;
+  overflow-wrap: anywhere;
+  line-height: 1.625;
+}
+.privacy-table {
+  overflow-x: auto;
+}
+.privacy-policy table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.privacy-policy th,
+.privacy-policy td {
+  padding: 8px;
+  border: 1px solid var(--colorNeutralStroke2);
+  vertical-align: top;
+  text-align: start;
+}

@@ -23,6 +23,7 @@ import type { AssetMetadata } from "../bridge/documents";
 import { text } from "../strings";
 import { useDraftReorder } from "./useDraftReorder";
 import "./MediaValue.css";
+import { useYoutubeConsent } from "./youtubeConsent";
 
 export const MediaContext = createContext<Pick<
   DocumentController,
@@ -85,7 +86,12 @@ function youtubeId(u: URL): string | null {
   const path = u.pathname.split("/").filter(Boolean);
   if (u.hostname === "youtu.be" && path.length === 1) id = path[0];
   else if (
-    ["youtube.com", "www.youtube.com", "m.youtube.com"].includes(u.hostname)
+    [
+      "youtube.com",
+      "www.youtube.com",
+      "m.youtube.com",
+      "www.youtube-nocookie.com",
+    ].includes(u.hostname)
   ) {
     if (path.length === 1 && path[0] === "watch") {
       const values = u.searchParams.getAll("v");
@@ -104,7 +110,7 @@ export function youtubeEmbed(raw: string): string | null {
   const id = youtubeId(u);
   const start = youtubeStart(u);
   if (!id || start === null) return null;
-  const embed = new URL(`https://www.youtube.com/embed/${id}`);
+  const embed = new URL(`https://www.youtube-nocookie.com/embed/${id}`);
   embed.searchParams.set("enablejsapi", "1");
   embed.searchParams.set("playsinline", "1");
   embed.searchParams.set("origin", YOUTUBE_APP_ORIGIN);
@@ -129,6 +135,7 @@ export function UrlRead({ value }: { value: string }) {
 }
 function UrlAttempt({ value }: { value: string }) {
   const controller = useContext(MediaContext);
+  const consent = useYoutubeConsent();
   // URL을 떠나거나 화면이 숨겨지면 이 요청 인스턴스도 끝난다.
   const [failed, setFailed] = useState(false);
   const kind = mediaKind(value);
@@ -153,7 +160,7 @@ function UrlAttempt({ value }: { value: string }) {
           onError={() => setFailed(true)}
           onCanPlay={() => setFailed(false)}
         />
-      ) : kind === "youtube" && youtube ? (
+      ) : kind === "youtube" && youtube && consent.choice === "allowed" ? (
         <iframe
           key={value}
           src={youtube}
@@ -165,12 +172,33 @@ function UrlAttempt({ value }: { value: string }) {
           onError={() => setFailed(true)}
         />
       ) : null}
-      {kind === "youtube" && !failed && (
+      {kind === "youtube" && consent.choice === "allowed" && !failed && (
         <p className="media-youtube-help">{text("media.youtubeHelp")}</p>
       )}
       {(!kind || failed) && <p role="status">{text("media.urlFailed")}</p>}
-      <span className="media-url-address">{value}</span>
-      {kind && (
+      {kind === "youtube" && consent.choice !== "allowed" ? (
+        <>
+          <a
+            className="media-url-address"
+            href={value}
+            onClick={(event) => {
+              event.preventDefault();
+              void controller
+                ?.media({ action: "url_open", url: value })
+                .then((result) => {
+                  if (result?.kind === "asset_error") setFailed(true);
+                })
+                .catch(() => setFailed(true));
+            }}
+          >
+            {value}
+          </a>
+          <p className="media-youtube-help">{text("privacy.youtubeBlocked")}</p>
+        </>
+      ) : (
+        <span className="media-url-address">{value}</span>
+      )}
+      {kind && !(kind === "youtube" && consent.choice !== "allowed") && (
         <Button
           type="button"
           appearance="subtle"

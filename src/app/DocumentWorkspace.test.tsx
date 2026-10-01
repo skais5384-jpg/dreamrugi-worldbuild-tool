@@ -27,6 +27,7 @@ import type {
 } from "../bridge/documents";
 import type { Template, ResultDto } from "../bridge/types";
 import { text } from "../strings";
+import { youtubeConsentStore } from "./youtubeConsent";
 beforeEach(() => {
   localStorage.clear();
   HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -2652,6 +2653,7 @@ it("closing only a creation tab keeps project previews available", async () => {
 });
 
 it("removes hidden editing players across tabs, trash and parent screens while preserving input DOM", async () => {
+  youtubeConsentStore().choose(true);
   const { controller } = await setup("Url");
   await controller.open("a");
   await controller.beginEdit("a");
@@ -2682,6 +2684,7 @@ it("removes hidden editing players across tabs, trash and parent screens while p
 });
 
 it("recreates the read player when two documents use the same URL", async () => {
+  youtubeConsentStore().choose(true);
   const { controller } = await setup("Url");
   await controller.open("a");
   const { container } = render(<DocumentWorkspace controller={controller} />);

@@ -12,7 +12,7 @@ pub(crate) fn install<R: tauri::Runtime>(
     };
     use windows::core::HSTRING;
 
-    const FILTER: &str = "https://www.youtube.com/embed/*";
+    const FILTER: &str = "https://www.youtube-nocookie.com/embed/*";
     const REFERER: &str = "https://com.dreamrugi.worldbuildtool/";
 
     // `with_webview`는 setup thread에서 즉시 WebView2를 주는 API가 아니라 다음 Wry event에
