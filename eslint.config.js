@@ -6,7 +6,14 @@ import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default defineConfig([
-  globalIgnores(["node_modules/**", "dist/**", "src-tauri/**", "logs/**"]),
+  globalIgnores([
+    "node_modules/**",
+    "dist/**",
+    "src-tauri/**",
+    "logs/**",
+    ".agents/**",
+    "design-system/**",
+  ]),
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
@@ -23,6 +30,19 @@ export default defineConfig([
     plugins: reactHooks.configs.flat.recommended.plugins,
     rules: {
       ...reactHooks.configs.flat.recommended.rules,
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "@fluentui/react-components",
+              importNames: ["MessageBar", "MessageBarBody"],
+              message:
+                "Route notifications through ui/FloatingNotice and the lower-left activity log.",
+            },
+          ],
+        },
+      ],
       "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",

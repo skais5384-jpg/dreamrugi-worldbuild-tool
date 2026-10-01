@@ -2,10 +2,20 @@
 //! opened handles. Packaged Windows parents can redirect LocalAppData into a
 //! package namespace; the recovery Store must use that exact physical path.
 use std::{fs, io, path::PathBuf};
-use tauri::{Manager, Runtime};
+#[cfg(not(any(feature = "updater-test", feature = "updater-integration-test")))]
+use tauri::Manager;
+use tauri::Runtime;
 
 pub(crate) fn local_data<R: Runtime>(app: &tauri::AppHandle<R>) -> io::Result<PathBuf> {
+    #[cfg(not(any(feature = "updater-test", feature = "updater-integration-test")))]
     let logical = app.path().app_local_data_dir().map_err(io::Error::other)?;
+    #[cfg(any(feature = "updater-test", feature = "updater-integration-test"))]
+    let logical = {
+        // The same owned fixture must survive launches from a packaged parent
+        // and Explorer. Production keeps its normal per-application directory.
+        let _ = app;
+        PathBuf::from(env!("WORLDBUILD_UPDATER_TEST_DATA_ROOT"))
+    };
     fs::create_dir_all(&logical)?;
     fs::canonicalize(logical)
 }

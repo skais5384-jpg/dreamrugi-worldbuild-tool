@@ -33,6 +33,7 @@ pub(crate) enum Code {
     InvalidInput,
     Forbidden,
     CollaborationReadOnly,
+    CollaborationPolicyRejected,
     UnknownId,
     WrongBinding,
     DuplicateConflict,

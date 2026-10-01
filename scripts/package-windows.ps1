@@ -6,6 +6,7 @@ param(
     [string]$UpdaterKeyPath,
     [string]$ReleaseKeyReceipt,
     [string]$MsixThumbprint,
+    [string]$StoreIdentityPath,
     [switch]$PrepareOnly,
     [switch]$UnsignedTechnical
 )
@@ -19,6 +20,9 @@ $lock = Get-Content -LiteralPath (Join-Path $repo 'package-lock.json') -Raw | Co
 $cargo = Get-Content -LiteralPath (Join-Path $repo 'src-tauri/Cargo.toml') -Raw
 $cargoVersion = [regex]::Match($cargo, '(?m)^version = "([^"\r\n]+)"').Groups[1].Value
 $lockVersion = $lock['packages']['']['version']
+$cargoLock = Get-Content -LiteralPath (Join-Path $repo 'src-tauri/Cargo.lock') -Raw
+$ownLockVersion = [regex]::Match($cargoLock, '(?m)^name = "worldbuild-tool"\r?\nversion = "([^"\r\n]+)"').Groups[1].Value
+if ($ownLockVersion -ne $npm.version -or $lock['version'] -ne $npm.version) { throw 'App version in lockfiles must match' }
 if ($npm.version -ne $cargoVersion -or $npm.version -ne $base.version -or $npm.version -ne $lockVersion) {
     throw 'package.json, package-lock.json, Cargo.toml and tauri.conf.json versions must match'
 }
@@ -26,14 +30,25 @@ if ($npm.license -ne 'GPL-3.0-only' -or $base.bundle.license -ne 'GPL-3.0-only' 
     throw 'App license metadata must agree on GPL-3.0-only'
 }
 if ($Mode -eq 'Release' -and $VersionOverride) { throw 'Release version override is not allowed' }
-if ($Mode -eq 'Release' -and $Channel -eq 'Store') { throw 'Store identity is pending Partner Center; build a local test package' }
-if ($UnsignedTechnical -and ($Mode -ne 'Release' -or $Channel -ne 'Github')) { throw 'Unsigned technical builds require Github/Release identity' }
+$storeIdentity = $null
+if ($Channel -eq 'Store') {
+    if ($UpdaterKeyPath -or $ReleaseKeyReceipt -or (Test-Path Env:\TAURI_SIGNING_PRIVATE_KEY) -or (Test-Path Env:\TAURI_SIGNING_PRIVATE_KEY_PATH) -or (Test-Path Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+        throw 'Store packaging cannot receive GitHub updater signing secrets'
+    }
+    if ($Mode -eq 'Release') {
+        if (-not $StoreIdentityPath) { throw 'Verified Partner Center StoreIdentityPath is required for Store/release' }
+        $identityJson = & python (Join-Path $PSScriptRoot 'store-identity.py') --identity $StoreIdentityPath --version $npm.version
+        if ($LASTEXITCODE -ne 0) { throw 'Store identity/history validation failed' }
+        $storeIdentity = $identityJson | ConvertFrom-Json
+    } elseif ($StoreIdentityPath) { throw 'Local Store test identity cannot use Partner Center submission values' }
+} elseif ($StoreIdentityPath -or $MsixThumbprint) { throw 'MSIX identity/certificate cannot be supplied to GitHub packaging' }
+if ($UnsignedTechnical -and -not (($Mode -eq 'Release' -and $Channel -eq 'Github') -or ($Mode -eq 'Test' -and $Channel -eq 'Store'))) { throw 'Unsigned technical builds require Github/Release or isolated Store/Test identity' }
 if ($UnsignedTechnical -and ($UpdaterKeyPath -or $env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH -or $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) { throw 'Unsigned technical builds cannot receive signing secrets' }
 $version = if ($VersionOverride) { $VersionOverride } else { $npm.version }
 if ($version -notmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') { throw 'Expected a three-part numeric version' }
 $parts = @([int]$Matches[1], [int]$Matches[2], [int]$Matches[3])
 if ($parts | Where-Object { $_ -gt 65534 }) { throw 'Version parts exceed MSIX range' }
-$msixVersion = '{0}.{1}.{2}.0' -f ($parts[0] + 1), $parts[1], $parts[2]
+$msixVersion = if ($storeIdentity) { $storeIdentity.packageVersion } else { '{0}.{1}.{2}.0' -f ($parts[0] + 1), $parts[1], $parts[2] }
 $out = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else {
     Join-Path $repo ("logs/M7-7-IMPLEMENTATION-001/packages/{0}-{1}-{2}" -f $Channel.ToLower(), $Mode.ToLower(), $version)
 }
@@ -103,10 +118,11 @@ if ($Channel -eq 'Github') {
     if ($env:TAURI_SIGNING_PRIVATE_KEY -or $env:TAURI_SIGNING_PRIVATE_KEY_PATH -or $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
         throw 'Store packaging cannot use the GitHub updater signing key'
     }
-    if ($MsixThumbprint -notmatch '^[0-9A-Fa-f]{40}$') { throw 'A local MSIX test certificate thumbprint is required' }
+    if ((($test -and -not $UnsignedTechnical) -or $MsixThumbprint) -and $MsixThumbprint -notmatch '^[0-9A-Fa-f]{40}$') { throw 'A valid local MSIX test certificate thumbprint is required' }
 }
 $env:WORLDBUILD_BUILD_CHANNEL = $Channel.ToLower()
 $env:WORLDBUILD_PACKAGE_MODE = $Mode.ToLower()
+if ($storeIdentity) { $env:WORLDBUILD_STORE_IDENTITY = $identityJson }
 $tauri = Join-Path $repo 'node_modules/.bin/tauri.cmd'
 if (-not (Test-Path -LiteralPath $tauri)) { throw 'Installed Tauri CLI is missing; run npm ci' }
 Push-Location $repo
@@ -149,26 +165,41 @@ try {
         $assets = Join-Path $stage 'Assets'
         New-Item -ItemType Directory -Force -Path $assets | Out-Null
         foreach ($logo in @('StoreLogo.png','Square150x150Logo.png','Square44x44Logo.png')) {
-            Copy-Item -LiteralPath (Join-Path $repo 'src-tauri/icons/128x128.png') -Destination (Join-Path $assets $logo)
+            Copy-Item -LiteralPath (Join-Path $repo ('packaging/msix/Assets/' + $logo)) -Destination (Join-Path $assets $logo)
         }
-        $certificate = Get-ChildItem Cert:\CurrentUser\My | Where-Object Thumbprint -eq $MsixThumbprint | Select-Object -First 1
-        if (-not $certificate -or -not $certificate.HasPrivateKey) { throw 'MSIX local test certificate is unavailable' }
-        $publisher = $certificate.Subject
-        if ($publisher -ne 'CN=Dreamrugi Worldbuild Tool E Local Test') { throw 'Unexpected MSIX test publisher' }
+        $packageName = if ($storeIdentity) { $storeIdentity.name } else { 'Dreamrugi.WorldbuildTool.ELocalTest' }
+        $publisher = if ($storeIdentity) { $storeIdentity.publisher } else { 'CN=Dreamrugi Worldbuild Tool E Local Test' }
+        $publisherDisplayName = if ($storeIdentity) { $storeIdentity.publisherDisplayName } else { 'Dreamrugi Local Test' }
+        if ($MsixThumbprint) {
+            $certificate = Get-ChildItem Cert:\CurrentUser\My | Where-Object Thumbprint -eq $MsixThumbprint | Select-Object -First 1
+            if (-not $certificate -or -not $certificate.HasPrivateKey -or $certificate.Subject -cne $publisher) { throw 'MSIX local signing certificate must match the exact package Publisher' }
+        }
+        # Submission remains unsigned for Store re-signing. Local signing makes
+        # a separate copy, with the exact same manifest/resource/executable payload.
+        function XmlValue([string]$Value) { [Security.SecurityElement]::Escape($Value) }
         $template = Get-Content -LiteralPath (Join-Path $repo 'packaging/msix/AppxManifest.xml.in') -Raw
-        $manifest = $template.Replace('{{IDENTITY}}','Dreamrugi.WorldbuildTool.ELocalTest').Replace('{{PUBLISHER}}',$publisher).Replace('{{VERSION}}',$msixVersion).Replace('{{DISPLAY_NAME}}',$displayName)
+        $manifest = $template.Replace('{{IDENTITY}}',(XmlValue $packageName)).Replace('{{PUBLISHER}}',(XmlValue $publisher)).Replace('{{VERSION}}',$msixVersion).Replace('{{DISPLAY_NAME}}',(XmlValue $displayName)).Replace('{{PUBLISHER_DISPLAY_NAME}}',(XmlValue $publisherDisplayName))
         [IO.File]::WriteAllText((Join-Path $stage 'AppxManifest.xml'),$manifest,[Text.UTF8Encoding]::new($false))
         $sdk = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64'
         $makeAppx = Join-Path $sdk 'MakeAppx.exe'
         $signTool = Join-Path $sdk 'SignTool.exe'
         if (-not (Test-Path -LiteralPath $makeAppx) -or -not (Test-Path -LiteralPath $signTool)) { throw 'Windows SDK MakeAppx/SignTool are missing' }
-        $package = Join-Path $out ("Dreamrugi.WorldbuildTool.ELocalTest_{0}_x64.msix" -f $msixVersion)
+        $package = Join-Path $out ("{0}_{1}_x64.msix" -f $packageName,$msixVersion)
         & $makeAppx pack /d $stage /p $package /o
         if ($LASTEXITCODE -ne 0) { throw 'MakeAppx pack failed' }
-        & $signTool sign /fd SHA256 /sha1 $MsixThumbprint /s My $package
-        if ($LASTEXITCODE -ne 0) { throw 'MSIX SignTool sign failed' }
-        & $signTool verify /pa /v $package
-        if ($LASTEXITCODE -ne 0) { throw 'MSIX SignTool verify failed' }
+        if ($MsixThumbprint) {
+            $localPackage = Join-Path $out ("{0}_{1}_x64-local-signed.msix" -f $packageName,$msixVersion)
+            Copy-Item -LiteralPath $package -Destination $localPackage
+            & $signTool sign /fd SHA256 /sha1 $MsixThumbprint /s My $localPackage
+            if ($LASTEXITCODE -ne 0) { throw 'MSIX SignTool sign failed' }
+            & $signTool verify /pa /v $localPackage
+            if ($LASTEXITCODE -ne 0) { throw 'MSIX local signature verification failed; certificate trust was not changed' }
+        }
+        $payload = @(Get-ChildItem -LiteralPath $stage -Recurse -File | ForEach-Object {
+            [ordered]@{ path=[IO.Path]::GetRelativePath($stage,$_.FullName).Replace('\','/'); bytes=$_.Length; sha256=(Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant() }
+        })
+        [ordered]@{ packageName=$packageName; publisher=$publisher; publisherDisplayName=$publisherDisplayName; storeIdentity=$storeIdentity; localSigned=[bool]$MsixThumbprint; payload=$payload } |
+            ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $out 'msix-payload.json') -Encoding utf8
         $resolvedOut = [IO.Path]::GetFullPath($out).TrimEnd([IO.Path]::DirectorySeparatorChar)
         $resolvedStage = [IO.Path]::GetFullPath($stage)
         if (-not $resolvedStage.StartsWith($resolvedOut + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -188,5 +219,5 @@ try {
     [pscustomobject]@{ Channel=$Channel; Mode=$Mode; Version=$version; MsixVersion=$msixVersion; Output=$out; Artifacts=$packages.Count }
 } finally {
     Pop-Location
-    Remove-Item Env:\WORLDBUILD_BUILD_CHANNEL,Env:\WORLDBUILD_PACKAGE_MODE,Env:\TAURI_SIGNING_PRIVATE_KEY,Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+    Remove-Item Env:\WORLDBUILD_BUILD_CHANNEL,Env:\WORLDBUILD_PACKAGE_MODE,Env:\TAURI_SIGNING_PRIVATE_KEY,Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD,Env:\WORLDBUILD_STORE_IDENTITY -ErrorAction SilentlyContinue
 }

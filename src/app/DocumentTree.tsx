@@ -462,26 +462,28 @@ export function DocumentTree({
                         }
                       }}
                     >
-                      <Button
-                        type="button"
-                        appearance="subtle"
-                        className="tree-expand"
-                        disabled={
-                          locked || !persistedNode || !node.childOrder.length
-                        }
-                        aria-label={text("documents.collapse")}
-                        aria-expanded={!collapsed}
-                        onClick={() => controller.collapse(id)}
-                        icon={
-                          node.childOrder.length ? (
-                            collapsed ? (
-                              <ChevronRight16Regular />
-                            ) : (
-                              <ChevronDown16Regular />
-                            )
-                          ) : undefined
-                        }
-                      />
+                      {!!node.childOrder.length && (
+                        <Button
+                          type="button"
+                          appearance="subtle"
+                          className="tree-expand"
+                          disabled={
+                            locked || !persistedNode || !node.childOrder.length
+                          }
+                          aria-label={text("documents.collapse")}
+                          aria-expanded={!collapsed}
+                          onClick={() => controller.collapse(id)}
+                          icon={
+                            node.childOrder.length ? (
+                              collapsed ? (
+                                <ChevronRight16Regular />
+                              ) : (
+                                <ChevronDown16Regular />
+                              )
+                            ) : undefined
+                          }
+                        />
+                      )}
                       <Tooltip
                         content={
                           svnEntry?.lockOwner

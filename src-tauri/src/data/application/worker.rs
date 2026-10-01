@@ -142,6 +142,7 @@ pub(crate) struct WorkerSnapshot {
     pub(crate) sessions: usize,
     pub(crate) runtime: Option<RuntimeSnapshot>,
     pub(crate) initialization_error: Option<RuntimeError>,
+    pub(crate) admission_error: Option<String>,
     pub(crate) timer_error: Option<IntervalError>,
     pub(crate) unclaimed_validation_failures: usize,
     pub(crate) thread: Option<thread::ThreadId>,
@@ -252,6 +253,7 @@ struct Mailbox<P, R> {
     sessions: usize,
     session_observations: Vec<(Registration, SessionObservation)>,
     initialization_error: Option<RuntimeError>,
+    admission_error: Option<String>,
     timer_error: Option<IntervalError>,
     thread: Option<thread::ThreadId>,
     shutdown: ShutdownState,
@@ -434,6 +436,12 @@ fn take<P, R, O: Send + 'static>(
 }
 impl<P: 'static, R: 'static> WorkerControl<P, R> {
     pub(crate) fn start(config: WorkerConfig) -> Result<(Self, WorkerClient<P, R>), StartError> {
+        Self::start_with_admission(config, None)
+    }
+    pub(crate) fn start_with_admission(
+        config: WorkerConfig,
+        admission: Option<Box<dyn FnOnce() -> Result<(), String> + Send>>,
+    ) -> Result<(Self, WorkerClient<P, R>), StartError> {
         if config.capacity == 0 || config.max_sessions == 0 {
             return Err(StartError::InvalidCapacity);
         }
@@ -462,6 +470,7 @@ impl<P: 'static, R: 'static> WorkerControl<P, R> {
                 sessions: 0,
                 session_observations: Vec::new(),
                 initialization_error: None,
+                admission_error: None,
                 timer_error: None,
                 thread: None,
                 shutdown: ShutdownState::default(),
@@ -473,7 +482,7 @@ impl<P: 'static, R: 'static> WorkerControl<P, R> {
             .name("project-worker".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_worker(&owner, config, periodic)
+                    run_worker(&owner, config, periodic, admission)
                 }));
                 if result.is_err() {
                     let mut m = owner.lock();
@@ -512,6 +521,7 @@ impl<P: 'static, R: 'static> WorkerControl<P, R> {
             sessions: m.sessions,
             runtime: m.runtime,
             initialization_error: m.initialization_error.clone(),
+            admission_error: m.admission_error.clone(),
             timer_error: m.timer_error,
             unclaimed_validation_failures: m
                 .scheduled
@@ -575,7 +585,11 @@ impl<P: 'static, R: 'static> WorkerControl<P, R> {
             && !m.runtime_closed
         {
             let error = m.initialization_error.clone();
-            m.shutdown.absent_runtime(error);
+            if m.admission_error.is_some() {
+                m.shutdown.rejected_admission();
+            } else {
+                m.shutdown.absent_runtime(error);
+            }
         }
         self.shared.wake.notify_one();
         m.shutdown.view.clone()
@@ -722,6 +736,9 @@ impl<P: 'static, R: 'static> WorkerControl<P, R> {
         let mut m = self.shared.lock();
         let available = m.status != WorkerStatus::Unavailable;
         m.shutdown.joined(available);
+        if m.admission_error.is_some() && m.shutdown.view.normal_exit_allowed {
+            m.status = WorkerStatus::Stopped;
+        }
         Ok(true)
     }
 }
@@ -782,12 +799,23 @@ fn run_worker<P: 'static, R: 'static>(
     shared: &Shared<P, R>,
     config: WorkerConfig,
     mut periodic: Periodic,
+    admission: Option<Box<dyn FnOnce() -> Result<(), String> + Send>>,
 ) {
     shared.lock().thread = Some(thread::current().id());
     #[cfg(all(test, windows))]
     let _io_observer = bridge_test_support::install_io(&config.project_root);
     #[cfg(all(test, windows))]
     bridge_test_support::before_init(&config.project_root);
+    if let Some(admission) = admission {
+        if let Err(error) = admission() {
+            let mut m = shared.lock();
+            m.admission_error = Some(error);
+            m.status = WorkerStatus::InitializationFailed;
+            m.closed = true;
+            shared.wake.notify_all();
+            return;
+        }
+    }
     let runtime = match if config.initialize_empty {
         ProjectRuntime::acquire_empty(
             &config.project_root,
@@ -989,3 +1017,43 @@ fn run_worker<P: 'static, R: 'static>(
 
 #[cfg(all(test, windows))]
 mod tests;
+
+#[cfg(test)]
+mod compatibility_admission_tests {
+    use super::*;
+    #[test]
+    fn failed_admission_precedes_acquisition_recovery_and_directory_creation() {
+        let parent = std::env::temp_dir().join(format!("policy-worker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&parent).unwrap();
+        let project = parent.join("project");
+        let (control, _) = WorkerControl::<(), ()>::start_with_admission(
+            WorkerConfig {
+                project_root: project.clone(),
+                lock_root: parent.join("locks"),
+                initialize_empty: true,
+                create_directory: true,
+                capacity: 1,
+                max_sessions: 1,
+                interval: Duration::from_secs(30),
+                automatic_revalidation: false,
+            },
+            Some(Box::new(|| Err("svn_policy_app_too_old:1.2.0".into()))),
+        )
+        .unwrap();
+        let started = Instant::now();
+        while control.snapshot().status == WorkerStatus::Starting {
+            assert!(started.elapsed() < Duration::from_secs(5));
+            thread::sleep(Duration::from_millis(10));
+        }
+        let result = control.snapshot();
+        assert_eq!(result.status, WorkerStatus::InitializationFailed);
+        assert_eq!(
+            result.admission_error.as_deref(),
+            Some("svn_policy_app_too_old:1.2.0")
+        );
+        assert!(!project.exists());
+        assert!(!parent.join("locks").exists());
+        drop(control);
+        std::fs::remove_dir(parent).unwrap();
+    }
+}

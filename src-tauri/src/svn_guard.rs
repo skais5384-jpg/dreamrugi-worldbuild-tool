@@ -235,3 +235,28 @@ mod tests {
         ));
     }
 }
+
+/// Cleanup/deposit must remain reachable when compatibility rejects new work.
+pub(crate) fn policy_required(work: &Work) -> bool {
+    if matches!(work, Work::RecoveryRestore { .. } | Work::Recover { .. }) {
+        return true;
+    }
+    if matches!(
+        work,
+        Work::ReleaseTemplateDraft { .. }
+            | Work::TemplateDraft {
+                action: crate::commands::workspace::DraftAction::Deposit,
+                ..
+            }
+            | Work::DocumentWorkspace {
+                request: Request::EditDeposit { .. }
+                    | Request::Deposit { .. }
+                    | Request::EditRelease { .. }
+                    | Request::Release { .. },
+                ..
+            }
+    ) {
+        return false;
+    }
+    !permitted_in_read_only(work)
+}

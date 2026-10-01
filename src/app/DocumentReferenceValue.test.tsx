@@ -3,7 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import { render } from "../test/render";
 import type { DocumentList } from "../bridge/documents";
 import type { Field, TemplateSummary, Value } from "../bridge/types";
-import { ReferenceEditor, ReferenceRead } from "./DocumentReferenceValue";
+import {
+  buildReferenceIndex,
+  ReferenceEditor,
+  ReferenceRead,
+} from "./DocumentReferenceValue";
 import { text } from "../strings";
 
 const list: DocumentList = {
@@ -64,6 +68,28 @@ const context = {
 };
 
 describe("문서 참조 입력", () => {
+  it("목록 세대가 바뀌면 같은 ID의 이름과 조상 경로를 새로 계산한다", () => {
+    const first = buildReferenceIndex(list, templates);
+    const nextList: DocumentList = {
+      ...list,
+      snapshot: "next",
+      documents: list.documents.map((row) =>
+        row.id === "self" ? { ...row, name: "바뀐 부모" } : row,
+      ),
+      layout: {
+        ...list.layout,
+        nodes: {
+          ...list.layout.nodes,
+          allowed: { ...list.layout.nodes.allowed, parentId: "self" },
+        },
+      },
+    };
+    const next = buildReferenceIndex(nextList, templates);
+    expect(first.get("allowed")?.detail).not.toContain("바뀐 부모");
+    expect(next.get("allowed")?.detail).toContain("바뀐 부모");
+    expect(next.get("allowed")?.name).toBe("허용 문서");
+    expect(next.get("trash")?.active).toBe(false);
+  });
   it("관계 후보에서 자기 자신·휴지통·비허용 Template을 제외하고 stable 연결 ID를 만든다", () => {
     const change = vi.fn();
     render(
@@ -176,44 +202,48 @@ describe("문서 참조 입력", () => {
     expect(change.mock.calls[0][0]).toEqual({ kind: "relation", links: [] });
   });
 
-  it("읽기 화면에서 관계는 지속 태그, 문서 링크는 표준 링크로 이름만 표시한다", () => {
-    const open = vi.fn();
-    const { unmount } = render(
-      <ReferenceRead
-        value={{
-          kind: "relation",
-          links: [
-            {
-              id: "connection",
-              document: "allowed",
-              oneWay: false,
-              name: "친구",
-            },
-          ],
-        }}
-        context={{ ...context, open }}
-      />,
-    );
-    const relation = screen.getByRole("button", { name: "허용 문서" });
-    expect(relation.closest(".relation-tag")).not.toBeNull();
-    expect(relation.closest(".relation-tag")).toHaveTextContent(
-      "허용 문서– 친구",
-    );
-    expect(screen.queryByText("장소", { exact: true })).toBeNull();
-    fireEvent.click(relation);
-    expect(open).toHaveBeenCalledWith("allowed");
-    unmount();
+  it.each([false, true])(
+    "읽기 화면은 내부 방향 설정(%s)을 숨기고 관계 이름과 문서 링크를 연다",
+    (oneWay) => {
+      const open = vi.fn();
+      const { unmount } = render(
+        <ReferenceRead
+          value={{
+            kind: "relation",
+            links: [
+              {
+                id: "connection",
+                document: "allowed",
+                oneWay,
+                name: "친구",
+              },
+            ],
+          }}
+          context={{ ...context, open }}
+        />,
+      );
+      const relation = screen.getByRole("button", { name: "허용 문서" });
+      expect(relation.closest(".relation-tag")).not.toBeNull();
+      expect(relation.closest(".relation-tag")).toHaveTextContent(
+        "허용 문서– 친구",
+      );
+      expect(screen.queryByText("장소", { exact: true })).toBeNull();
+      expect(screen.queryByText(/단방향|양방향|→|↔/)).toBeNull();
+      fireEvent.click(relation);
+      expect(open).toHaveBeenCalledWith("allowed");
+      unmount();
 
-    render(
-      <ReferenceRead
-        value={{ kind: "document_link", documents: ["allowed"] }}
-        context={{ ...context, open }}
-      />,
-    );
-    const link = screen.getByRole("button", { name: "허용 문서" });
-    expect(link).toHaveClass("reference-link");
-    expect(link.closest(".relation-tag")).toBeNull();
-  });
+      render(
+        <ReferenceRead
+          value={{ kind: "document_link", documents: ["allowed"] }}
+          context={{ ...context, open }}
+        />,
+      );
+      const link = screen.getByRole("button", { name: "허용 문서" });
+      expect(link).toHaveClass("reference-link");
+      expect(link.closest(".relation-tag")).toBeNull();
+    },
+  );
 
   it("관계 이름을 편집·비워도 연결 ID, 대상, 방향을 그대로 보존한다", () => {
     const change = vi.fn();
@@ -236,6 +266,7 @@ describe("문서 참조 입력", () => {
     const input = screen.getByRole("textbox", {
       name: `허용 문서: ${text("reference.relationName")}`,
     });
+    expect(screen.getByText("단방향 →")).toBeVisible();
     fireEvent.change(input, { target: { value: "단짝" } });
     expect(change.mock.calls[0][0].links[0]).toEqual({
       ...relation,

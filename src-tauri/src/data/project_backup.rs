@@ -403,7 +403,7 @@ fn validate_relative(value: &str) -> Result<PathBuf, BackupError> {
         .is_some_and(|value| MANAGED_NAMESPACES.contains(value));
     let history =
         parts.len() >= 2 && parts[0] == ".worldbuild" && parts[1] == FORMAT_HISTORY_DIRECTORY;
-    if !managed && !history {
+    if !managed && !history && value != crate::svn::policy::FILE {
         return Err(invalid());
     }
     Ok(path.to_owned())
@@ -488,6 +488,22 @@ fn collect_with_root_entries(
         }
         collect_directory(&root, &path, &mut directories, &mut files, &mut total)?;
     }
+    let policy = root.join(crate::svn::policy::FILE);
+    match fs::symlink_metadata(&policy) {
+        Ok(_) => {
+            let (size, sha256) = hash_file(&policy)?;
+            if size > 16 * 1024 {
+                return Err(BackupError::new(BackupCategory::TooLarge));
+            }
+            files.push(ManifestFile {
+                path: crate::svn::policy::FILE.into(),
+                size,
+                sha256,
+            });
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
     let history = root.join(".worldbuild").join(FORMAT_HISTORY_DIRECTORY);
     match fs::symlink_metadata(&history) {
         Ok(metadata) => {
@@ -522,7 +538,10 @@ fn validate_root_entries(root: &Path) -> Result<(), BackupError> {
         checkpoint(false)?;
         let name = entry.file_name();
         let name = name.to_str().ok_or_else(invalid)?;
-        if !MANAGED_NAMESPACES.contains(&name) && !EXCLUDED_ROOT_ENTRIES.contains(&name) {
+        if !MANAGED_NAMESPACES.contains(&name)
+            && !EXCLUDED_ROOT_ENTRIES.contains(&name)
+            && name != crate::svn::policy::FILE
+        {
             return Err(BackupError::new(BackupCategory::InvalidInput));
         }
     }
@@ -3135,6 +3154,56 @@ mod tests {
     }
 
     #[test]
+    fn two_complete_backups_list_and_restore_the_selected_snapshot() {
+        let base = fixture("two-complete-backups");
+        let source = base.join("source");
+        let storage = base.join("storage");
+        let output = base.join("output");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&storage).unwrap();
+        fs::create_dir(&output).unwrap();
+        project(&source);
+        let fingerprint = "c".repeat(64);
+        let first = create_backup(
+            &source,
+            &fingerprint,
+            &storage,
+            Some("first"),
+            BackupKind::Manual,
+        )
+        .unwrap();
+        fs::write(source.join("templates/t.json"), b"{\"second\":2}").unwrap();
+        let second = create_backup(
+            &source,
+            &fingerprint,
+            &storage,
+            Some("second"),
+            BackupKind::Manual,
+        )
+        .unwrap();
+        let page = list_backups(&fingerprint, &storage, None).unwrap();
+        assert_eq!(page.backups.len(), 2);
+        assert!(page.next_cursor.is_none());
+        for backup in [&first, &second] {
+            let row = page.backups.iter().find(|row| row.id == backup.id).unwrap();
+            assert_eq!(row.coverage, "complete");
+            assert_eq!(inspect_backup(Path::new(&row.locator)).unwrap().id, row.id);
+        }
+        let selected = page.backups.iter().find(|row| row.id == first.id).unwrap();
+        let restored = restore_new(Path::new(&selected.locator), &output, "selected").unwrap();
+        assert_eq!(restored.outcome, "published_verified");
+        assert_eq!(
+            fs::read(output.join("selected/templates/t.json")).unwrap(),
+            b"{\"unknown\":1}"
+        );
+        assert_eq!(
+            fs::read(source.join("templates/t.json")).unwrap(),
+            b"{\"second\":2}"
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
     fn copy_cancelled_at_file_checkpoint_never_publishes_destination() {
         let base = fixture("cancel-copy");
         let source = base.join("source");
@@ -3938,5 +4007,28 @@ mod tests {
     fn killed_child_recovers_after_commit_marker_and_during_apply() {
         crash_restart_case("after_commit_marker");
         crash_restart_case("during_apply");
+    }
+}
+
+#[cfg(test)]
+mod collaboration_policy_snapshot_tests {
+    use super::*;
+    #[test]
+    fn policy_is_an_exact_snapshot_path_and_cannot_authorize_an_arbitrary_root_file() {
+        let root = std::env::temp_dir().join(format!("policy-snapshot-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let bytes = b"preserve policy bytes independently of the artifact codec";
+        fs::write(root.join(crate::svn::policy::FILE), bytes).unwrap();
+        let (_, files) = collect(&root).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, crate::svn::policy::FILE);
+        assert_eq!(files[0].sha256, format!("{:x}", Sha256::digest(bytes)));
+        assert!(validate_relative(crate::svn::policy::FILE).is_ok());
+        assert!(validate_relative("private.json").is_err());
+        fs::write(root.join("private.json"), b"private").unwrap();
+        assert!(collect(&root).is_err());
+        fs::remove_file(root.join("private.json")).unwrap();
+        fs::remove_file(root.join(crate::svn::policy::FILE)).unwrap();
+        fs::remove_dir(root).unwrap();
     }
 }

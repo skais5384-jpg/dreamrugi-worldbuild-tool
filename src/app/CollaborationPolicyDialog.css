@@ -1,0 +1,32 @@
+.policy-dialog {
+  width: min(680px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+}
+.policy-dialog .fui-DialogContent {
+  overflow-y: auto;
+}
+.policy-table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0;
+  font-size: 13px;
+}
+.policy-table th,
+.policy-table td {
+  padding: 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+  overflow-wrap: anywhere;
+}
+.policy-dialog .fui-DialogActions {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.policy-dialog .fui-DialogActions .fui-Button {
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: max-content;
+}

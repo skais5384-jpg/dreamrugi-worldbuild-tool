@@ -603,3 +603,54 @@ fn m56_references_scale_runner() {
     );
     h.close_clean();
 }
+
+#[test]
+#[ignore = "explicit M9 ordinary-save cold-cache measurement on owned 5000 document fixture"]
+fn m9_plain_save_scale_runner() {
+    let base = PathBuf::from(std::env::var_os("M41_SCALE_BASE").expect("owned fixture"));
+    assert_eq!(
+        fs::read(base.join("M39-SYNTHETIC-ROOT")).unwrap(),
+        b"m39-v1-20260917"
+    );
+    let h = Harness::at(base, Arc::new(Provider::new()), false);
+    let project = h.open();
+    let source = fs::read_dir(h.root.join("documents"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let document = source.file_stem().unwrap().to_string_lossy().to_string();
+    let original = fs::read(&source).unwrap();
+    let (editing, begin_ms, begin_counts) = measured_request(
+        &h,
+        &project,
+        "m9_plain_begin",
+        json!({"action":"edit_begin","document":document}),
+    );
+    let editing = editing["value"].clone();
+    let mut body = editing["body"].clone();
+    body["name"] = json!({"intent":"set","value":"M9 ordinary-save owned measurement"});
+    let (saved, save_ms, save_counts) = measured_request(
+        &h,
+        &project,
+        "m9_plain_save",
+        json!({"action":"edit_draft","owner":editing["owner"],"generation":"2","body":body,"save":true}),
+    );
+    let saved = saved["value"].clone();
+    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+    let (_, release_ms, release_counts) = measured_request(
+        &h,
+        &project,
+        "m9_plain_release",
+        json!({"action":"edit_release","owner":saved["owner"],"generation":saved["generation"]}),
+    );
+    println!(
+        "M9_PLAIN_SAVE_JSON {}",
+        json!({"begin_ms":begin_ms,"begin_counts":begin_counts,"save_ms":save_ms,
+        "save_counts":save_counts,"release_ms":release_ms,"release_counts":release_counts})
+    );
+    h.close_clean();
+    drop(h);
+    fs::write(source, original).unwrap();
+}

@@ -1,9 +1,11 @@
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
 import { numberInBounds } from "./numberBounds";
 import { FormatControl } from "./FormatControl";
 import {
   type CSSProperties,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -16,8 +18,6 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
-  MessageBar,
-  MessageBarBody,
   Tooltip,
   Menu,
   MenuTrigger,
@@ -53,7 +53,7 @@ import {
 } from "./documentController";
 import type { Creation } from "../bridge/documents";
 import type { Field } from "../bridge/types";
-import { PropertyRow } from "./PropertyRow";
+import { blockField, PropertyRow } from "./PropertyRow";
 import { ValueRead } from "./FieldValue";
 import { CreationValue } from "./CreationValue";
 import { presentationClass, SectionTitles } from "./Presentation";
@@ -70,7 +70,10 @@ import type { SvnStatus } from "./svnClient";
 import { svnClient, svnFailure } from "./svnClient";
 import { DocumentSearchArea } from "./DocumentSearchArea";
 import "./Documents.css";
-import type { ReferenceContext } from "./DocumentReferenceValue";
+import {
+  buildReferenceIndex,
+  type ReferenceContext,
+} from "./DocumentReferenceValue";
 import { IncomingRelations } from "./IncomingRelations";
 import { DocumentGlossary } from "./DocumentGlossary";
 
@@ -246,9 +249,14 @@ export function DocumentWorkspace({
     list?.documents.filter(
       (d) => list.layout.nodes[d.id]?.state !== "trashed",
     ) ?? [];
+  const referenceIndex = useMemo(
+    () => buildReferenceIndex(list, app.rows),
+    [list, app.rows],
+  );
   const reference = (currentDocument?: string): ReferenceContext => ({
     list,
     templates: app.rows,
+    index: referenceIndex,
     currentDocument,
     open: (document) => void controller.openReferenceTarget(document),
   });
@@ -307,18 +315,28 @@ export function DocumentWorkspace({
             className="document-work-area"
           >
             <div className="document-feedback">
-              {state.message && <p role="status">{state.message}</p>}
+              {state.message && (
+                <FloatingNotice intent={state.messageIntent}>
+                  <FloatingNoticeContent>{state.message}</FloatingNoticeContent>
+                </FloatingNotice>
+              )}
               {state.uiError && (
-                <MessageBar intent="warning">
-                  <MessageBarBody>{text("documents.uiError")}</MessageBarBody>
-                </MessageBar>
+                <FloatingNotice intent="warning">
+                  <FloatingNoticeContent>
+                    {text("documents.uiError")}
+                  </FloatingNoticeContent>
+                </FloatingNotice>
               )}
               {list?.problem && (
-                <MessageBar intent="warning">
-                  <MessageBarBody>
-                    {text("documents.layoutProblem")} ({list.problem})
-                  </MessageBarBody>
-                </MessageBar>
+                <FloatingNotice intent="warning">
+                  <FloatingNoticeContent>
+                    {text("documents.layoutProblem")}
+                    <details>
+                      <summary>{text("update.details")}</summary>
+                      <code>{list.problem}</code>
+                    </details>
+                  </FloatingNoticeContent>
+                </FloatingNotice>
               )}
             </div>
             <div
@@ -899,6 +917,11 @@ export function DocumentWorkspace({
                           <PropertyRow
                             key={f.id}
                             label={f.label}
+                            block={blockField(
+                              state.read?.template.fields.find(
+                                (field) => field.id === f.id,
+                              )?.kind,
+                            )}
                             complex
                             before={
                               <SectionTitles
@@ -1545,8 +1568,16 @@ function CreationForm({
       onCompositionEnd={() => edit((b) => ({ ...b, composing: false }))}
     >
       {draft.problem && (
-        <MessageBar layout="multiline" intent={restored ? "info" : "error"}>
-          <MessageBarBody>
+        <FloatingNotice
+          intent={restored ? "info" : "error"}
+          eventId={draft.outcome ?? draft}
+          scope={`${draft.owner}:${draft.generation}:${draft.field ?? ""}`}
+          isCurrent={() => {
+            const current = controller.snapshot().draft;
+            return current === draft && !locked && !current.body.composing;
+          }}
+        >
+          <FloatingNoticeContent>
             {text(restored ? "documents.restored" : "documents.invalid")}
             {targetId && (
               <Button
@@ -1557,8 +1588,8 @@ function CreationForm({
                 {text("documents.errorFocus")}
               </Button>
             )}
-          </MessageBarBody>
-        </MessageBar>
+          </FloatingNoticeContent>
+        </FloatingNotice>
       )}
       <PropertyRow
         label={text("documents.name") + " *"}
@@ -1694,6 +1725,7 @@ function CreationForm({
             label={field.label + (field.required ? " *" : "")}
             htmlFor={"creation-" + field.id}
             complex
+            block={blockField(field.kind)}
           >
             <CreationValue
               group={{

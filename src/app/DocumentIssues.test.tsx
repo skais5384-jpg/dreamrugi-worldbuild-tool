@@ -59,6 +59,31 @@ describe("shared document issues", () => {
     ]);
   });
 
+  it("keeps pending inspection alongside existing warnings until a verified retry clears it", () => {
+    const partial = list("partial", ["resource_missing"]);
+    const pending = collectDocumentIssues(
+      partial,
+      [],
+      null,
+      partial.issues,
+      null,
+      [document],
+    );
+    expect(pending.get(document)?.map((issue) => issue.reason)).toEqual([
+      "inspection_pending",
+      "resource_missing",
+    ]);
+    const complete = collectDocumentIssues(list("complete"), [], null);
+    expect(complete.get(document)).toBeUndefined();
+    const unknown = collectDocumentIssues(
+      list("complete", ["future_unknown_reason"]),
+      [],
+      null,
+      [{ document, warnings: [], reasons: ["future_unknown_reason"] }],
+    );
+    expect(unknown.size).toBe(0);
+  });
+
   it("uses each resource reason's IDs for its own warning text", () => {
     const inspection = {
       rows: [

@@ -336,7 +336,9 @@ describe("App", () => {
         name: "Dreamrugi Worldbuild Tool",
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText("프로젝트를 열었습니다.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("프로젝트를 열었습니다."),
+    ).toBeInTheDocument();
   });
 
   it("listener 준비 전에 편집을 막고 remount에서도 한 번만 연결한다", async () => {
@@ -944,7 +946,7 @@ describe("App", () => {
     await waitFor(() => expect(controller.snapshot().form).toBeNull());
     await waitFor(() => expect(controller.snapshot().busy).toBe(false));
     expect(transport.retained.size).toBe(0);
-    fireEvent.click(screen.getByRole("button", { name: "이름 변경" }));
+    fireEvent.click(await screen.findByRole("button", { name: "이름 변경" }));
     await waitFor(() =>
       expect(controller.snapshot().form?.source?.content.revision).toBe("2"),
     );

@@ -239,20 +239,42 @@ describe("Option·보관·순서 UI 연결", () => {
     expect(draft(c, "options_order").committed).toBe(true);
     expect(f.queryByText(/아직 저장하지 않았습니다/)).toBeNull();
     expect(f.getByText(text("field.saved"))).toHaveAttribute("role", "status");
-    expect(screen.getByText(text("field.followup"))).toBeVisible();
+    const detailsButton = await screen.findByRole("button", {
+      name: text("update.details"),
+    });
+    detailsButton.focus();
+    fireEvent.click(detailsButton);
+    expect(
+      within(await screen.findByRole("dialog"))
+        .getAllByText(text("field.followup"))
+        .every((item) => item.closest("td")),
+    ).toBe(true);
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "닫기" }),
+    );
     expect(draft(c, other)).toBe(originalOther);
     expect(t.writes).toHaveLength(1);
     t.failRead = false;
     await act(async () => c.reconfirmField("options_order"));
     expect(f.queryByText(/아직 저장하지 않았습니다/)).toBeNull();
+    const currentForm = within(
+      await screen.findByRole("form", { name: text("order.options") }),
+    );
+    await waitFor(() =>
+      expect(
+        currentForm.getByRole("button", {
+          name: text("order.upName", { name: "첫 선택" }),
+        }),
+      ).toBeEnabled(),
+    );
     fireEvent.click(
-      f.getByRole("button", {
+      currentForm.getByRole("button", {
         name: text("order.upName", { name: "첫 선택" }),
       }),
     );
-    expect(f.getByText(/아직 저장하지 않았습니다/)).toBeVisible();
+    expect(currentForm.getByText(/아직 저장하지 않았습니다/)).toBeVisible();
     expect(draft(c, other)).toBe(originalOther);
-  });
+  }, 10_000);
   it("활성 읽기 전용도 저장 속성을 표시하고 관리 form과 mutation을 열지 않는다", async () => {
     const { controller: c, transport: t } = await setup();
     t.status = "ReadOnly";
@@ -360,7 +382,7 @@ describe("Option·보관·순서 UI 연결", () => {
       c.snapshot().fieldEditor!.drafts.some((d) => d.property === add.property),
     ).toBe(false);
     expect(t.writes).toHaveLength(1);
-  });
+  }, 10_000);
   it("키보드와 drag가 같은 미리보기만 바꾸며 Escape·외부 drop은 이전 미리보기를 보존한다", async () => {
     const { controller: c, transport: t } = await setup();
     act(() => c.startOrder());

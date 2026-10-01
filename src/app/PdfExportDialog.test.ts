@@ -1,11 +1,31 @@
-import { createElement } from "react";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import { createElement, useEffect, useState } from "react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { save } from "@tauri-apps/plugin-dialog";
 import { render } from "../test/render";
 import { text } from "../strings";
+import { ActivityLog, useActivityLog } from "./ActivityLog";
 import type { DocumentController } from "./documentController";
 import { PdfExportDialog, pdfFilename } from "./PdfExportDialog";
+
+function TestActivityLog() {
+  const log = useActivityLog(false);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    const show = () => setOpen(true);
+    window.addEventListener("open-activity-log", show);
+    return () => window.removeEventListener("open-activity-log", show);
+  }, []);
+  return open
+    ? createElement(ActivityLog, { ...log, close: () => setOpen(false) })
+    : null;
+}
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: vi.fn() }));
 
@@ -86,18 +106,37 @@ describe("PDF export decision", () => {
       }),
     } as unknown as DocumentController;
     render(
-      createElement(PdfExportDialog, {
-        controller,
-        document: "document-a",
-        dirty: true,
-        close: vi.fn(),
-        completed: vi.fn(),
-      }),
+      createElement(
+        "div",
+        null,
+        createElement(PdfExportDialog, {
+          controller,
+          document: "document-a",
+          dirty: true,
+          close: vi.fn(),
+          completed: vi.fn(),
+        }),
+        createElement(TestActivityLog),
+      ),
+    );
+    await screen.findByText(text("pdf.missing"), { exact: false });
+    fireEvent.click(
+      screen
+        .getAllByRole("button", { name: text("update.details") })
+        .slice(-1)[0],
     );
     expect(await screen.findByText("삽화")).toBeTruthy();
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "실행 기록" })).getByRole(
+        "button",
+        { name: "닫기" },
+      ),
+    );
     expect(screen.getByText(text("pdf.purpose"))).toBeTruthy();
-    expect(screen.getByText(text("pdf.savedOnly"))).toBeTruthy();
-    expect(screen.getByText(text("pdf.missing"))).toBeTruthy();
+    expect(await screen.findByText(text("pdf.savedOnly"))).toBeTruthy();
+    expect(
+      screen.getByText(text("pdf.missing"), { exact: false }),
+    ).toBeTruthy();
     expect(
       screen.getByRole("button", { name: text("pdf.continue") }),
     ).toBeTruthy();

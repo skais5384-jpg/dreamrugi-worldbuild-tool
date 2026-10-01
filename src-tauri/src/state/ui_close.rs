@@ -3,8 +3,8 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct Guard {
-    enabled: bool,
-    attempt: Option<Id>,
+    pub(super) enabled: bool,
+    pub(super) attempt: Option<Id>,
 }
 
 pub(super) fn status(state: &Inner) -> Response {
@@ -41,6 +41,9 @@ pub(super) fn decide(state: &mut Inner, attempt: Id, proceed: bool) -> Reply<Res
     if proceed {
         // 기존 worker/retained/native owner의 정상 종료 조건은 그대로 적용한다.
         request_shutdown(state);
+    } else {
+        state.update_intent = None;
+        state.update_hold = false;
     }
     Ok(status(state))
 }

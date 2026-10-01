@@ -1,11 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Dialog,
   DialogActions,
@@ -15,6 +9,7 @@ import {
   DialogTitle,
 } from "@fluentui/react-components";
 import { Button } from "../ui/Controls";
+import { NoticeEventDetail, useNoticeHistory } from "../ui/FloatingNotice";
 import "./ActivityLog.css";
 
 export interface ActivityEvent {
@@ -28,6 +23,8 @@ export interface ActivityEvent {
   projectFingerprint: string | null;
   summary?: string;
   detail?: string;
+  noticeId?: string;
+  noticeKey?: string;
 }
 interface RecentEvents {
   events: ActivityEvent[];
@@ -45,6 +42,7 @@ function eventKey(event: ActivityEvent) {
 }
 
 export function useActivityLog(enabled: boolean) {
+  const noticeHistory = useNoticeHistory();
   const [snapshot, setSnapshot] = useState<RecentEvents>({
     events: [],
     droppedEvents: 0,
@@ -94,8 +92,8 @@ export function useActivityLog(enabled: boolean) {
       window.clearInterval(timer);
     };
   }, [enabled]);
-  const events = [...snapshot.events, ...localEvents].sort((a, b) =>
-    (a.observedAtUtc ?? "").localeCompare(b.observedAtUtc ?? ""),
+  const events = [...snapshot.events, ...localEvents, ...noticeHistory].sort(
+    (a, b) => (a.observedAtUtc ?? "").localeCompare(b.observedAtUtc ?? ""),
   );
   const latestAttention = [...events].reverse().find(isAttention);
   const latestAttentionKey = latestAttention ? eventKey(latestAttention) : null;
@@ -122,12 +120,66 @@ function eventSummary(event: ActivityEvent) {
   return "상태를 기록했습니다";
 }
 
+const featureLabels: Record<string, string> = {
+  project: "프로젝트",
+  project_backup: "프로젝트 백업",
+  project_restore: "프로젝트 복원",
+  recovery: "복구",
+  diagnostics: "진단",
+  asset_maintenance: "자료 관리",
+  editor: "문서 / 템플릿 저장",
+  svn: "SVN 협업",
+  updater: "앱 업데이트",
+  알림: "알림",
+  안내: "안내",
+  프로젝트: "프로젝트",
+};
+
 export function ActivityLog({
   events,
   droppedEvents,
   close,
-  children,
-}: RecentEvents & { close: () => void; children?: ReactNode }) {
+  noticeKey,
+}: RecentEvents & { close: () => void; noticeKey?: string }) {
+  const previousDialog = useRef(
+    Array.from(
+      document.querySelectorAll<HTMLElement>(".fui-DialogSurface"),
+    ).pop(),
+  );
+  const previousFocus = useRef(document.activeElement);
+  useEffect(
+    () => () => {
+      // A notice trigger is remounted when the floating stack changes portals.
+      // If it disappeared, Fluent has no connected trigger to reactivate the
+      // underlying modal. Restore only that still-current owned surface.
+      requestAnimationFrame(() => {
+        const previous = previousDialog.current;
+        const current = Array.from(
+          document.querySelectorAll<HTMLElement>(".fui-DialogSurface"),
+        ).pop();
+        if (current && current !== previous) return;
+        const focused = previousFocus.current;
+        if (
+          focused instanceof HTMLElement &&
+          focused.isConnected &&
+          focused !== document.body
+        ) {
+          focused.focus({ preventScroll: true });
+        } else if (previous?.isConnected) {
+          previous.focus({ preventScroll: true });
+        } else {
+          // The lower-left trigger can move portals while the log opens.
+          // Return keyboard control to a current app button when it vanished.
+          document
+            .querySelector<HTMLButtonElement>(
+              ".app-shell button:not(:disabled)",
+            )
+            ?.focus({ preventScroll: true });
+        }
+      });
+    },
+    [],
+  );
   return (
     <Dialog
       open
@@ -141,8 +193,7 @@ export function ActivityLog({
           <DialogTitle>실행 기록</DialogTitle>
           <DialogContent className="activity-log-content">
             <section className="activity-log" aria-label="실행 기록">
-              <p>이 화면에는 파일 내용, 경로, 계정 정보가 기록되지 않습니다.</p>
-              {children}
+              <p>작업 결과와 안내를 시간순으로 확인할 수 있습니다.</p>
               {droppedEvents > 0 && (
                 <p role="status">
                   오래된 기록 {droppedEvents}건은 보관 범위를 넘어 목록에서
@@ -176,11 +227,18 @@ export function ActivityLog({
                           </time>
                         </td>
                         <td>{eventLevel(event)}</td>
-                        <td>{event.feature}</td>
+                        <td>{featureLabels[event.feature] ?? "기타 작업"}</td>
                         <td>
-                          <details>
+                          <details
+                            open={
+                              (!!noticeKey && event.noticeKey === noticeKey) ||
+                              undefined
+                            }
+                          >
                             <summary>{eventSummary(event)}</summary>
                             <dl>
+                              <dt>작업 코드</dt>
+                              <dd>{event.feature}</dd>
                               <dt>단계</dt>
                               <dd>{event.stage}</dd>
                               <dt>결과</dt>
@@ -204,7 +262,9 @@ export function ActivityLog({
                               {event.detail && (
                                 <>
                                   <dt>안내</dt>
-                                  <dd>{event.detail}</dd>
+                                  <dd>
+                                    <NoticeEventDetail event={event} />
+                                  </dd>
                                 </>
                               )}
                             </dl>

@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { FloatingNoticeProvider } from "./FloatingNotice";
 import {
   createDOMRenderer,
   FluentProvider,
@@ -15,7 +16,7 @@ export const appTheme = {
 function ThemedApp({ children }: { children: ReactNode }) {
   return (
     <FluentProvider theme={appTheme} className="app-provider">
-      {children}
+      <FloatingNoticeProvider>{children}</FloatingNoticeProvider>
     </FluentProvider>
   );
 }

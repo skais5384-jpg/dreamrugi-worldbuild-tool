@@ -1,3 +1,4 @@
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
 import { useEffect, useState } from "react";
 import {
   Dialog,
@@ -6,8 +7,6 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
-  MessageBar,
-  MessageBarBody,
 } from "@fluentui/react-components";
 import { History20Regular } from "@fluentui/react-icons";
 import type { TemplateController } from "./controller";
@@ -130,9 +129,9 @@ export function FormatControl({
               <p className="format-history-help">{text("format.help")}</p>
               {busy && !info && <p role="status">{text("format.loading")}</p>}
               {message && (
-                <MessageBar intent="warning" role="status">
-                  <MessageBarBody>{message}</MessageBarBody>
-                </MessageBar>
+                <FloatingNotice intent="warning">
+                  <FloatingNoticeContent>{message}</FloatingNoticeContent>
+                </FloatingNotice>
               )}
               {info && (
                 <div className="format-history-content">

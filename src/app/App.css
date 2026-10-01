@@ -126,10 +126,91 @@
 }
 
 .backup-list {
-  display: grid;
-  gap: 8px;
   max-height: min(320px, 40vh);
   overflow: auto;
+}
+.backup-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fontSizeBase300);
+  line-height: var(--lineHeightBase300);
+}
+.management-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fontSizeBase300);
+  line-height: var(--lineHeightBase300);
+}
+.management-table :is(th, td) {
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+  overflow-wrap: anywhere;
+}
+.management-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 36px;
+  background: var(--colorNeutralBackground2);
+  font-weight: var(--fontWeightSemibold);
+}
+.search-results-scroll {
+  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+}
+.search-results-scroll .management-table {
+  min-width: 620px;
+  table-layout: fixed;
+}
+.search-results-scroll .management-table :is(th, td):first-child {
+  width: 220px;
+}
+.search-results-scroll .management-table :is(th, td):nth-child(2) {
+  width: 140px;
+}
+.management-table .search-document-command {
+  padding: 0;
+  min-height: 28px;
+  justify-content: flex-start;
+  text-align: left;
+  color: var(--colorBrandForegroundLink);
+}
+.search-excerpt-label {
+  color: var(--colorNeutralForeground3);
+}
+.backup-table :is(th, td) {
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+}
+.backup-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  height: 36px;
+  background: var(--colorNeutralBackground2);
+  font-weight: var(--fontWeightSemibold);
+}
+.backup-table tr[data-selected="true"] {
+  background: var(--colorBrandBackground2);
+}
+.backup-table td:first-child {
+  min-width: 120px;
+}
+.backup-table td:last-child {
+  white-space: nowrap;
+}
+.backup-table .backup-select {
+  min-height: 32px;
+  padding: 4px;
+  text-align: left;
+  justify-content: flex-start;
+  font-weight: var(--fontWeightRegular);
 }
 
 .backup-list > p {
@@ -196,23 +277,12 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
-.project-open .fui-MessageBar {
-  margin-top: 12px;
-}
-.project-open .fui-MessageBarBody > .actions {
-  margin-top: 8px;
-}
 .project-open .project-path {
   flex: 1 1 240px;
 }
-.project-open p,
-.app-status {
+.project-open p {
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
-}
-.app-status {
-  margin: 8px 0;
-  min-height: 18px;
 }
 .actions {
   display: flex;
@@ -228,8 +298,9 @@
   font-size: var(--fontSizeBase200) !important;
   line-height: var(--lineHeightBase200) !important;
 }
-.fui-DialogActions {
+.fui-DialogSurface .fui-DialogActions {
   display: flex;
+  flex-direction: row;
   flex-wrap: nowrap;
   gap: 8px;
   justify-content: flex-end;
@@ -237,15 +308,27 @@
   border-top: 1px solid var(--colorNeutralStroke2);
 }
 .fui-DialogSurface {
+  display: flex;
+  flex-direction: column;
   width: min(560px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
   border: 1px solid var(--colorNeutralStroke2);
   border-radius: var(--borderRadiusXLarge);
   box-shadow: var(--shadow28);
 }
-.fui-DialogBody {
+.fui-DialogSurface .fui-DialogBody {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: none;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100dvh - 80px);
   min-height: 0;
   row-gap: 16px;
+}
+.fui-DialogBody
+  > :is(.fui-DialogTitle, .fui-DialogContent, .fui-DialogActions) {
+  grid-area: auto;
+  grid-column: 1;
 }
 .fui-DialogTitle {
   font-size: var(--fontSizeBase500);
@@ -263,11 +346,11 @@
   margin: 0;
 }
 .icon-command {
-  min-width: 36px;
-  width: 36px;
-  height: 36px;
-  padding: 8px;
-  flex: 0 0 36px;
+  min-width: var(--command-height);
+  width: var(--command-height);
+  height: var(--command-height);
+  padding: 6px;
+  flex: 0 0 var(--command-height);
 }
 .panel-heading {
   display: flex;
@@ -495,6 +578,16 @@
 .order-input li[draggable="true"] {
   cursor: grab;
 }
+.order-card-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--spacingHorizontalS, 8px);
+  min-width: 0;
+}
+.order-drag-handle {
+  flex: none;
+  color: var(--colorNeutralForeground2);
+}
 .order-input li:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 2px;
@@ -541,7 +634,7 @@
 }
 .confirm .actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--size-4-2);
 }
 .definition-actions {
@@ -549,18 +642,6 @@
 }
 .fui-DialogSurface.follow-up-dialog {
   width: min(520px, calc(100vw - 32px));
-}
-.follow-up-floating {
-  position: fixed;
-  left: 60px;
-  bottom: 12px;
-  z-index: 90;
-  max-width: min(440px, calc(100vw - 76px));
-  padding: 12px;
-  border: 1px solid var(--colorNeutralStroke2);
-  border-radius: var(--borderRadiusLarge);
-  background: var(--colorNeutralBackground1);
-  box-shadow: var(--shadow16);
 }
 .follow-up-actions {
   display: grid;
@@ -608,7 +689,9 @@
   border: 1px solid var(--colorNeutralStroke1);
   border-radius: var(--borderRadiusMedium);
 }
-.rich-toolbar {
+.rich-editor .rich-toolbar {
+  gap: 2px;
+  padding: 2px;
   flex-wrap: wrap;
   display: none;
   border-bottom: 1px solid var(--colorNeutralStroke2);
@@ -619,6 +702,19 @@
 .rich-tool {
   display: inline-flex;
   align-items: center;
+  min-height: var(--command-compact-height);
+  height: var(--command-compact-height);
+  padding: 0;
+}
+.rich-editor .rich-toolbar .fui-ToolbarButton {
+  min-width: var(--command-compact-height);
+  min-height: var(--command-compact-height);
+  height: var(--command-compact-height);
+  padding: 4px;
+}
+.rich-tool svg {
+  width: 16px;
+  height: 16px;
 }
 .rich-toolbar button[aria-pressed="true"] {
   background: var(--colorBrandBackground2);
@@ -629,10 +725,13 @@
   background: var(--colorBrandBackground2Hover);
 }
 .rich-input {
-  min-height: 120px;
+  min-height: 96px;
   padding: 8px 12px;
   outline-offset: -2px;
   white-space: pre-wrap;
+}
+.repeat-card .rich-input {
+  min-height: 64px;
 }
 .rich-input,
 .rich-read {

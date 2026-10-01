@@ -1,5 +1,7 @@
 //! M7 A native SVN adapter. Only the main webview can call these fixed actions.
 //! No caller-controlled command name, shell, credential argument, or TLS bypass.
+pub(crate) mod policy;
+
 use crate::data::{
     collaboration_lock::{
         HeldLock, HeldLockState, LockAcquireRequest, LockCapabilities, LockError,
@@ -17,7 +19,7 @@ use std::cell::Cell;
 use std::collections::BTreeMap;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, AtomicUsize};
 use std::{
     fs,
     io::{Read, Write},
@@ -67,6 +69,7 @@ pub(crate) struct Manager {
 }
 struct Inner {
     config_root: PathBuf,
+    app_version: semver::Version,
     preferred_cli: Option<PathBuf>,
     preferred_gui: Option<PathBuf>,
     cli: Mutex<Option<PathBuf>>,
@@ -75,6 +78,9 @@ struct Inner {
     active: Mutex<Option<Active>>,
     idle_wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     registration_attempt: Mutex<Option<RegistrationAttempt>>,
+    update_sealed: AtomicBool,
+    result_jobs: AtomicUsize,
+    pending: crate::updater::handoff::Store,
 }
 #[derive(Clone)]
 struct RegistrationAttempt {
@@ -208,6 +214,22 @@ struct Active {
     cancel: Arc<AtomicBool>,
 }
 struct ActiveGuard(Manager, String);
+struct ResultCustody(Manager);
+impl Drop for ResultCustody {
+    fn drop(&mut self) {
+        self.0.inner.result_jobs.fetch_sub(1, Ordering::AcqRel);
+        if let Some(wake) = self
+            .0
+            .inner
+            .idle_wake
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
+            wake();
+        }
+    }
+}
 impl Drop for ActiveGuard {
     fn drop(&mut self) {
         let mut active = self
@@ -241,7 +263,7 @@ impl Manager {
         let config = self.inner.config_root.join(format!("owned-{username}"));
         fs::create_dir_all(&config).unwrap();
         *self.inner.identity.lock().unwrap() = Some(Identity {
-            origin: "file://".into(),
+            origin: origin(&Url::parse(&url).unwrap()),
             url,
             username: username.into(),
             config,
@@ -249,7 +271,18 @@ impl Manager {
             remember: false,
         });
     }
+    #[cfg(test)]
     pub(crate) fn new(config_root: PathBuf) -> Self {
+        Self::new_with_version(
+            config_root,
+            semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("Cargo version"),
+        )
+    }
+    pub(crate) fn new_with_version(config_root: PathBuf, app_version: semver::Version) -> Self {
+        // AppLocalData has already been resolved to its physical directory.
+        // SVN CLI config arguments need the ordinary spelling of that same
+        // Windows path, including when the app was installed via NSIS/MSIX.
+        let config_root = ordinary_windows_path(&config_root);
         // Non-persistent sessions use an attempt-* config so TortoiseProc can
         // authenticate in its own dialog. Remove only this app's abandoned
         // session children after restart; no external SVN cache is touched.
@@ -302,6 +335,8 @@ impl Manager {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok());
         Self {
             inner: Arc::new(Inner {
+                pending: crate::updater::handoff::Store::new(config_root.join("update-pending")),
+                result_jobs: AtomicUsize::new(0),
                 config_root,
                 preferred_cli: tools.as_ref().map(|saved| saved.cli.clone()),
                 preferred_gui: tools.map(|saved| saved.gui),
@@ -310,9 +345,11 @@ impl Manager {
                 cli: Mutex::new(None),
                 gui: Mutex::new(None),
                 identity: Mutex::new(identity),
+                app_version,
                 active: Mutex::new(None),
                 idle_wake: Mutex::new(None),
                 registration_attempt: Mutex::new(None),
+                update_sealed: AtomicBool::new(false),
             }),
         }
     }
@@ -338,6 +375,7 @@ impl Manager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_some()
+            || self.inner.result_jobs.load(Ordering::Acquire) != 0
     }
     pub(crate) fn set_idle_wake(&self, wake: Arc<dyn Fn() + Send + Sync>) {
         *self
@@ -358,6 +396,9 @@ impl Manager {
             return Err("svn_invalid_request".into());
         }
         let mut active = self.inner.active.lock().unwrap_or_else(|e| e.into_inner());
+        if self.inner.update_sealed.load(Ordering::Acquire) {
+            return Err("svn_close_project_first".into());
+        }
         if active.is_some() {
             return Err("svn_busy".into());
         }
@@ -379,9 +420,85 @@ impl Manager {
             active.cancel.store(true, Ordering::Release);
         }
     }
+    /// 같은 active mutex에서 새 SVN 작업과 설치 승인의 경쟁을 차단한다.
+    pub(crate) fn seal_for_update(&self) -> bool {
+        let active = self.inner.active.lock().unwrap_or_else(|e| e.into_inner());
+        if active.is_some() || self.inner.result_jobs.load(Ordering::Acquire) != 0 {
+            return false;
+        }
+        self.inner.update_sealed.store(true, Ordering::Release);
+        true
+    }
+    pub(crate) fn unseal_update(&self) {
+        self.inner.update_sealed.store(false, Ordering::Release);
+    }
+    fn result_custody(&self) -> Result<ResultCustody, String> {
+        let _active = self.inner.active.lock().unwrap_or_else(|e| e.into_inner());
+        self.inner
+            .pending
+            .admit(self.inner.result_jobs.load(Ordering::Acquire))
+            .map_err(|_| "svn_result_handoff_unavailable")?;
+        if self.inner.update_sealed.load(Ordering::Acquire) {
+            return Err("svn_close_project_first".into());
+        }
+        self.inner.result_jobs.fetch_add(1, Ordering::AcqRel);
+        Ok(ResultCustody(self.clone()))
+    }
+    fn preserve_uncertain(
+        &self,
+        operation: &str,
+        root: &str,
+        action: &str,
+        url: Option<&str>,
+        error: Option<&str>,
+    ) {
+        let Some(error) = error else {
+            return;
+        };
+        let outcome = if error.ends_with("_partial") {
+            "partial"
+        } else if error.ends_with("_unverified") || error == "svn_task_failed" {
+            "unknown"
+        } else {
+            return;
+        };
+        let record = crate::updater::handoff::PendingSvn {
+            operation_id: operation.into(),
+            project_fingerprint: format!("{:x}", Sha256::digest(root.as_bytes())),
+            requested_paths: Vec::new(),
+            outcome: outcome.into(),
+            observed: serde_json::json!({"action":action,"error":error,"requestedUrl":url}),
+        };
+        if self.inner.pending.preserve(record).is_err() {
+            crate::diagnostic_log::record(
+                "svn",
+                "handoff",
+                "preserve_failed",
+                "error",
+                Some(operation.into()),
+                None,
+            );
+        }
+    }
+    pub(crate) fn verify_update_handoff(
+        &self,
+    ) -> Result<Vec<crate::updater::handoff::PendingSvn>, &'static str> {
+        if self.has_active() {
+            return Err("handoff");
+        }
+        self.inner.pending.verify()
+    }
 }
 
 fn main_only<R: Runtime>(webview: &Webview<R>) -> Result<(), String> {
+    use tauri::Manager as _;
+    if webview
+        .app_handle()
+        .try_state::<Arc<crate::state::AppState>>()
+        .is_some_and(|state| !state.update_work_allowed())
+    {
+        return Err("svn_startup_or_shutdown_pending".into());
+    }
     if webview.label() == "main" && webview.window().label() == "main" {
         Ok(())
     } else {
@@ -550,7 +667,7 @@ pub(crate) async fn svn_probe<R: Runtime>(
             .active
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        if active.is_some() {
+        if active.is_some() || manager.inner.update_sealed.load(Ordering::Acquire) {
             return Err("svn_busy".into());
         }
         let result = probe(&manager, path, gui_path);
@@ -813,6 +930,7 @@ pub(crate) struct SvnLockService {
     instance: u64,
     held: Mutex<BTreeMap<ProjectRelativePath, String>>,
     confirmed_commits: Mutex<BTreeMap<String, (Vec<String>, Vec<String>)>>,
+    policy_cache: Mutex<Option<(u64, String, Result<(), String>)>>,
     #[cfg(test)]
     post_commit_probe: Mutex<Option<Arc<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync>>>,
 }
@@ -893,6 +1011,7 @@ impl SvnLockService {
             instance: SVN_PROVIDER_ID.fetch_add(1, Ordering::Relaxed),
             held: Mutex::new(BTreeMap::new()),
             confirmed_commits: Mutex::new(BTreeMap::new()),
+            policy_cache: Mutex::new(None),
             #[cfg(test)]
             post_commit_probe: Mutex::new(None),
         }
@@ -991,6 +1110,7 @@ impl SvnLockService {
             return Err("svn_busy".into());
         }
         self.with_operation(|manager, cancel| {
+            self.policy_admit_inner(manager, cancel)?;
             let identity = manager.identity().ok_or("svn_login_required")?;
             if identity.username != expected_username {
                 return Err("svn_force_context_changed".into());
@@ -1211,7 +1331,21 @@ impl SvnLockService {
             } else {
                 None
             };
-            let eligible = if row.local == "missing" {
+            let eligible = if relative.as_str() == policy::FILE {
+                let checked = self.policy_validate_candidate(manager, cancel);
+                let safe = changed
+                    && row.local == "modified"
+                    && !row.working_copy_locked
+                    && row
+                        .remote
+                        .as_deref()
+                        .is_none_or(|v| v == "none" || v == "normal")
+                    && checked.is_ok();
+                blocked_reason = checked
+                    .err()
+                    .or_else(|| (!safe).then(|| "svn_commit_selection_changed".into()));
+                safe
+            } else if row.local == "missing" {
                 false
             } else if row.local == "deleted" {
                 let (info, local) = self.inspect_file(manager, &file, cancel)?;
@@ -1278,11 +1412,15 @@ impl SvnLockService {
             };
             result.push(CommitCandidate {
                 path: relative.as_str().to_owned(),
-                name: asset_id_from_path(relative.as_str())
-                    .and_then(|id| asset_base.get(id).map(|package| package.name.clone()))
-                    .or_else(|| {
-                        self.candidate_name(manager, cancel, &relative, &file, absent_artifact)
-                    }),
+                name: if relative.as_str() == policy::FILE {
+                    Some("프로젝트 설정 — 최소 앱 버전".into())
+                } else {
+                    asset_id_from_path(relative.as_str())
+                        .and_then(|id| asset_base.get(id).map(|package| package.name.clone()))
+                        .or_else(|| {
+                            self.candidate_name(manager, cancel, &relative, &file, absent_artifact)
+                        })
+                },
                 local: row.local.clone(),
                 properties: row.properties.clone(),
                 held: held_here || (!locally_new && row.local != "deleted" && eligible),
@@ -1663,6 +1801,7 @@ impl SvnLockService {
             return Err("svn_delete_not_missing".into());
         }
         self.with_operation(|manager, cancel| {
+            self.policy_admit_inner(manager, cancel)?;
             let asset_package = asset_id
                 .map(|id| self.asset_base_package(manager, cancel, id))
                 .transpose()?;
@@ -1755,6 +1894,7 @@ impl SvnLockService {
             selected.push(path);
         }
         let committed = self.with_request(&request, |manager, cancel| {
+            self.policy_admit_inner(manager, cancel)?;
             let candidates = self.candidates_inner(manager, cancel)?;
             let mut files = Vec::new();
             let mut newly_added = Vec::new();
@@ -1997,6 +2137,19 @@ impl SvnLockService {
         let mut deleted_confirmed = Vec::new();
         for (target, file) in selected.iter().zip(files.iter()) {
             let path = target.as_str();
+            if path == policy::FILE {
+                let checked = self
+                    .post_commit_probe(path, "policyHead")
+                    .and_then(|()| self.policy_verify_applied(manager, cancel));
+                if let Err(reason) = checked {
+                    verification_unknown.push(CommitVerificationUnknown {
+                        path: path.to_owned(),
+                        check: "policyHead",
+                        reason,
+                    });
+                }
+                continue;
+            }
             if deleted.contains(target) {
                 let check = asset_id_from_path(path)
                     .map(|id| self.project.join("assets").join(id))
@@ -2638,6 +2791,10 @@ fn parse_list_names(xml: &str) -> Result<Vec<String>, String> {
 }
 
 impl LockService for SvnLockService {
+    fn authorize_project_operation(&self) -> Result<(), String> {
+        self.policy_admit()
+    }
+
     fn provider_info(&self) -> LockProviderInfo {
         LockProviderInfo {
             kind: LockProviderKind::Svn,
@@ -2655,6 +2812,7 @@ impl LockService for SvnLockService {
             return Err("svn_invalid_target".into());
         }
         self.with_operation(|manager, cancel| {
+            self.policy_admit_inner(manager, cancel)?;
             let root = self
                 .project
                 .canonicalize()
@@ -2735,6 +2893,8 @@ impl LockService for SvnLockService {
                 &request,
             )
         };
+        self.policy_admit()
+            .map_err(|_| fail(LockErrorCategory::LockStateUnknown))?;
         let file = self
             .target_file(request.target())
             .map_err(|_| fail(LockErrorCategory::InvalidLockTarget))?;
@@ -2875,6 +3035,8 @@ impl LockService for SvnLockService {
         let file = self
             .target_file(&held.target)
             .map_err(|_| fail(LockErrorCategory::LockLost))?;
+        self.policy_admit()
+            .map_err(|_| fail(LockErrorCategory::LockStateUnknown))?;
         let scope = SVN_JOB_SCOPE.get();
         if scope != 0 && held.validated_scope == scope {
             return Ok(());
@@ -3039,6 +3201,7 @@ pub(crate) struct Inspection {
     wc_root: String,
     url: String,
     repository: String,
+    repository_id: String,
     revision: String,
 }
 
@@ -3047,6 +3210,7 @@ fn parse_info(xml: &str, project: &Path) -> Result<Inspection, String> {
     let mut revision = None;
     let mut url = None;
     let mut repository = None;
+    let mut repository_id = None;
     let mut wc_root = None;
     loop {
         match reader.read_event().map_err(|_| "svn_xml_invalid")? {
@@ -3067,6 +3231,11 @@ fn parse_info(xml: &str, project: &Path) -> Result<Inspection, String> {
             Event::Start(e) if e.name() == QName(b"wcroot-abspath") => {
                 wc_root = Some(read_xml_text(&mut reader, b"wcroot-abspath")?);
             }
+            Event::Start(e) if e.name() == QName(b"uuid") => {
+                let value = read_xml_text(&mut reader, b"uuid")?;
+                uuid::Uuid::parse_str(&value).map_err(|_| "svn_xml_invalid")?;
+                repository_id = Some(value);
+            }
             Event::Start(e) if e.name() == QName(b"root") => {
                 repository = Some(read_xml_text(&mut reader, b"root")?);
             }
@@ -3086,6 +3255,7 @@ fn parse_info(xml: &str, project: &Path) -> Result<Inspection, String> {
         wc_root: wc.to_string_lossy().into_owned(),
         url: url.ok_or("svn_xml_invalid")?,
         repository: repository.ok_or("svn_xml_invalid")?,
+        repository_id: repository_id.ok_or("svn_xml_invalid")?,
         revision: revision.ok_or("svn_xml_invalid")?,
     })
 }
@@ -3245,6 +3415,7 @@ fn parse_remote_info(xml: &str) -> Result<Inspection, String> {
     let mut reader = Reader::from_str(xml);
     let mut url = None;
     let mut repository = None;
+    let mut repository_id = None;
     let mut revision = None;
     loop {
         match reader.read_event().map_err(|_| "svn_xml_invalid")? {
@@ -3262,6 +3433,11 @@ fn parse_remote_info(xml: &str) -> Result<Inspection, String> {
             Event::Start(e) if e.name() == QName(b"url") => {
                 url = Some(read_xml_text(&mut reader, b"url")?);
             }
+            Event::Start(e) if e.name() == QName(b"uuid") => {
+                let value = read_xml_text(&mut reader, b"uuid")?;
+                uuid::Uuid::parse_str(&value).map_err(|_| "svn_xml_invalid")?;
+                repository_id = Some(value);
+            }
             Event::Start(e) if e.name() == QName(b"root") => {
                 repository = Some(read_xml_text(&mut reader, b"root")?);
             }
@@ -3274,6 +3450,7 @@ fn parse_remote_info(xml: &str) -> Result<Inspection, String> {
         wc_root: String::new(),
         url: url.ok_or("svn_xml_invalid")?,
         repository: repository.ok_or("svn_xml_invalid")?,
+        repository_id: repository_id.ok_or("svn_xml_invalid")?,
         revision: revision.ok_or("svn_xml_invalid")?,
     })
 }
@@ -3355,7 +3532,12 @@ pub(crate) async fn svn_checkout<R: Runtime>(
 ) -> Result<Inspection, String> {
     main_only(&webview)?;
     let manager = manager.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let _custody = manager.result_custody()?;
+    let observer = manager.clone();
+    let operation = request.clone();
+    let target = destination.clone();
+    let target_url = url.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let (_guard, cancel) = manager.begin(&request)?;
         let parsed = secure_url(&url)?;
         let identity = manager.identity().ok_or("svn_login_required")?;
@@ -3402,7 +3584,15 @@ pub(crate) async fn svn_checkout<R: Runtime>(
         inspect(&manager, &path, &cancel).map_err(|_| "svn_checkout_applied_unverified".into())
     })
     .await
-    .map_err(|_| "svn_task_failed".to_owned())?
+    .unwrap_or_else(|_| Err("svn_task_failed".to_owned()));
+    observer.preserve_uncertain(
+        &operation,
+        &target,
+        "checkout",
+        Some(&target_url),
+        result.as_ref().err().map(String::as_str),
+    );
+    result
 }
 
 #[derive(Serialize)]
@@ -3470,7 +3660,7 @@ fn registration_input(
     // checkout CLI interprets that form as a different destination. Keep the
     // resolved path, but pass its ordinary Windows spelling to the CLI.
     let local = ordinary_windows_path(&canonical);
-    let inventory = crate::svn_shared::inventory(&local)?;
+    let inventory = crate::svn_shared::registration_inventory(&local)?;
     Ok((local, target, identity, inventory))
 }
 
@@ -3543,6 +3733,10 @@ pub(crate) async fn svn_register<R: Runtime>(
         return Err("svn_close_project_first".into());
     }
     let manager = manager.inner().clone();
+    let _custody = manager.result_custody()?;
+    let observer = manager.clone();
+    let target = root.clone();
+    let target_url = url.clone();
     let correlation = request.clone();
     crate::diagnostic_log::record(
         "svn",
@@ -3597,7 +3791,14 @@ pub(crate) async fn svn_register<R: Runtime>(
         )
     })
     .await
-    .map_err(|_| "svn_task_failed".to_owned())?;
+    .unwrap_or_else(|_| Err("svn_task_failed".to_owned()));
+    observer.preserve_uncertain(
+        &correlation,
+        &target,
+        "register",
+        Some(&target_url),
+        result.as_ref().err().map(String::as_str),
+    );
     let (category, outcome) = match &result {
         Ok(_) => ("project", "verified"),
         Err(reason) if reason.ends_with("_unverified") => ("result_unverified", "unknown"),
@@ -3692,7 +3893,7 @@ fn registration_finish(
         ".",
     );
     run_in(&cli, &ignore_args, None, &cancel, &root).map_err(|_| "svn_register_local_partial")?;
-    if crate::svn_shared::inventory(&root)?.fingerprint != fingerprint {
+    if crate::svn_shared::registration_inventory(&root)?.fingerprint != fingerprint {
         return Err("svn_commit_selection_changed".into());
     }
     let mut commit_paths = Vec::with_capacity(all.len() + 1);
@@ -4519,16 +4720,30 @@ pub(crate) async fn svn_gui_update<R: Runtime>(
 ) -> Result<Status, String> {
     main_only(&webview)?;
     let manager = manager.inner().clone();
+    let _custody = manager.result_custody()?;
+    let observer = manager.clone();
+    let operation = request.clone();
+    let target = path.clone();
     let app = app.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let (_guard, cancel) = manager.begin(&request)?;
         let path = PathBuf::from(path);
         let current = path.canonicalize().map_err(|_| "svn_project_missing")?;
         app.svn_update_admission(&current)?;
+        SvnLockService::new(manager.clone(), current.clone())
+            .policy_admit_inner(&manager, &cancel)?;
         gui_update_closed(&manager, &current, &cancel)
     })
     .await
-    .map_err(|_| "svn_task_failed".to_owned())?
+    .unwrap_or_else(|_| Err("svn_task_failed".to_owned()));
+    observer.preserve_uncertain(
+        &operation,
+        &target,
+        "gui_update",
+        None,
+        result.as_ref().err().map(String::as_str),
+    );
+    result
 }
 
 #[tauri::command]
@@ -4541,8 +4756,12 @@ pub(crate) async fn svn_gui_cleanup<R: Runtime>(
 ) -> Result<Status, String> {
     main_only(&webview)?;
     let manager = manager.inner().clone();
+    let _custody = manager.result_custody()?;
+    let observer = manager.clone();
+    let operation = request.clone();
+    let target = path.clone();
     let app = app.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    let result = tauri::async_runtime::spawn_blocking(move || {
         let (_guard, cancel) = manager.begin(&request)?;
         let current = PathBuf::from(path)
             .canonicalize()
@@ -4551,7 +4770,15 @@ pub(crate) async fn svn_gui_cleanup<R: Runtime>(
         gui_cleanup_closed(&manager, &current, &cancel)
     })
     .await
-    .map_err(|_| "svn_task_failed".to_owned())?
+    .unwrap_or_else(|_| Err("svn_task_failed".to_owned()));
+    observer.preserve_uncertain(
+        &operation,
+        &target,
+        "gui_cleanup",
+        None,
+        result.as_ref().err().map(String::as_str),
+    );
+    result
 }
 
 fn preflight_update(
@@ -4762,6 +4989,7 @@ pub(crate) async fn svn_schedule_delete<R: Runtime>(
 pub(crate) async fn svn_commit<R: Runtime>(
     webview: Webview<R>,
     app: State<'_, Arc<crate::state::AppState>>,
+    manager: State<'_, Manager>,
     path: String,
     request: String,
     paths: Vec<String>,
@@ -4769,6 +4997,8 @@ pub(crate) async fn svn_commit<R: Runtime>(
 ) -> Result<CommitResult, String> {
     main_only(&webview)?;
     let provider = app.svn_commit_provider(Path::new(&path))?;
+    let _custody = manager.result_custody()?;
+    let requested_paths = paths.clone();
     crate::diagnostic_log::record(
         "svn",
         "commit",
@@ -4781,7 +5011,7 @@ pub(crate) async fn svn_commit<R: Runtime>(
     let result =
         tauri::async_runtime::spawn_blocking(move || provider.commit(request, paths, message))
             .await
-            .map_err(|_| "svn_task_failed".to_owned())?;
+            .unwrap_or_else(|_| Err("svn_task_failed".to_owned()));
     let (category, outcome) = match &result {
         Ok(value) if !value.verification_unknown.is_empty() => ("post_commit_unknown", "partial"),
         Ok(value) if value.unlock_pending.is_empty() => ("selected_documents", "verified"),
@@ -4789,12 +5019,38 @@ pub(crate) async fn svn_commit<R: Runtime>(
         Err(reason) if reason == "svn_commit_applied_unverified" => {
             ("applied_unverified", "unknown")
         }
-        Err(reason) if reason == "svn_commit_unverified" => ("result_unverified", "unknown"),
+        Err(reason) if reason == "svn_commit_unverified" || reason == "svn_task_failed" => {
+            ("result_unverified", "unknown")
+        }
         Err(reason) if reason == "svn_commit_selection_changed" => {
             ("selection_changed", "rejected")
         }
         Err(_) => ("commit_rejected", "failed"),
     };
+    if matches!(outcome, "partial" | "unknown") {
+        let observed = match &result {
+            Ok(value) => serde_json::to_value(value)
+                .unwrap_or_else(|_| serde_json::json!({"error":"svn_result_encoding_failed"})),
+            Err(reason) => serde_json::json!({"error":reason}),
+        };
+        let record = crate::updater::handoff::PendingSvn {
+            operation_id: correlation.clone(),
+            project_fingerprint: format!("{:x}", Sha256::digest(path.as_bytes())),
+            requested_paths,
+            outcome: outcome.into(),
+            observed,
+        };
+        if manager.inner.pending.preserve(record).is_err() {
+            crate::diagnostic_log::record(
+                "svn",
+                "handoff",
+                "preserve_failed",
+                "error",
+                Some(correlation.clone()),
+                None,
+            );
+        }
+    }
     crate::diagnostic_log::record("svn", "commit", category, outcome, Some(correlation), None);
     result
 }
@@ -4833,6 +5089,47 @@ pub(crate) async fn svn_commit_recheck<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn m8_result_custody_keeps_seal_blocked_until_durable_delivery() {
+        let manager =
+            Manager::new(std::env::temp_dir().join(format!("m8-custody-{}", uuid::Uuid::new_v4())));
+        let result = manager.result_custody().unwrap();
+        assert!(manager.has_active());
+        assert!(!manager.seal_for_update());
+        assert!(manager.verify_update_handoff().is_err());
+        drop(result);
+        assert!(manager.seal_for_update());
+        assert!(manager.result_custody().is_err());
+        assert!(manager.verify_update_handoff().unwrap().is_empty());
+    }
+    #[test]
+    fn m8_unverified_register_checkout_and_update_survive_new_manager() {
+        let root = std::env::temp_dir().join(format!("m8-svn-pending-{}", uuid::Uuid::new_v4()));
+        let manager = Manager::new(root.clone());
+        for (action, error) in [
+            ("register", "svn_register_setup_unverified"),
+            ("checkout", "svn_checkout_may_be_partial"),
+            ("gui_update", "svn_update_applied_unverified"),
+            ("gui_cleanup", "svn_task_failed"),
+        ] {
+            let custody = manager.result_custody().unwrap();
+            manager.preserve_uncertain(
+                &uuid::Uuid::new_v4().to_string(),
+                "owned-root",
+                action,
+                None,
+                Some(error),
+            );
+            assert!(manager.verify_update_handoff().is_err());
+            drop(custody);
+        }
+        let reopened = Manager::new(root);
+        let rows = reopened.verify_update_handoff().unwrap();
+        assert_eq!(rows.len(), 4);
+        assert!(rows
+            .iter()
+            .all(|row| matches!(row.outcome.as_str(), "unknown" | "partial")));
+    }
     use base64::Engine as _;
     use std::{net::TcpListener, path::Path};
     use tauri::{
@@ -6489,6 +6786,20 @@ mod tests {
         drop(guard);
         let (_next, next_cancelled) = manager.begin(&second).unwrap();
         assert!(!next_cancelled.load(Ordering::Acquire));
+    }
+    #[test]
+    fn m8_install_seal_and_new_svn_start_share_the_active_mutex() {
+        let manager = Manager::new(
+            std::env::temp_dir().join(format!("worldbuild-m8-svn-{}", uuid::Uuid::new_v4())),
+        );
+        let request = uuid::Uuid::new_v4().to_string();
+        let (guard, _) = manager.begin(&request).unwrap();
+        assert!(!manager.seal_for_update());
+        drop(guard);
+        assert!(manager.seal_for_update());
+        assert!(matches!(manager.begin(&request),Err(reason) if reason=="svn_close_project_first"));
+        manager.unseal_update();
+        assert!(manager.begin(&request).is_ok());
     }
     #[test]
     #[cfg(windows)]

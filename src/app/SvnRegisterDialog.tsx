@@ -137,7 +137,9 @@ export function SvnRegisterDialog({
       modalType="alert"
       onOpenChange={(_, data) => !data.open && !busy && close()}
     >
-      <DialogSurface className="svn-register-dialog">
+      <DialogSurface
+        className={`svn-register-dialog${preview ? " has-preview" : ""}`}
+      >
         <DialogBody>
           <DialogTitle>{text("svn.registerTitle")}</DialogTitle>
           <DialogContent>

@@ -1,4 +1,5 @@
-import { MessageBar, MessageBarBody } from "@fluentui/react-components";
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
+
 import { Search20Regular } from "@fluentui/react-icons";
 import type { TemplateSummary } from "../bridge/types";
 import { text } from "../strings";
@@ -97,11 +98,11 @@ export function DocumentSearchResults({
   return (
     <section className="document-search-results">
       {state.searchError && (
-        <MessageBar intent="error" layout="multiline">
-          <MessageBarBody>
+        <FloatingNotice intent="error">
+          <FloatingNoticeContent>
             {text("documents.searchFailed")} {state.searchError}
-          </MessageBarBody>
-        </MessageBar>
+          </FloatingNoticeContent>
+        </FloatingNotice>
       )}
       {state.searchBusy && !state.search && (
         <p role="status">{text("documents.searching")}</p>
@@ -109,13 +110,13 @@ export function DocumentSearchResults({
       {state.search && (
         <>
           {state.search.missingDocuments > 0 && (
-            <MessageBar intent="warning" layout="multiline">
-              <MessageBarBody>
+            <FloatingNotice intent="warning">
+              <FloatingNoticeContent>
                 {text("documents.searchMissing", {
                   count: String(state.search.missingDocuments),
                 })}
-              </MessageBarBody>
-            </MessageBar>
+              </FloatingNoticeContent>
+            </FloatingNotice>
           )}
           <div className="document-search-summary">
             <p className="document-search-count" role="status">
@@ -131,28 +132,47 @@ export function DocumentSearchResults({
               </Button>
             )}
           </div>
-          <ul>
-            {state.search.results.map((result) => (
-              <li key={result.id}>
-                <Button
-                  type="button"
-                  appearance="subtle"
-                  className="document-search-result-link"
-                  onClick={() => openDocument(result.id)}
-                >
-                  <strong>{result.name}</strong>
-                  <span>
-                    {[result.templateName, ...result.path].join(" · ")}
-                  </span>
-                  {result.excerpt && (
-                    <span className="document-search-excerpt">
-                      {result.excerpt.label}: {result.excerpt.text}
-                    </span>
-                  )}
-                </Button>
-              </li>
-            ))}
-          </ul>
+          <div className="search-results-scroll">
+            <table className="management-table">
+              <thead>
+                <tr>
+                  <th scope="col">문서</th>
+                  <th scope="col">유형 / 위치</th>
+                  <th scope="col">일치한 내용</th>
+                </tr>
+              </thead>
+              <tbody>
+                {state.search.results.map((result) => (
+                  <tr key={result.id}>
+                    <td>
+                      <Button
+                        type="button"
+                        appearance="subtle"
+                        className="search-document-command"
+                        aria-describedby={`search-type-${result.id} search-excerpt-${result.id}`}
+                        onClick={() => openDocument(result.id)}
+                      >
+                        {result.name}
+                      </Button>
+                    </td>
+                    <td id={`search-type-${result.id}`}>
+                      {[result.templateName, ...result.path].join(" · ")}
+                    </td>
+                    <td id={`search-excerpt-${result.id}`}>
+                      {result.excerpt && (
+                        <>
+                          <span className="search-excerpt-label">
+                            {result.excerpt.label}:
+                          </span>{" "}
+                          {result.excerpt.text}
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
           {!state.search.total && !state.searchBusy && (
             <p>{text("documents.searchEmpty")}</p>
           )}

@@ -1,11 +1,6 @@
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
 import { useState } from "react";
-import {
-  Field,
-  MessageBar,
-  MessageBarBody,
-  Tab,
-  TabList,
-} from "@fluentui/react-components";
+import { Field, Tab, TabList } from "@fluentui/react-components";
 import {
   ChevronDown16Regular,
   ChevronRight16Regular,
@@ -217,11 +212,11 @@ export function DocumentSearchArea({
             )}
           </div>
           {form.error && (
-            <MessageBar intent="error" layout="multiline">
-              <MessageBarBody>
+            <FloatingNotice intent="error">
+              <FloatingNoticeContent>
                 {text("documents.replaceFailed")} {form.error}
-              </MessageBarBody>
-            </MessageBar>
+              </FloatingNoticeContent>
+            </FloatingNotice>
           )}
           {form.busy && (
             <div className="document-replace-command" role="status">
@@ -257,8 +252,8 @@ export function DocumentSearchArea({
                 </span>
               </div>
               {form.preview.blockers.length > 0 && (
-                <MessageBar intent="error" layout="multiline">
-                  <MessageBarBody>
+                <FloatingNotice intent="error">
+                  <FloatingNoticeContent>
                     <strong>{text("documents.replaceBlocked")}</strong>
                     <ul>
                       {form.preview.blockers.map((blocker, index) => (
@@ -270,8 +265,8 @@ export function DocumentSearchArea({
                         </li>
                       ))}
                     </ul>
-                  </MessageBarBody>
-                </MessageBar>
+                  </FloatingNoticeContent>
+                </FloatingNotice>
               )}
               <ul className="replace-change-list">
                 {form.preview.changes.map((change, index) => (

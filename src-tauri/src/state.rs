@@ -63,6 +63,7 @@ mod local;
 mod native;
 mod retained;
 mod ui_close;
+mod update;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Caller(Id);
 enum Pending {
@@ -167,6 +168,9 @@ struct Inner {
     native: native::Cleanup,
     wake: Option<Arc<dyn Fn() + Send + Sync>>,
     ui_close: ui_close::Guard,
+    update_intent: Option<String>,
+    update_hold: bool,
+    startup_blocked: bool,
 }
 pub(crate) struct AppState {
     inner: Mutex<Inner>,
@@ -360,6 +364,9 @@ impl AppState {
                 native: native::Cleanup::default(),
                 wake: None,
                 ui_close: ui_close::Guard::default(),
+                update_intent: None,
+                update_hold: false,
+                startup_blocked: false,
             }),
             recovery: Arc::new(crate::data::edit_recovery::Owner::new(
                 lock_root.join("edit-recovery"),
@@ -595,8 +602,11 @@ impl AppState {
             Command::ProjectStatus { project } => {
                 let p = project_for(&state, caller, project)?;
                 let snap = p.control.snapshot();
-                let initialization_error =
-                    snap.initialization_error.as_ref().map(initialization_error);
+                let initialization_error = snap
+                    .admission_error
+                    .clone()
+                    .map(backend::policy_error)
+                    .or_else(|| snap.initialization_error.as_ref().map(initialization_error));
                 Response::Project {
                     project,
                     collaborative: p.collaborative,
@@ -700,6 +710,13 @@ impl AppState {
         Ok(response)
     }
     fn submit(&self, state: &mut Inner, caller: Caller, operation: Id, input: Work) -> Reply<()> {
+        // 시작 선택 전에는 runtime을 열거나 프로젝트를 쓰는 경로 자체를 허용하지 않는다.
+        if state.startup_blocked
+            && input.lane() == Lane::Ordinary
+            && !backend::workspace::center::is_local(&input)
+        {
+            return Err(Code::Starting.into());
+        }
         let op = operation_for(state, caller, operation)?;
         if let Some(previous) = &op.input {
             return if **previous == input {
@@ -856,16 +873,30 @@ impl AppState {
                 .map(|provider| provider.clone() as Arc<dyn LockService>)
                 .unwrap_or_else(|| self.provider.clone());
             // start에는 locator만 넘긴다. canonicalize/acquire/recovery는 project worker에서 한다.
-            let (control, client) = WorkerControl::start(WorkerConfig {
-                project_root: project_root.clone(),
-                lock_root: self.lock_root.clone(),
-                initialize_empty,
-                create_directory,
-                capacity: ORDINARY,
-                max_sessions: SESSIONS,
-                interval: Duration::from_secs(30),
-                automatic_revalidation: !collaborative,
-            })
+            let admission: Option<Box<dyn FnOnce() -> Result<(), String> + Send>> = if collaborative
+            {
+                let provider = svn_provider.clone();
+                Some(Box::new(move || {
+                    provider
+                        .ok_or_else(|| "svn_cli_missing".to_owned())?
+                        .policy_admit()
+                }))
+            } else {
+                None
+            };
+            let (control, client) = WorkerControl::start_with_admission(
+                WorkerConfig {
+                    project_root: project_root.clone(),
+                    lock_root: self.lock_root.clone(),
+                    initialize_empty,
+                    create_directory,
+                    capacity: ORDINARY,
+                    max_sessions: SESSIONS,
+                    interval: Duration::from_secs(30),
+                    automatic_revalidation: !collaborative,
+                },
+                admission,
+            )
             .map_err(|_| Code::Unavailable)?;
             if let Some(wake) = &state.wake {
                 control.set_app_wake(wake.clone());
@@ -1146,7 +1177,7 @@ impl AppState {
     pub(crate) fn take_exit_approval(&self) -> bool {
         let mut state = self.lock();
         native::refresh(&mut state);
-        if state.approved && !state.exit_sent {
+        if state.approved && !state.exit_sent && !state.update_hold {
             state.exit_sent = true;
             true
         } else {
@@ -1489,7 +1520,11 @@ fn collect(state: &mut Inner) {
                 if snap.status == WorkerStatus::Starting {
                     None
                 } else {
-                    let error = snap.initialization_error.as_ref().map(initialization_error);
+                    let error = snap
+                        .admission_error
+                        .clone()
+                        .map(backend::policy_error)
+                        .or_else(|| snap.initialization_error.as_ref().map(initialization_error));
                     let dto = ResultDto::Open {
                         project: *project,
                         status: format!("{:?}", snap.status),

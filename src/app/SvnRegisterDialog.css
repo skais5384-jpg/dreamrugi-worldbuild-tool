@@ -1,12 +1,15 @@
 .fui-DialogSurface.svn-register-dialog {
   display: flex;
   flex-direction: column;
-  width: min(64rem, calc(100vw - 2rem));
+  width: min(45rem, calc(100vw - 2rem));
   max-width: min(64rem, calc(100vw - 2rem));
-  height: min(48rem, calc(100vh - 2rem));
-  min-height: min(40rem, calc(100vh - 2rem));
+  height: fit-content;
   max-height: calc(100vh - 2rem);
   overflow: hidden;
+}
+.svn-register-dialog.has-preview {
+  width: min(64rem, calc(100vw - 2rem));
+  height: min(48rem, calc(100vh - 2rem));
 }
 .svn-register-dialog .fui-DialogBody,
 .svn-register-dialog .fui-DialogContent {

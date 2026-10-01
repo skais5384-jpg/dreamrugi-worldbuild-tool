@@ -71,6 +71,7 @@ export function safeFailure(error: unknown): string {
       return text("pdf.templateUnavailable");
     if (code === "composite_intent_pending")
       return text("whole.documentDeferred");
+    if (code === "collaboration_policy_rejected") return text("policy.blocked");
     if (code === "collaboration_read_only") return text("svn.readOnly");
     // 경계 밖 문자열은 화면에 복사하지 않는다. 오류 코드도 닫힌 목록에서 선택한다.
     if (
@@ -121,9 +122,9 @@ export function safeFailure(error: unknown): string {
               ].includes(code)
             ? "error.checkCurrent"
             : "error.reviewRetry";
-      return text(action) + " " + text("error.boundary", { code });
+      return text(action);
     }
-    return text("error.transport", { category: error.category });
+    return text("error.reviewRetry");
   }
   return text("error.uiUnavailable");
 }

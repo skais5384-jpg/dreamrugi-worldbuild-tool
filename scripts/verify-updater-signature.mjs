@@ -10,7 +10,12 @@ function lines(value) {
   return text.split(/\r?\n/);
 }
 
-export function verifyUpdaterSignature(file, publicKey, signature) {
+export function verifyUpdaterSignature(
+  file,
+  publicKey,
+  signature,
+  expectedVersion,
+) {
   const keyLines = lines(publicKey);
   const sigLines = lines(signature);
   const key = Buffer.from(keyLines[1] ?? "", "base64");
@@ -44,7 +49,23 @@ export function verifyUpdaterSignature(file, publicKey, signature) {
   ) {
     throw new Error("Updater signature verification failed");
   }
-  return { publicKeySha256: createHash("sha256").update(key).digest("hex") };
+  const versions = sigLines[2]
+    .slice("trusted comment: ".length)
+    .split("\t")
+    .filter((field) => field.startsWith("version:"))
+    .map((field) => field.slice("version:".length));
+  if (
+    expectedVersion &&
+    (versions.length !== 1 || versions[0] !== expectedVersion)
+  ) {
+    throw new Error(
+      "Signed version is missing or differs from release metadata",
+    );
+  }
+  return {
+    publicKeySha256: createHash("sha256").update(key).digest("hex"),
+    signedVersion: versions.length === 1 ? versions[0] : null,
+  };
 }
 
 if (
@@ -52,13 +73,15 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   try {
-    const [file, publicKey, signature = `${file}.sig`] = process.argv.slice(2);
+    const [file, publicKey, signature = `${file}.sig`, expectedVersion] =
+      process.argv.slice(2);
     if (!file || !publicKey)
       throw new Error("Expected file, public key and signature paths");
     const result = verifyUpdaterSignature(
       readFileSync(file),
       readFileSync(publicKey, "utf8"),
       readFileSync(signature, "utf8"),
+      expectedVersion,
     );
     console.log(JSON.stringify(result));
   } catch (error) {

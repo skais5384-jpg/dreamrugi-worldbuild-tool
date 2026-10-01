@@ -1,9 +1,16 @@
+import { CollaborationPolicyDialog } from "./CollaborationPolicyDialog";
+import {
+  FloatingMessage,
+  FloatingNotice,
+  FloatingNoticeContent,
+} from "../ui/FloatingNotice";
 import { MediaContext } from "./MediaValue";
 import { invoke } from "@tauri-apps/api/core";
 import { FormatControl } from "./FormatControl";
 import {
   type CSSProperties,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -23,8 +30,6 @@ import {
   DialogSurface,
   DialogTitle,
   Field,
-  MessageBar,
-  MessageBarBody,
   Checkbox,
   Radio,
   RadioGroup,
@@ -41,6 +46,7 @@ import {
   FolderOpen20Regular,
   History20Regular,
   Info16Regular,
+  Info20Regular,
   Power20Regular,
   Star20Regular,
   StarOff20Regular,
@@ -71,6 +77,8 @@ import { FollowUp } from "./FollowUp";
 import { ProjectHealth } from "./ProjectHealth";
 import { ProjectFiles } from "./ProjectFiles";
 import { AboutDialog } from "./AboutDialog";
+import { UpdateDialog, updateMessage } from "./UpdateDialog";
+import { updaterController } from "./updaterClient";
 import { TemplateManagement } from "./TemplateManagement";
 import { SvnDialog } from "./SvnDialog";
 import { SvnToolbar } from "./SvnToolbar";
@@ -81,6 +89,8 @@ import { ActivityLog, useActivityLog } from "./ActivityLog";
 import type { SvnStatus } from "./svnClient";
 import { projectLabel, lifecycleLabel } from "./statusLabels";
 import { text } from "../strings";
+import { BackupTable } from "./BackupTable";
+import { NAVIGATION_DEFAULT, NAVIGATION_MAX } from "./navigationSizing";
 import type { BackupRow } from "../bridge/types";
 import { EditingFocus } from "./editingFocus";
 import { editDirty } from "./documentEdits";
@@ -155,11 +165,37 @@ export default function WorkspaceApp({
   controller?: WorkspaceController;
 }) {
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot);
+  useEffect(() => {
+    // Editor listeners run on document first. Read-only workspaces consume only
+    // the browser's Save Page shortcut and never enter an editing owner.
+    const consumeBrowserSave = (event: KeyboardEvent) => {
+      if (
+        event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        event.key.toLowerCase() === "s"
+      )
+        event.preventDefault();
+    };
+    window.addEventListener("keydown", consumeBrowserSave);
+    return () => window.removeEventListener("keydown", consumeBrowserSave);
+  }, []);
   const [mode, setMode] = useState<
     "documents" | "glossary" | "templates" | "resources" | "search" | "trash"
   >(state.draft ? "templates" : "documents");
   const [openAsDefault, setOpenAsDefault] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [policyRoot, setPolicyRoot] = useState<string | null>(null);
+  const [dismissedPolicy, setDismissedPolicy] = useState<string | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
+  const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null);
+  const updater = updaterController();
+  const updateStatus = useSyncExternalStore(
+    updater.subscribe,
+    updater.snapshot,
+  );
+  const updateNotice = `${updateStatus?.candidate}:${updateStatus?.phase}:${updateStatus?.error}`;
   const [svnEntry, setSvnEntry] = useState<"connect" | "checkout" | null>(null);
   const [svnSessionRevision, setSvnSessionRevision] = useState(0);
   const [svnCommitTarget, setSvnCommitTarget] = useState<
@@ -178,6 +214,7 @@ export default function WorkspaceApp({
   const [svnConnectionFailed, setSvnConnectionFailed] = useState(false);
   const [svnUpdating, setSvnUpdating] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
+  const [logNoticeKey, setLogNoticeKey] = useState<string>();
   const [legacyHandoff, setLegacyHandoff] =
     useState<LegacyHandoffStatus | null>(null);
   const [legacyRetrying, setLegacyRetrying] = useState(false);
@@ -233,11 +270,13 @@ export default function WorkspaceApp({
     scope: string;
     ids: string[];
   } | null>(null);
-  const [templateNavigationWidth, setTemplateNavigationWidth] = useState(280);
+  const [templateNavigationWidth, setTemplateNavigationWidth] =
+    useState(NAVIGATION_DEFAULT);
   const [templateNavigationCollapsed, setTemplateNavigationCollapsed] =
     useState(false);
   const templateResizeStart = useRef<{ x: number; width: number } | null>(null);
-  const [glossaryNavigationWidth, setGlossaryNavigationWidth] = useState(280);
+  const [glossaryNavigationWidth, setGlossaryNavigationWidth] =
+    useState(NAVIGATION_DEFAULT);
   const [glossaryNavigationCollapsed, setGlossaryNavigationCollapsed] =
     useState(false);
   const glossaryResizeStart = useRef<{ x: number; width: number } | null>(null);
@@ -278,20 +317,90 @@ export default function WorkspaceApp({
   const activityLog = useActivityLog(true);
   const loggedNotices = useRef<Set<string>>(new Set());
   const recordActivity = activityLog.record;
+  const restoredUpdateResults = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const result of updateStatus?.handoff?.pendingSvn ?? []) {
+      if (restoredUpdateResults.current.has(result.operationId)) continue;
+      restoredUpdateResults.current.add(result.operationId);
+      recordActivity({
+        feature: "svn",
+        stage: "update_handoff",
+        category: "result_unverified",
+        outcome: result.outcome,
+        summary: text("update.pendingSvn"),
+        detail: JSON.stringify(result, null, 2),
+      });
+    }
+  }, [updateStatus?.handoff, recordActivity]);
+  useEffect(() => {
+    const open = (event: Event) => {
+      activityLog.markRead();
+      focus.current.prepare();
+      setLogNoticeKey(
+        event instanceof CustomEvent ? event.detail?.noticeKey : undefined,
+      );
+      setLogOpen(true);
+    };
+    window.addEventListener("open-activity-log", open);
+    return () => window.removeEventListener("open-activity-log", open);
+  }, [activityLog]);
+  useEffect(() => {
+    if (Reflect.has(window, "__TAURI_INTERNALS__"))
+      shell.setStartupGate(updater.start());
+    else void updater.initialize();
+  }, [shell, updater]);
+  useEffect(() => {
+    const phase = updateStatus?.phase,
+      complete = updateStatus?.startupComplete;
+    const timer = window.setTimeout(() => {
+      if (
+        phase &&
+        !complete &&
+        [
+          "checking",
+          "available",
+          "failed",
+          "cancelled",
+          "downloading",
+          "ready",
+          "install_failed",
+        ].includes(phase)
+      )
+        setUpdateOpen(true);
+      if (complete || phase === "preparing") setUpdateOpen(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [updateStatus?.phase, updateStatus?.startupComplete]);
+  useEffect(() => {
+    if (
+      updateStatus?.phase === "failed" ||
+      updateStatus?.phase === "install_failed"
+    ) {
+      recordActivity({
+        feature: "updater",
+        stage: updateStatus.phase,
+        category: updateStatus.error ?? "error",
+        outcome: "error",
+        summary: text(updateMessage(updateStatus)),
+      });
+    }
+  }, [updateStatus, recordActivity]);
+  useEffect(() => {
+    if (updateStatus?.phase === "preparing" && !app.closing)
+      void updater.refresh();
+  }, [
+    app.closing,
+    state.prompt,
+    documentState.prompt,
+    updater,
+    updateStatus?.phase,
+  ]);
   useEffect(() => {
     if (!app.project) {
       loggedNotices.current.clear();
       return;
     }
     const notices = [
-      {
-        message: app.settingsNotice?.message,
-        kind: "settings",
-        category: app.settingsNotice?.kind ?? "error",
-      },
-      { message: state.error, kind: "workspace", category: "error" },
-      { message: app.error, kind: "workspace", category: "error" },
-      { message: documentState.error, kind: "document", category: "error" },
       ...Object.entries(documentState.editors)
         .filter(([, entry]) => entry.error || entry.paused)
         .map(([id, entry]) => ({
@@ -360,6 +469,18 @@ export default function WorkspaceApp({
     }
   }
   const templateScope = `${shell.projectGeneration()}:${app.projectId ?? ""}`;
+  const errorNoticeIdentity = useMemo(
+    () => ({ shell, event: app.errorEvent }),
+    [shell, app.errorEvent],
+  );
+  const startupNoticeIdentity = useMemo(
+    () => ({ shell, event: app.startupFailureEvent }),
+    [shell, app.startupFailureEvent],
+  );
+  const backupNoticeIdentity = useMemo(
+    () => ({ shell, event: app.projectData?.noticeEvent }),
+    [shell, app.projectData?.noticeEvent],
+  );
   const visiblePdfCompletion =
     pdfCompletion?.scope === templateScope ? pdfCompletion : null;
   const pdfCompletionPaused =
@@ -432,8 +553,19 @@ export default function WorkspaceApp({
     app.project.runtime === "Ready";
   const initializationFailed =
     app.project?.error?.code === "initialization_failed" ||
+    app.project?.error?.code === "collaboration_policy_rejected" ||
     app.project?.shutdown.reports.some((report) => report.initializationFailed);
   const collaborative = !!app.project?.collaborative;
+  const effectivePolicyRoot =
+    policyRoot ??
+    (app.project?.error?.code === "collaboration_policy_rejected" &&
+    dismissedPolicy !== app.projectId
+      ? app.root
+      : null);
+  const dismissPolicy = () => {
+    setDismissedPolicy(app.projectId);
+    setPolicyRoot(null);
+  };
   const locked =
     prompted ||
     documentState.prompt ||
@@ -656,19 +788,52 @@ export default function WorkspaceApp({
   return (
     <MediaContext.Provider value={controller.documents}>
       <main className="app-shell workbench-shell">
-        {!app.projectData && feedbackToast}
-        {copyToast && (
-          <div className="feedback-toast" role="status">
-            {text("backup.copyCreated")}
-          </div>
-        )}
-        {actionToast && !copyToast && (
-          <div className="feedback-toast" role="status">
-            {actionToast}
-          </div>
-        )}
-        {pdfToast}
-        {documentProgressToast}
+        <FloatingMessage>
+          {!app.projectData && feedbackToast}
+          {copyToast && (
+            <div className="feedback-toast" role="status">
+              {text("backup.copyCreated")}
+            </div>
+          )}
+          {actionToast && !copyToast && (
+            <div className="feedback-toast" role="status">
+              {actionToast}
+            </div>
+          )}
+          {pdfToast}
+          {documentProgressToast}
+          {updateStatus?.notify &&
+            dismissedUpdate !== updateNotice &&
+            !updateOpen &&
+            !copyToast &&
+            !actionToast &&
+            !app.feedback &&
+            !pdfToast &&
+            !documentProgressToast && (
+              <div className="feedback-toast update-toast" role="status">
+                <span>{text(updateMessage(updateStatus))}</span>
+                <IconCommand
+                  label={text("update.details")}
+                  icon={<Info20Regular />}
+                  className="feedback-toast-command"
+                  onClick={() => setUpdateOpen(true)}
+                />
+                <IconCommand
+                  label={text("backup.dismiss")}
+                  icon={<DismissCircle20Regular />}
+                  className="feedback-toast-command"
+                  onClick={() => {
+                    setDismissedUpdate(updateNotice);
+                    if (
+                      updateStatus.phase === "available" ||
+                      updateStatus.phase === "ready"
+                    )
+                      void updater.continue();
+                  }}
+                />
+              </div>
+            )}
+        </FloatingMessage>
         <div
           className="shell-content"
           inert={prompted}
@@ -694,6 +859,19 @@ export default function WorkspaceApp({
               </MenuTrigger>
               <MenuPopover>
                 <MenuList className="compact-command-menu">
+                  <MenuItem
+                    icon={<Info20Regular />}
+                    disabled={locked || state.busy || app.busy}
+                    onClick={() => {
+                      if (app.project && collaborative) setPolicyRoot(app.root);
+                      else
+                        void shell.chooseReplacementProject().then((root) => {
+                          if (root) setPolicyRoot(root);
+                        });
+                    }}
+                  >
+                    {text("policy.title")}
+                  </MenuItem>
                   {app.project ? (
                     <>
                       <MenuItem
@@ -873,17 +1051,31 @@ export default function WorkspaceApp({
                   >
                     {text("about.title")}
                   </MenuItem>
+                  <MenuItem
+                    icon={<ArrowSync20Regular />}
+                    disabled={
+                      (locked && updateStatus?.phase !== "install_failed") ||
+                      aboutOpen ||
+                      updateOpen
+                    }
+                    onClick={() => {
+                      setUpdateOpen(true);
+                      void updater.refresh();
+                    }}
+                  >
+                    {text("update.menu")}
+                  </MenuItem>
                 </MenuList>
               </MenuPopover>
             </Menu>
             {app.project && !ready && !initializationFailed && (
-              <strong role="status">
+              <FloatingNotice>
                 {projectLabel(app.project, app.closing)}
-              </strong>
+              </FloatingNotice>
             )}
             <SvnToolbar
               root={
-                app.project && !app.closing && !app.project.shutdown.joined
+                ready && !app.closing && !app.project?.shutdown.joined
                   ? app.root
                   : ""
               }
@@ -964,6 +1156,7 @@ export default function WorkspaceApp({
           </nav>
           {logOpen && (
             <ActivityLog
+              noticeKey={logNoticeKey}
               events={activityLog.events}
               droppedEvents={activityLog.droppedEvents}
               close={() => {
@@ -971,37 +1164,20 @@ export default function WorkspaceApp({
                 setLogOpen(false);
                 focus.current.restore();
               }}
-            >
-              {app.settingsNotice && (
-                <div className="activity-log-setting-action">
-                  <p>{app.settingsNotice.message}</p>
-                  <Button
-                    type="button"
-                    disabled={app.busy || app.startupLoading || app.picking}
-                    onClick={() => void shell.retryProjectSettings()}
-                  >
-                    {text("project.retrySettings")}
-                  </Button>
-                </div>
-              )}
-              {app.error && (app.errorDetail || app.projectId) && (
-                <div className="activity-log-setting-action">
-                  <details>
-                    <summary>{text("error.details")}</summary>
-                    {app.errorDetail && <code>{app.errorDetail}</code>}
-                  </details>
-                  {app.projectId && (
-                    <Button type="button" onClick={() => shell.showHealth()}>
-                      {text("error.openDiagnostics")}
-                    </Button>
-                  )}
-                </div>
-              )}
-            </ActivityLog>
+            />
           )}
-          {!app.project && (state.error || app.error) && (
-            <MessageBar intent="error" role="alert" layout="multiline">
-              <MessageBarBody>
+          {(state.error || app.error) && (
+            <FloatingNotice
+              intent="error"
+              eventId={state.error || errorNoticeIdentity}
+              scope={templateScope}
+              isCurrent={() =>
+                `${shell.projectGeneration()}:${shell.snapshot().projectId ?? ""}` ===
+                  templateScope &&
+                shell.snapshot().errorEvent === app.errorEvent
+              }
+            >
+              <FloatingNoticeContent>
                 {state.error || app.error}
                 {!state.error &&
                   app.error &&
@@ -1020,20 +1196,30 @@ export default function WorkspaceApp({
                       )}
                     </details>
                   )}
-              </MessageBarBody>
-            </MessageBar>
+              </FloatingNoticeContent>
+            </FloatingNotice>
           )}
-          {!app.project && app.settingsNotice && (
-            <MessageBar
+          {documentState.error && (
+            <FloatingNotice intent="error">
+              {documentState.error}
+            </FloatingNotice>
+          )}
+          {app.settingsNotice && (
+            <FloatingNotice
+              eventId={app.settingsNotice}
+              scope={templateScope}
+              isCurrent={() =>
+                shell.snapshot().settingsNotice === app.settingsNotice &&
+                `${shell.projectGeneration()}:${shell.snapshot().projectId ?? ""}` ===
+                  templateScope
+              }
               intent={
                 app.settingsNotice.kind === "durability_uncertain"
                   ? "warning"
                   : "error"
               }
-              role="alert"
-              layout="multiline"
             >
-              <MessageBarBody>
+              <FloatingNoticeContent>
                 <span>{app.settingsNotice.message}</span>
                 <div className="actions">
                   <Button
@@ -1045,8 +1231,8 @@ export default function WorkspaceApp({
                     {text("project.retrySettings")}
                   </Button>
                 </div>
-              </MessageBarBody>
-            </MessageBar>
+              </FloatingNoticeContent>
+            </FloatingNotice>
           )}
           {!app.project && (
             <div className="home-brand">
@@ -1060,8 +1246,8 @@ export default function WorkspaceApp({
                 <p>{text("project.startHelp")}</p>
                 {(legacyHandoff?.state === "failed" ||
                   legacyHandoff?.state === "needs_attention") && (
-                  <MessageBar intent="warning" role="alert" layout="multiline">
-                    <MessageBarBody>
+                  <FloatingNotice intent="warning" eventId={legacyHandoff}>
+                    <FloatingNoticeContent>
                       이전 설치본의 보관 입력을 모두 외부에 확인하지 못했습니다.
                       이전 설치본을 제거하지 말고 보관 상태를 다시 확인해
                       주세요.
@@ -1075,8 +1261,8 @@ export default function WorkspaceApp({
                           보관 재확인
                         </Button>
                       </div>
-                    </MessageBarBody>
-                  </MessageBar>
+                    </FloatingNoticeContent>
+                  </FloatingNotice>
                 )}
                 <div className="project-start-actions">
                   <Button
@@ -1129,12 +1315,25 @@ export default function WorkspaceApp({
                     setOpenAsDefault(data.checked === true)
                   }
                 />
-                {app.startupLoading && (
-                  <p role="status">{text("project.defaultChecking")}</p>
-                )}
+                {app.startupLoading &&
+                  (!updateStatus || updateStatus.startupComplete) && (
+                    <FloatingNotice>
+                      {text("project.defaultChecking")}
+                    </FloatingNotice>
+                  )}
                 {app.startupFailure && (
-                  <MessageBar intent="error" role="alert" layout="multiline">
-                    <MessageBarBody>
+                  <FloatingNotice
+                    intent="error"
+                    eventId={startupNoticeIdentity}
+                    scope={templateScope}
+                    isCurrent={() =>
+                      shell.snapshot().startupFailureEvent ===
+                        app.startupFailureEvent &&
+                      `${shell.projectGeneration()}:${shell.snapshot().projectId ?? ""}` ===
+                        templateScope
+                    }
+                  >
+                    <FloatingNoticeContent>
                       <span>{app.startupFailure}</span>
                       <div className="actions">
                         {app.startupFailureKind === "settings_read" ? (
@@ -1177,8 +1376,8 @@ export default function WorkspaceApp({
                           {text("project.clearDefault")}
                         </Button>
                       </div>
-                    </MessageBarBody>
-                  </MessageBar>
+                    </FloatingNoticeContent>
+                  </FloatingNotice>
                 )}
               </section>
               <footer className="brand-credit">
@@ -1330,7 +1529,7 @@ export default function WorkspaceApp({
                 aria-label={text("navigation.panelResize")}
                 aria-orientation="vertical"
                 aria-valuemin={220}
-                aria-valuemax={440}
+                aria-valuemax={NAVIGATION_MAX}
                 aria-valuenow={glossaryNavigationWidth}
                 onPointerDown={(event) => {
                   if (glossaryNavigationCollapsed) return;
@@ -1347,7 +1546,7 @@ export default function WorkspaceApp({
                     Math.max(
                       220,
                       Math.min(
-                        440,
+                        NAVIGATION_MAX,
                         glossaryResizeStart.current.width +
                           event.clientX -
                           glossaryResizeStart.current.x,
@@ -1582,7 +1781,7 @@ export default function WorkspaceApp({
                 aria-label={text("navigation.panelResize")}
                 aria-orientation="vertical"
                 aria-valuemin={220}
-                aria-valuemax={440}
+                aria-valuemax={NAVIGATION_MAX}
                 aria-valuenow={templateNavigationWidth}
                 onPointerDown={(event) => {
                   if (templateNavigationCollapsed) return;
@@ -1599,7 +1798,7 @@ export default function WorkspaceApp({
                     Math.max(
                       220,
                       Math.min(
-                        440,
+                        NAVIGATION_MAX,
                         templateResizeStart.current.width +
                           event.clientX -
                           templateResizeStart.current.x,
@@ -1709,6 +1908,7 @@ export default function WorkspaceApp({
         {state.center && <RecoveryCenter controller={controller} />}
         <ProjectHealth
           controller={shell}
+          documentList={documentState.list}
           documents={(documentState.list?.documents ?? []).map((row) => ({
             id: row.id,
             name: row.name,
@@ -1922,13 +2122,32 @@ export default function WorkspaceApp({
                 ) : app.projectData?.kind === "backups" ? (
                   <>
                     {app.projectData.error &&
+                      !(
+                        app.projectData.errorSource === "cleanup" &&
+                        app.projectData.deletedCleanupWarning
+                      ) &&
                       app.projectData.errorSource !== "cleanup" && (
-                        <MessageBar
+                        <FloatingNotice
                           intent="warning"
-                          role="alert"
-                          layout="multiline"
+                          eventId={backupNoticeIdentity}
+                          scope={`${templateScope}:${app.projectData.dialogGeneration ?? ""}:${app.projectData.storage ?? ""}:${app.projectData.selected ?? ""}`}
+                          isCurrent={() => {
+                            const current = shell.snapshot().projectData;
+                            const prior = app.projectData;
+                            return (
+                              !!prior &&
+                              current?.kind === "backups" &&
+                              current.noticeEvent === prior.noticeEvent &&
+                              current.dialogGeneration ===
+                                prior.dialogGeneration &&
+                              current.storage === prior.storage &&
+                              current.selected === prior.selected &&
+                              `${shell.projectGeneration()}:${shell.snapshot().projectId ?? ""}` ===
+                                templateScope
+                            );
+                          }}
                         >
-                          <MessageBarBody>
+                          <FloatingNoticeContent>
                             {app.projectData.error}
                             <details>
                               <summary>{text("error.details")}</summary>
@@ -1943,16 +2162,12 @@ export default function WorkspaceApp({
                                 {text("error.openDiagnostics")}
                               </Button>
                             </details>
-                          </MessageBarBody>
-                        </MessageBar>
+                          </FloatingNoticeContent>
+                        </FloatingNotice>
                       )}
                     {app.projectData.deletedCleanupWarning && (
-                      <MessageBar
-                        intent="warning"
-                        role="alert"
-                        layout="multiline"
-                      >
-                        <MessageBarBody>
+                      <FloatingNotice intent="warning">
+                        <FloatingNoticeContent>
                           {text("backup.deletedCleanupRequired")}
                           <details>
                             <summary>{text("error.details")}</summary>
@@ -1980,8 +2195,8 @@ export default function WorkspaceApp({
                               </code>
                             )}
                           </details>
-                        </MessageBarBody>
-                      </MessageBar>
+                        </FloatingNoticeContent>
+                      </FloatingNotice>
                     )}
                     <div
                       className="backup-view-switch"
@@ -2077,57 +2292,51 @@ export default function WorkspaceApp({
                             const unnamed = unnamedBackupNumbers(
                               app.projectData.backups,
                             );
-                            return app.projectData.backups.map((backup) => (
-                              <Button
-                                key={backup.id}
-                                type="button"
-                                appearance="subtle"
-                                className="backup-row"
-                                aria-pressed={
-                                  app.projectData?.selected === backup.id
-                                }
-                                disabled={
-                                  ["corrupt", "unsupported"].includes(
-                                    backup.status,
-                                  ) || app.busy
-                                }
-                                onClick={() =>
-                                  void shell.selectBackup(backup.id)
-                                }
-                              >
-                                <strong>
-                                  {backup.label ||
+                            return (
+                              <BackupTable
+                                rows={app.projectData.backups.map((backup) => ({
+                                  id: backup.id,
+                                  name:
+                                    backup.label ||
                                     text("backup.unnamed", {
                                       number: String(
                                         backup.unnamedOrdinal ??
                                           unnamed.get(backup.id) ??
                                           "-",
                                       ),
-                                    })}
-                                </strong>
-                                <span className="backup-kind">
-                                  {backup.status === "verified"
-                                    ? text(
-                                        backup.kind === "pre_restore"
-                                          ? "backup.preRestore"
-                                          : "backup.manual",
-                                      )
-                                    : backup.status === "verification_required"
-                                      ? text("backup.verificationRequired")
+                                    }),
+                                  state:
+                                    backup.status === "verified"
+                                      ? text(
+                                          backup.kind === "pre_restore"
+                                            ? "backup.preRestore"
+                                            : "backup.manual",
+                                        )
                                       : text(
-                                          backup.status === "corrupt"
-                                            ? "backup.corruptState"
-                                            : "backup.unsupportedState",
-                                        )}
-                                </span>
-                                <span className="backup-meta">
-                                  {formatLocalDateTime(backup.createdAtUtc)} ·{" "}
-                                  {backupSize(backup.size)}
-                                  {backup.coverage === "legacy_unknown" &&
-                                    ` · ${text("backup.legacyCoverage")}`}
-                                </span>
-                              </Button>
-                            ));
+                                          backup.status ===
+                                            "verification_required"
+                                            ? "backup.verificationRequired"
+                                            : backup.status === "corrupt"
+                                              ? "backup.corruptState"
+                                              : "backup.unsupportedState",
+                                        ),
+                                  date: (
+                                    <>
+                                      {formatLocalDateTime(backup.createdAtUtc)}
+                                      {backup.coverage === "legacy_unknown" &&
+                                        ` · ${text("backup.legacyCoverage")}`}
+                                    </>
+                                  ),
+                                  size: backupSize(backup.size),
+                                  disabled:
+                                    ["corrupt", "unsupported"].includes(
+                                      backup.status,
+                                    ) || app.busy,
+                                }))}
+                                selected={app.projectData.selected}
+                                select={(id) => void shell.selectBackup(id)}
+                              />
+                            );
                           })()}
                           {app.projectData.nextCursor && (
                             <Button
@@ -2167,47 +2376,37 @@ export default function WorkspaceApp({
                               "deleted_list" ? null : (
                               <p>{text("backup.deletedEmpty")}</p>
                             ))}
-                          {app.projectData.deletedBackups?.map((entry) => (
-                            <Button
-                              key={entry.backup.id}
-                              type="button"
-                              appearance="subtle"
-                              className="backup-row"
-                              aria-pressed={
-                                app.projectData?.selectedDeleted ===
-                                entry.backup.id
-                              }
-                              disabled={
-                                entry.status === "uncertain" || app.busy
-                              }
-                              onClick={() =>
-                                shell.selectDeletedBackup(entry.backup.id)
-                              }
-                            >
-                              <strong>
-                                {entry.backup.label ||
-                                  text("backup.unnamedShort")}
-                              </strong>
-                              <span className="backup-kind">
-                                {text(
+                          <BackupTable
+                            dateLabel="삭제 / 보관 종료"
+                            rows={(app.projectData.deletedBackups ?? []).map(
+                              (entry) => ({
+                                id: entry.backup.id,
+                                name:
+                                  entry.backup.label ||
+                                  text("backup.unnamedShort"),
+                                state: text(
                                   entry.status === "expired"
                                     ? "backup.deletedExpired"
                                     : entry.status === "uncertain"
                                       ? "backup.deletedUncertain"
                                       : "backup.verificationRequired",
-                                )}
-                              </span>
-                              {entry.deletedAtUtc && (
-                                <span className="backup-meta">
-                                  {text("backup.deletedAt")}{" "}
-                                  {formatLocalDateTime(entry.deletedAtUtc)} ·{" "}
-                                  {text("backup.expiresAt")}{" "}
-                                  {formatLocalDateTime(entry.expiresAtUtc)} ·{" "}
-                                  {backupSize(entry.backup.size)}
-                                </span>
-                              )}
-                            </Button>
-                          ))}
+                                ),
+                                date: (
+                                  <>
+                                    {formatLocalDateTime(entry.deletedAtUtc)}
+                                    <br />
+                                    {text("backup.expiresAt")}{" "}
+                                    {formatLocalDateTime(entry.expiresAtUtc)}
+                                  </>
+                                ),
+                                size: backupSize(entry.backup.size),
+                                disabled:
+                                  entry.status === "uncertain" || app.busy,
+                              }),
+                            )}
+                            selected={app.projectData.selectedDeleted}
+                            select={(id) => shell.selectDeletedBackup(id)}
+                          />
                         </div>
                       </section>
                     )}
@@ -2436,9 +2635,14 @@ export default function WorkspaceApp({
                 </Button>
               </DialogActions>
             </DialogBody>
-            {app.feedback && feedbackToast}
+            <FloatingMessage>{app.feedback && feedbackToast}</FloatingMessage>
           </DialogSurface>
         </Dialog>
+        <UpdateDialog
+          controller={updater}
+          open={updateOpen}
+          onClose={() => setUpdateOpen(false)}
+        />
         <AboutDialog
           open={aboutOpen}
           close={() => {
@@ -2549,6 +2753,32 @@ export default function WorkspaceApp({
             </DialogBody>
           </DialogSurface>
         </Dialog>
+        {effectivePolicyRoot && (
+          <CollaborationPolicyDialog
+            key={effectivePolicyRoot}
+            root={effectivePolicyRoot}
+            currentVersion={updateStatus?.currentVersion}
+            canSave={ready && collaborative && app.root === effectivePolicyRoot}
+            close={dismissPolicy}
+            commit={() => {
+              dismissPolicy();
+              setSvnCommitTarget(null);
+            }}
+            openProject={() => {
+              const root = effectivePolicyRoot;
+              dismissPolicy();
+              void controller.navigate({ kind: "open_project", root });
+            }}
+            home={() => {
+              dismissPolicy();
+              void controller.navigate({ kind: "close_project" });
+            }}
+            update={() => {
+              dismissPolicy();
+              void shell.requestClose();
+            }}
+          />
+        )}
         <SvnDialog
           open={svnEntry !== null}
           entry={svnEntry ?? "connect"}

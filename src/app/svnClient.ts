@@ -1,6 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 import { text } from "../strings";
 
+export interface CollaborationPolicy {
+  formatVersion: number;
+  repository: string;
+  repositoryId: string;
+  project: string;
+  minimumAppVersion: string;
+  supportFloor: string;
+}
+export interface PolicySnapshot {
+  currentAppVersion: string;
+  server: CollaborationPolicy | null;
+  local: CollaborationPolicy | null;
+  localModified: boolean | null;
+  revision: string;
+  issue: string | null;
+  availableVersions: string[];
+}
 export interface SvnProbe {
   installed: boolean;
   path: string | null;
@@ -20,6 +37,7 @@ export interface SvnInspection {
   wcRoot: string;
   url: string;
   repository: string;
+  repositoryId?: string;
   revision: string;
 }
 export interface SvnStatusEntry {
@@ -83,6 +101,17 @@ export interface SvnDocumentLockInfo {
   observation: string | null;
 }
 const errors = {
+  svn_policy_project_invalid: "policy.errorProject",
+  svn_policy_deleted: "policy.errorDeleted",
+  svn_policy_invalid: "policy.errorInvalid",
+  svn_policy_format_unsupported: "policy.errorInvalid",
+  svn_policy_scope_mismatch: "policy.errorInvalid",
+  svn_policy_local_unreadable: "policy.errorInvalid",
+  svn_policy_changed: "policy.errorChanged",
+  svn_policy_version_unavailable: "policy.errorUnavailable",
+  svn_policy_already_initialized: "policy.errorInitialized",
+  svn_policy_initialization_unverified: "policy.errorInitializationUnknown",
+  svn_policy_commit_unverified: "policy.errorInitializationUnknown",
   svn_cli_missing: "svn.errorMissingCli",
   svn_cli_missing_or_unsupported: "svn.errorMissingCli",
   svn_gui_missing: "svn.errorMissingGui",
@@ -150,6 +179,12 @@ export function svnFailure(error: unknown): string {
   return text(key ?? "svn.errorGeneral");
 }
 export const svnClient = {
+  policySnapshot: (path: string) =>
+    invoke<PolicySnapshot>("svn_policy_snapshot", { path }),
+  policyInitialize: (path: string, request: string, minimum: string) =>
+    invoke<PolicySnapshot>("svn_policy_initialize", { path, request, minimum }),
+  policySave: (path: string, minimum: string, revision: string) =>
+    invoke<PolicySnapshot>("svn_policy_save", { path, minimum, revision }),
   probe: (path?: string, guiPath?: string) =>
     invoke<SvnProbe>("svn_probe", {
       path: path || null,

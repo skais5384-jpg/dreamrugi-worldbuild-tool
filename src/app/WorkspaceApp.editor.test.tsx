@@ -22,6 +22,46 @@ beforeEach(() => {
 });
 
 describe("whole template workspace", () => {
+  it.each([false, true])(
+    "초안 읽기 진행은 실패 경고가 아니며 완료 실패=%s일 때만 경고한다",
+    async (reject) => {
+      const { controller, transport } = await setup();
+      await act(() => controller.navigate({ kind: "browse" }));
+      transport.hold = "template_draft_content";
+      let navigation: Promise<void> = Promise.resolve();
+      act(() => {
+        navigation = controller.navigate({ kind: "new" });
+      });
+      await waitFor(() => {
+        expect(controller.snapshot().draft?.loaded).toBe(false);
+        expect(controller.snapshot().busy).toBe(true);
+      });
+      expect(screen.queryByText(text("whole.loadIncomplete"))).toBeNull();
+      const original = transport.workspaceResult!;
+      if (reject)
+        transport.workspaceResult = (input) =>
+          input.kind === "template_draft_content"
+            ? {
+                kind: "rejected",
+                error: { code: "storage", nextAction: "" },
+                input_retained: false,
+              }
+            : original(input);
+      await act(async () => {
+        transport.completeHeld();
+        await navigation;
+      });
+      if (reject) {
+        expect(
+          await screen.findByText(text("whole.loadIncomplete")),
+        ).toBeVisible();
+        expect(controller.snapshot().draft?.loaded).toBe(false);
+      } else {
+        expect(controller.snapshot().draft?.loaded).toBe(true);
+        expect(screen.queryByText(text("whole.loadIncomplete"))).toBeNull();
+      }
+    },
+  );
   it("선택 기능 등록 실패를 안전한 지원 진단으로 표시한다", async () => {
     const { transport } = await setup();
     transport.supportDiagnosticChanged([
@@ -358,9 +398,11 @@ describe("whole template workspace", () => {
     ).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "닫기" }));
     await waitFor(() => expect(controller.snapshot().center).toBe(false));
-    expect(
-      screen.getByRole("button", { name: text("app.message14") }),
-    ).toBeEnabled();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: text("app.message14") }),
+      ).toBeEnabled(),
+    );
   });
   it("u64 세대의 상위 값도 Number로 바꾸지 않고 overflow를 거부한다", () => {
     expect(nextGeneration("9007199254740993")).toBe("9007199254740994");

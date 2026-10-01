@@ -26,13 +26,6 @@
 .project-menu-bar > span {
   font-size: var(--font-ui-smaller);
 }
-.shell-content > .fui-MessageBar {
-  position: absolute;
-  z-index: 45;
-  left: 48px;
-  right: 0;
-  top: 36px;
-}
 .mode-ribbon {
   position: absolute;
   left: 0;
@@ -66,14 +59,13 @@
   flex: 1;
   min-height: 0;
   gap: 0;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: var(--navigation-default-width) minmax(0, 1fr);
   align-items: stretch;
 }
 .workbench-shell .template-workspace {
-  grid-template-columns: var(--template-navigation-width, 280px) 5px minmax(
-      0,
-      1fr
-    );
+  grid-template-columns:
+    var(--template-navigation-width, var(--navigation-default-width))
+    5px minmax(0, 1fr);
 }
 .workbench-shell .template-workspace.navigation-collapsed {
   grid-template-columns: 40px 0 minmax(0, 1fr);
@@ -156,10 +148,9 @@
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: var(--glossary-navigation-width, 280px) 5px minmax(
-      0,
-      1fr
-    );
+  grid-template-columns:
+    var(--glossary-navigation-width, var(--navigation-default-width))
+    5px minmax(0, 1fr);
 }
 .glossary-workspace.navigation-collapsed {
   grid-template-columns: 40px 0 minmax(0, 1fr);
@@ -290,11 +281,6 @@
   box-shadow: none;
   overflow: visible;
 }
-.workbench-shell .whole-drag-card {
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
 .workbench-shell .whole-field-list {
   gap: 2px;
 }
@@ -331,22 +317,22 @@
 .document-columns {
   display: grid;
   grid-template-columns:
-    var(--document-navigation-width, 280px) 5px minmax(0, 1fr) 5px
-    var(--document-glossary-width, 280px);
+    var(--document-navigation-width, var(--navigation-default-width))
+    5px minmax(0, 1fr) 5px
+    var(--document-glossary-width, var(--navigation-default-width));
   flex: 1;
   min-height: 0;
 }
 .document-columns.navigation-collapsed {
   grid-template-columns: 40px 0 minmax(0, 1fr) 5px var(
       --document-glossary-width,
-      280px
+      var(--navigation-default-width)
     );
 }
 .document-columns.glossary-collapsed {
-  grid-template-columns: var(--document-navigation-width, 280px) 5px minmax(
-      0,
-      1fr
-    );
+  grid-template-columns:
+    var(--document-navigation-width, var(--navigation-default-width))
+    5px minmax(0, 1fr);
 }
 .document-columns.navigation-collapsed.glossary-collapsed {
   grid-template-columns: 40px 0 minmax(0, 1fr);
@@ -403,7 +389,11 @@
 }
 .document-search-area {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
+  min-width: 0;
+}
+.document-search-results {
   min-width: 0;
 }
 .document-search-area [role="tablist"] {
@@ -686,6 +676,9 @@
   height: var(--document-tree-row-height);
   min-height: var(--document-tree-row-height);
   padding-block: 0;
+}
+.document-tree-row .tree-name:first-child {
+  padding-left: 8px;
 }
 .document-tree-svn-overlay {
   width: 20px;
@@ -1006,8 +999,11 @@
 }
 .document-body article {
   overflow-wrap: anywhere;
-  font-size: 16px;
-  line-height: 24px;
+  width: 100%;
+  max-width: var(--document-reading-width);
+  margin-inline: auto;
+  font-size: var(--document-reading-font);
+  line-height: var(--document-reading-line);
 }
 .document-content-header,
 .document-edit-header,
@@ -1024,12 +1020,15 @@
   background: var(--background-primary);
   border-bottom: 1px solid var(--background-modifier-border);
 }
-.document-content-header .document-title-row {
+.document-title-row {
   min-width: 0;
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+.document-title-row h1 {
+  margin: 0;
 }
 .document-content-header .document-term-title {
   margin: 0;
@@ -1055,7 +1054,7 @@
   margin: 0;
 }
 .document-edit-header {
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
 }
 .document-edit-header > .document-save-state {
   justify-self: end;
@@ -1079,6 +1078,19 @@
   .document-edit-header > .document-save-state {
     grid-column: 1;
     justify-self: start;
+  }
+  .document-edit-header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .document-edit-header > .document-title-row {
+    grid-column: 1 / -1;
+  }
+  .document-edit-header > .actions {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  .document-edit-header > .document-save-state {
+    grid-row: 2;
   }
 }
 .document-save-state {
@@ -1105,7 +1117,17 @@
   margin: 0 0 24px;
 }
 .document-body .property-row {
-  margin-bottom: 8px;
+  margin-bottom: 4px;
+}
+.document-body .property-row:not(.property-row-block) > .property-content,
+.document-body
+  article:not(.document-editor)
+  .property-row:not(.property-row-block)
+  > .property-label {
+  padding-block: 4px;
+}
+.document-editor .property-row:not(.property-row-block) > .property-label {
+  padding-block: 10px 4px;
 }
 /* Fluent 기본 입력(14px)에 읽기 필드와 이름 셀을 맞춘다. */
 .document-body .property-label,
@@ -1116,8 +1138,15 @@
 /* 한 문서의 일반/서식 본문은 같은 크기를 사용한다. */
 .document-body .rich-input,
 .document-body .rich-read {
-  font-size: var(--fontSizeBase300);
-  line-height: var(--lineHeightBase300);
+  font-size: var(--document-reading-font);
+  line-height: var(--document-reading-line);
+}
+.document-body .property-row-block {
+  margin-bottom: var(--space-section);
+}
+.document-body .property-row-block > .property-content {
+  font-size: var(--document-reading-font);
+  line-height: var(--document-reading-line);
 }
 .save-diagnostic {
   white-space: pre-wrap;
@@ -1195,7 +1224,10 @@
   padding-left: 96px;
 }
 @media (max-width: 1100px) {
-  .workbench-shell .workspace {
+  .workbench-shell
+    .workspace:not(.template-workspace):not(.glossary-workspace):not(
+      .project-files-workspace
+    ) {
     grid-template-columns: 260px minmax(0, 1fr);
   }
   .document-body {
@@ -1373,10 +1405,14 @@
   border-radius: var(--borderRadiusMedium);
   display: flex;
   flex-wrap: wrap;
-  gap: 4px;
+  font-size: var(--fontSizeBase200);
+  gap: 6px;
+  justify-content: center;
+  line-height: var(--lineHeightBase300);
   max-width: 100%;
   min-height: 28px;
-  padding: 2px 4px;
+  padding: 3px 8px;
+  text-align: center;
   width: fit-content;
 }
 
@@ -1384,20 +1420,28 @@
   min-width: 0;
 }
 
-.relation-tag-name {
+.relation-tag .relation-tag-name {
+  min-height: 20px;
   min-width: 0;
   max-width: min(100%, 420px);
-  padding: 0 2px;
+  padding: 0;
   color: var(--colorNeutralForeground1);
-  font-size: var(--fontSizeBase300);
+  font-size: inherit;
   font-weight: var(--fontWeightRegular);
-  justify-content: flex-start;
-  text-align: left;
+  justify-content: center;
+  line-height: inherit;
+  text-align: center;
 }
 
 .relation-tag-name > span,
 .relation-tag-role {
   overflow-wrap: anywhere;
+}
+.relation-tag-direction {
+  color: var(--colorNeutralForeground2);
+  font-size: inherit;
+  line-height: inherit;
+  white-space: nowrap;
 }
 
 .relation-name-input {
@@ -1455,9 +1499,9 @@
 /* 선택 이름보다 제거 동작이 눈에 띄지 않도록 아이콘 크기로만 고정한다. */
 .reference-values .reference-remove {
   align-self: center;
-  min-width: 24px;
-  width: 24px;
-  height: 24px;
+  min-width: var(--compact-command-height);
+  width: var(--compact-command-height);
+  height: var(--compact-command-height);
   padding: 0;
 }
 

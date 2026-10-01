@@ -1,3 +1,4 @@
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
 import { useEffect, useRef, useState } from "react";
 import {
   Dialog,
@@ -6,8 +7,6 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
-  MessageBar,
-  MessageBarBody,
 } from "@fluentui/react-components";
 import { Button } from "../ui/Controls";
 import type { DocumentController } from "./documentController";
@@ -184,21 +183,23 @@ export function PdfExportDialog({
               </p>
             )}
             {dirty && (
-              <MessageBar intent="warning">
-                <MessageBarBody>{text("pdf.savedOnly")}</MessageBarBody>
-              </MessageBar>
+              <FloatingNotice intent="warning">
+                <FloatingNoticeContent>
+                  {text("pdf.savedOnly")}
+                </FloatingNoticeContent>
+              </FloatingNotice>
             )}
             {inspection && inspection.missing_images.length > 0 && (
-              <MessageBar intent="warning">
-                <MessageBarBody>
+              <FloatingNotice intent="warning">
+                <FloatingNoticeContent>
                   {text("pdf.missing")}
                   <ul>
                     {inspection.missing_images.map((name, index) => (
                       <li key={index}>{name}</li>
                     ))}
                   </ul>
-                </MessageBarBody>
-              </MessageBar>
+                </FloatingNoticeContent>
+              </FloatingNotice>
             )}
             {phase === "inspecting" && (
               <p role="status">{text("pdf.inspecting")}</p>
@@ -207,9 +208,9 @@ export function PdfExportDialog({
               <p role="status">{text("pdf.rendering")}</p>
             )}
             {!!error && (
-              <MessageBar intent="error">
-                <MessageBarBody>{error}</MessageBarBody>
-              </MessageBar>
+              <FloatingNotice intent="error">
+                <FloatingNoticeContent>{error}</FloatingNoticeContent>
+              </FloatingNotice>
             )}
           </DialogContent>
           <DialogActions>

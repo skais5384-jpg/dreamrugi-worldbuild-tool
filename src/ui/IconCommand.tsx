@@ -1,4 +1,4 @@
-import { Tooltip } from "@fluentui/react-components";
+import { Tooltip, useRestoreFocusTarget } from "@fluentui/react-components";
 import type { MouseEventHandler, ReactElement } from "react";
 import { Button } from "./Controls";
 
@@ -9,16 +9,20 @@ export function IconCommand({
   disabled,
   onClick,
   className,
+  restoreFocus = false,
 }: {
   label: string;
   icon: ReactElement;
   disabled?: boolean;
   onClick?: MouseEventHandler<HTMLButtonElement>;
   className?: string;
+  restoreFocus?: boolean;
 }) {
+  const focusAttributes = useRestoreFocusTarget();
   return (
     <Tooltip content={label} relationship="label">
       <Button
+        {...(restoreFocus ? focusAttributes : {})}
         type="button"
         appearance="subtle"
         aria-label={label}

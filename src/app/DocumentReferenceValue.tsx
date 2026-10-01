@@ -15,41 +15,49 @@ import { text } from "../strings";
 export interface ReferenceContext {
   list: DocumentList | null;
   templates: TemplateSummary[];
+  index?: ReadonlyMap<string, ReferenceDisplay>;
   currentDocument?: string;
   open: (document: string) => void;
 }
 
-function display(
-  document: string,
-  context: ReferenceContext,
-): { name: string; detail: string; active: boolean } {
-  const summary = context.list?.documents.find((row) => row.id === document);
-  const node = context.list?.layout.nodes[document];
-  if (!summary)
-    return {
-      name: text("reference.missing"),
-      detail: text("reference.missingHelp"),
-      active: false,
-    };
-  const template = context.templates.find((row) => row.id === summary.template);
-  const parents: string[] = [];
-  let parent = node?.parentId ?? null;
-  while (parent && parents.length < 32) {
-    const row = context.list?.documents.find((item) => item.id === parent);
-    if (row) parents.unshift(row.name);
-    parent = context.list?.layout.nodes[parent]?.parentId ?? null;
+type ReferenceDisplay = { name: string; detail: string; active: boolean };
+
+const missingDisplay = (): ReferenceDisplay => ({
+  name: text("reference.missing"),
+  detail: text("reference.missingHelp"),
+  active: false,
+});
+
+/** One index per document-list generation, shared by read rows and candidate search. */
+export function buildReferenceIndex(
+  list: DocumentList | null,
+  templates: readonly TemplateSummary[],
+): ReadonlyMap<string, ReferenceDisplay> {
+  const byId = new Map((list?.documents ?? []).map((row) => [row.id, row]));
+  const templateNames = new Map(templates.map((row) => [row.id, row.name]));
+  const result = new Map<string, ReferenceDisplay>();
+  for (const summary of list?.documents ?? []) {
+    const node = list?.layout.nodes[summary.id];
+    const parents: string[] = [];
+    let parent = node?.parentId ?? null;
+    while (parent && parents.length < 32) {
+      const row = byId.get(parent);
+      if (row) parents.unshift(row.name);
+      parent = list?.layout.nodes[parent]?.parentId ?? null;
+    }
+    result.set(summary.id, {
+      name: summary.name,
+      detail: [
+        templateNames.get(summary.template) ?? summary.template,
+        parents.length ? parents.join(" / ") : text("documents.root"),
+        node?.state === "trashed" ? text("reference.trashed") : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      active: node?.state !== "trashed",
+    });
   }
-  return {
-    name: summary.name,
-    detail: [
-      template?.name ?? summary.template,
-      parents.length ? parents.join(" / ") : text("documents.root"),
-      node?.state === "trashed" ? text("reference.trashed") : "",
-    ]
-      .filter(Boolean)
-      .join(" · "),
-    active: node?.state !== "trashed",
-  };
+  return result;
 }
 
 function ReferenceRows({
@@ -65,17 +73,21 @@ function ReferenceRows({
     value: Extract<Value, { kind: "relation" | "document_link" }>,
   ) => void;
 }) {
+  const index = useMemo(
+    () => context.index ?? buildReferenceIndex(context.list, context.templates),
+    [context.index, context.list, context.templates],
+  );
   const documents =
     value.kind === "relation"
       ? value.links.map((link) => link.document)
       : value.documents;
   return (
     <ul className="reference-values">
-      {documents.map((document, index) => {
-        const shown = display(document, context);
+      {documents.map((document, position) => {
+        const shown = index.get(document) ?? missingDisplay();
         const tooltip = [shown.name, shown.detail].filter(Boolean).join(" · ");
         if (value.kind === "relation") {
-          const relation = value.links[index];
+          const relation = value.links[position];
           return (
             <li
               className={`relation-reference-value${change ? " is-editing" : ""}`}
@@ -94,9 +106,14 @@ function ReferenceRows({
                       {shown.name}
                     </Button>
                   </Tooltip>
-                  {!change && relation.name && (
+                  {relation.name && (
                     <span className="relation-tag-role">
                       <span aria-hidden="true">–</span> {relation.name}
+                    </span>
+                  )}
+                  {change && (
+                    <span className="relation-tag-direction">
+                      {relation.oneWay ? "단방향 →" : "양방향 ↔"}
                     </span>
                   )}
                 </div>
@@ -248,6 +265,10 @@ export function ReferenceEditor({
 }) {
   const [query, setQuery] = useState("");
   const [composing, setComposing] = useState(false);
+  const index = useMemo(
+    () => context.index ?? buildReferenceIndex(context.list, context.templates),
+    [context.index, context.list, context.templates],
+  );
   const candidates = useMemo(() => {
     const used = new Set(
       value.kind === "relation"
@@ -269,7 +290,8 @@ export function ReferenceEditor({
           field.allowedTemplates.includes(row.template),
       )
       .filter((row) => {
-        const shown = display(row.id, context);
+        if (!needle) return true;
+        const shown = index.get(row.id) ?? missingDisplay();
         return (
           !needle ||
           shown.name.toLocaleLowerCase().includes(needle) ||
@@ -279,7 +301,14 @@ export function ReferenceEditor({
       .sort((left, right) =>
         left.name.localeCompare(right.name, "ko", { sensitivity: "base" }),
       );
-  }, [context, field.allowedTemplates, query, value]);
+  }, [
+    context.list,
+    context.currentDocument,
+    field.allowedTemplates,
+    index,
+    query,
+    value,
+  ]);
   const selectionFull =
     value.kind === "relation" &&
     field.multiple === false &&
@@ -338,7 +367,7 @@ export function ReferenceEditor({
         }}
       >
         {candidates.map((row) => {
-          const shown = display(row.id, context);
+          const shown = index.get(row.id) ?? missingDisplay();
           const label = [shown.name, shown.detail].filter(Boolean).join(" · ");
           return (
             <Tooltip key={row.id} content={label} relationship="description">

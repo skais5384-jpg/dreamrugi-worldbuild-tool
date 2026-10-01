@@ -351,6 +351,18 @@ fn mark_clean_state(state: &mut State) {
     }
 }
 
+/// updater의 동기 process::exit 전 경계. 설치 성공/재실행을 주장하지 않는다.
+pub(crate) fn mark_update_handoff() {
+    let Some(owner) = STATE.get() else {
+        return;
+    };
+    record("app", "shutdown", "updater", "handoff", None, None);
+    let mut state = owner
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    mark_clean_state(&mut state);
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LogTestPoint {

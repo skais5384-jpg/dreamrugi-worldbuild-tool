@@ -18,6 +18,12 @@ pub(crate) struct Inventory {
 }
 
 pub(crate) fn inventory(root: &Path) -> Result<Inventory, &'static str> {
+    inventory_inner(root, true)
+}
+pub(crate) fn registration_inventory(root: &Path) -> Result<Inventory, &'static str> {
+    inventory_inner(root, false)
+}
+fn inventory_inner(root: &Path, include_policy: bool) -> Result<Inventory, &'static str> {
     let (all_directories, all_files) =
         project_backup::snapshot_paths(root).map_err(|_| "svn_share_invalid")?;
     let present: BTreeSet<_> = all_files.iter().map(String::as_str).collect();
@@ -30,6 +36,13 @@ pub(crate) fn inventory(root: &Path) -> Result<Inventory, &'static str> {
         }
         let relative = ProjectRelativePath::parse(raw).map_err(|_| "svn_share_invalid")?;
         let file = root.join(raw);
+        if raw == crate::svn::policy::FILE {
+            crate::svn::policy::validate_file(&file).map_err(|_| "svn_share_invalid")?;
+            if include_policy {
+                selected.insert(raw.clone());
+            }
+            continue;
+        }
         match ArtifactSourceId::from_target(&relative) {
             Some(ArtifactSourceId::Template(id)) => {
                 let artifact = decode_template(&fs::read(&file).map_err(|_| "svn_share_invalid")?)

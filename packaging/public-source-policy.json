@@ -40,7 +40,9 @@
     "scripts/release-candidate.test.py",
     "scripts/verify-updater-signature.mjs",
     "scripts/verify-updater-signature.test.mjs",
+    "scripts/updater-test-server.mjs",
     "scripts/manage-release-key.ps1",
-    "scripts/build-release-candidate.ps1"
+    "scripts/build-release-candidate.ps1",
+    "scripts/store-identity.py"
   ]
 }

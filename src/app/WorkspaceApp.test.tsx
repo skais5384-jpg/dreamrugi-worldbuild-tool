@@ -129,6 +129,7 @@ describe("whole template workspace", () => {
     ).toBeNull();
     const menuItems = screen.getAllByRole("menuitem");
     expect(menuItems.map((item) => item.textContent?.trim())).toEqual([
+      text("policy.title"),
       text("project.setDefault"),
       text("app.message07"),
       text("backup.copy"),
@@ -580,11 +581,24 @@ describe("whole template workspace", () => {
     const controller = new WorkspaceController(shell);
     render(<WorkspaceApp controller={controller} />);
 
+    await waitFor(() =>
+      expect(shell.snapshot().startupFailureKind).toBe("project_open"),
+    );
+    const notice = await screen.findByRole("alert");
+    expect(within(notice).getAllByRole("button")).toHaveLength(2);
     expect(
-      await screen.findByRole("button", { name: text("project.retryDefault") }),
-    ).toBeEnabled();
+      within(notice).getByRole("button", { name: text("update.details") }),
+    ).toContainHTML("<svg");
+    expect(
+      within(notice).queryByRole("button", {
+        name: text("project.retryDefault"),
+      }),
+    ).toBeNull();
     expect(shell.snapshot().projectId).toBeNull();
-    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(1));
+    expect(
+      screen.getByRole("alert").closest(".floating-message-stack"),
+    ).not.toBeNull();
     expect(screen.queryByLabelText(text("app.message06"))).toBeNull();
     expect(
       fixture.transport.commands.filter(
@@ -599,6 +613,12 @@ describe("whole template workspace", () => {
           command.input.kind === "retire_project",
       ),
     ).toBe(true);
+    fireEvent.click(
+      within(notice).getByRole("button", { name: text("update.details") }),
+    );
+    expect(
+      await screen.findByRole("button", { name: text("project.retryDefault") }),
+    ).toBeEnabled();
   });
 
   it("설정 읽기 실패는 root 없이 재읽기·해제·다른 폴더 선택을 모두 제공한다", async () => {
@@ -611,6 +631,11 @@ describe("whole template workspace", () => {
     );
     render(<WorkspaceApp controller={new WorkspaceController(shell)} />);
 
+    const notice = await screen.findByRole("alert");
+    expect(within(notice).getAllByRole("button")).toHaveLength(2);
+    fireEvent.click(
+      within(notice).getByRole("button", { name: text("update.details") }),
+    );
     const retry = await screen.findByRole("button", {
       name: text("project.retrySettings"),
     });
@@ -628,7 +653,11 @@ describe("whole template workspace", () => {
       screen.getByRole("button", { name: text("project.chooseAnother") }),
     );
     await waitFor(() => expect(picker).toHaveBeenCalledWith("open"));
-    expect(screen.getByText(text("project.defaultReadFailed"))).toBeVisible();
+    expect(
+      screen
+        .getAllByText(text("project.defaultReadFailed"))
+        .some((node) => node.closest("table")),
+    ).toBe(true);
     expect(
       fixture.transport.commands.filter(
         (command) =>
@@ -663,6 +692,10 @@ describe("whole template workspace", () => {
     const shell = new TemplateController(new GuardedClient(fixture.transport));
     render(<WorkspaceApp controller={new WorkspaceController(shell)} />);
 
+    const notice = await screen.findByRole("alert");
+    fireEvent.click(
+      within(notice).getByRole("button", { name: text("update.details") }),
+    );
     const clear = await screen.findByRole("button", {
       name: text("project.clearDefault"),
     });
@@ -756,10 +789,16 @@ describe("whole template workspace", () => {
     await waitFor(() => expect(shell.snapshot().projectId).toBe("project-one"));
     await act(() => shell.setCurrentAsDefault());
 
-    fireEvent.click(screen.getByRole("button", { name: /실행 기록/ }));
+    fireEvent.click(
+      within(
+        screen.getByRole("navigation", { name: text("documents.modes") }),
+      ).getByRole("button", { name: /실행 기록/ }),
+    );
 
     expect(
-      await screen.findByText(text("project.defaultNotAppliedObserved")),
+      await screen.findByText(text("project.defaultNotAppliedObserved"), {
+        selector: "summary",
+      }),
     ).toBeVisible();
     expect(shell.snapshot().projectId).toBe("project-one");
     expect(fixture.transport.defaultProjectRoot).toBe("C:\\old-default");

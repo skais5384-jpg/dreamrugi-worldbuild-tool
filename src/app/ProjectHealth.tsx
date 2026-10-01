@@ -1,3 +1,4 @@
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
 import {
   Badge,
   Dialog,
@@ -6,8 +7,6 @@ import {
   DialogContent,
   DialogSurface,
   DialogTitle,
-  MessageBar,
-  MessageBarBody,
 } from "@fluentui/react-components";
 import {
   CheckmarkCircle20Filled,
@@ -17,6 +16,7 @@ import {
 import { Button } from "../ui/Controls";
 import { InlineNotice } from "../ui/InlineNotice";
 import { text } from "../strings";
+import type { DocumentList } from "../bridge/documents";
 import type { TemplateController } from "./controller";
 import "./ProjectHealth.css";
 
@@ -29,11 +29,13 @@ export interface HealthDocument {
 export function ProjectHealth({
   controller,
   documents,
+  documentList,
   openResources,
   openTrash,
 }: {
   controller: TemplateController;
   documents: HealthDocument[];
+  documentList: DocumentList | null;
   openResources: (keys: string[]) => void;
   openTrash: (keys: string[]) => void;
 }) {
@@ -41,6 +43,16 @@ export function ProjectHealth({
   const dialog = state.health;
   if (!dialog || dialog.surface !== "health") return null;
   const inspection = dialog.inspection;
+  const documentCheckPending = dialog.check?.documents === "checking";
+  const documentCheckFailed = dialog.check?.documents === "unverified";
+  const documentProblem = !!documentList?.problem;
+  const documentsVerified =
+    !state.projectId ||
+    (dialog.check?.documents === "verified" &&
+      !!documentList &&
+      !documentProblem &&
+      documentList.issueStatus === "complete" &&
+      !documentList.unverifiedDocuments?.length);
   const pending =
     state.busy || ["checking", "exporting"].includes(dialog.phase);
   const resourceProblems = inspection?.rows.filter((row) =>
@@ -82,14 +94,17 @@ export function ProjectHealth({
     (trashedResources?.length ?? 0) +
     templateProblemDocuments.length;
   const status =
-    state.inspectionPendingDocuments.length && !inspection
+    (!documentsVerified || state.inspectionPendingDocuments.length) &&
+    !inspection
       ? { color: "warning" as const, label: text("health.badge.partial") }
       : !inspection
         ? {
             color: "informative" as const,
             label: text("health.badge.unchecked"),
           }
-        : !inspection.complete
+        : !inspection.complete ||
+            !documentsVerified ||
+            !!state.inspectionPendingDocuments.length
           ? { color: "warning" as const, label: text("health.badge.partial") }
           : problemCount > 0
             ? {
@@ -111,10 +126,19 @@ export function ProjectHealth({
         `corrupt=${inspection.corruptAssets}`,
         `uncertain=${inspection.uncertainAssets}`,
         `templateProblemDocuments=${templateProblemDocuments.length}`,
+        `documentListVerified=${documentsVerified}`,
       ].join("\n")
     : "Worldbuild project diagnostics v2\ninspection=unavailable";
+  const partialMessage =
+    dialog.message === text("health.checkPartial") || !documentsVerified;
   return (
-    <Dialog open modalType="modal">
+    <Dialog
+      open
+      modalType="modal"
+      onOpenChange={(_, data) => {
+        if (!data.open) controller.closeHealth();
+      }}
+    >
       <DialogSurface className="health-surface">
         <DialogBody className="health-body">
           <DialogTitle>{text("health.title")}</DialogTitle>
@@ -124,14 +148,14 @@ export function ProjectHealth({
               <p>{text("health.problemHelp")}</p>
             </div>
             {dialog.error && (
-              <MessageBar intent="error" role="alert">
-                <MessageBarBody>{dialog.error}</MessageBarBody>
-              </MessageBar>
+              <FloatingNotice intent="error">
+                <FloatingNoticeContent>{dialog.error}</FloatingNoticeContent>
+              </FloatingNotice>
             )}
             {dialog.message && (
-              <MessageBar intent="success" role="status">
-                <MessageBarBody>{dialog.message}</MessageBarBody>
-              </MessageBar>
+              <FloatingNotice intent={partialMessage ? "warning" : "success"}>
+                <FloatingNoticeContent>{dialog.message}</FloatingNoticeContent>
+              </FloatingNotice>
             )}
             <section className="health-section">
               <div className="health-section-heading">
@@ -143,13 +167,24 @@ export function ProjectHealth({
                 </div>
                 <Button
                   type="button"
-                  disabled={pending}
+                  disabled={pending || documentCheckPending}
                   onClick={() => void controller.inspectAssets()}
                 >
                   {text("health.check")}
                 </Button>
               </div>
-              {!inspection && state.inspectionPendingDocuments.length ? (
+              {!documentsVerified && (
+                <InlineNotice kind="warning" className="health-section-help">
+                  {documentProblem || documentCheckFailed
+                    ? text("health.documentListFailed")
+                    : text("health.documentListUnverified")}
+                </InlineNotice>
+              )}
+              {dialog.phase === "checking" ? (
+                <InlineNotice kind="info" className="health-section-help">
+                  {text("health.checking")}
+                </InlineNotice>
+              ) : !inspection && state.inspectionPendingDocuments.length ? (
                 <InlineNotice kind="warning" className="health-section-help">
                   {text("health.checkPartial")}
                 </InlineNotice>
@@ -157,16 +192,12 @@ export function ProjectHealth({
                 <p className="health-section-help">
                   {text("health.notChecked")}
                 </p>
-              ) : !inspection.complete ? (
+              ) : !inspection.complete ||
+                !!state.inspectionPendingDocuments.length ? (
                 <InlineNotice kind="warning" className="health-section-help">
                   {text("health.checkPartial")}
                 </InlineNotice>
-              ) : problemCount === 0 ? (
-                <div className="health-clear" role="status">
-                  <CheckmarkCircle20Filled aria-hidden="true" />
-                  <span>{text("health.noProblems")}</span>
-                </div>
-              ) : (
+              ) : problemCount > 0 ? (
                 <div className="health-problems">
                   {!!resourceProblems?.length && (
                     <article className="health-problem">
@@ -242,6 +273,15 @@ export function ProjectHealth({
                     </article>
                   )}
                 </div>
+              ) : !documentsVerified ? (
+                <InlineNotice kind="warning" className="health-section-help">
+                  {text("health.checkPartial")}
+                </InlineNotice>
+              ) : (
+                <div className="health-clear" role="status">
+                  <CheckmarkCircle20Filled aria-hidden="true" />
+                  <span>{text("health.noProblems")}</span>
+                </div>
               )}
             </section>
             <details className="health-details">
@@ -308,7 +348,7 @@ export function ProjectHealth({
           <DialogActions className="health-dialog-actions">
             <Button
               type="button"
-              disabled={pending}
+              disabled={state.busy || dialog.phase === "exporting"}
               onClick={() => controller.closeHealth()}
             >
               {text("common.close")}

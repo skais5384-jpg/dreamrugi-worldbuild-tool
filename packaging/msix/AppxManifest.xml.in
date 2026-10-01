@@ -7,7 +7,7 @@
   <Identity Name="{{IDENTITY}}" Publisher="{{PUBLISHER}}" Version="{{VERSION}}" ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>{{DISPLAY_NAME}}</DisplayName>
-    <PublisherDisplayName>Dreamrugi Local Test</PublisherDisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Dependencies>

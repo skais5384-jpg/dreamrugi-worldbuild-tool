@@ -1,12 +1,12 @@
-# Dreamrugi Worldbuild Tool 0.1.0 시험판
+# Dreamrugi Worldbuild Tool 1.0.0
 
-세계관의 Template, 문서, 관계와 리소스를 정리하는 한국어 Windows 도구입니다. 개인 프로젝트의 로컬 편집·저장과 TortoiseSVN 기반 협업을 지원하는 무료 0.x 시험판입니다.
+세계관의 Template·문서·관계·이미지를 관리하는 한국어 Windows 도구입니다. GitHub와 Microsoft Store는 각각의 설치·업데이트 경로를 사용합니다.
 
-- Windows 10 19041 이상 또는 Windows 11 x64와 Microsoft Edge WebView2 Runtime이 필요합니다. WebView2가 없다면 설치 중 인터넷 연결이 필요합니다.
-- SVN 협업에는 TortoiseSVN의 명령줄 도구, HTTPS 서버 계정과 작업 사본을 별도로 준비합니다. 로컬 저장과 서버 커밋은 다른 작업입니다.
-- 실행 기록과 복구 센터에서 작업 결과와 보관된 입력을 확인할 수 있습니다. 중요한 원본과 복구 입력은 별도로 백업하십시오.
-- 설치 EXE는 Windows Authenticode 미서명 시험판입니다. `.sig`와 공개키는 updater 파일 검증용이며 게시자 인증서를 대신하지 않습니다.
-- 앱 자체의 SVN Revert/rollback UI와 자동 업데이트는 현재 제공하지 않습니다. Microsoft Store에는 아직 게시하지 않았습니다.
-- GPL-3.0-only로 제공하며 정확한 대응 소스, 잠긴 제3자 소스와 원래 고지를 같은 배포 asset으로 제공합니다.
+- 0.1.0 이후: 시작 업데이트·협업 최소 앱 버전과 안전 인계, 문서/관리 UI 개선, 한글 조합을 보호하는 Ctrl+S, 관계 태그·드래그 카드, 백업 표의 선택/복원 연결을 포함합니다.
+- 공개0.1.0에는 updater가 없으므로 첫1.0.0은 수동 설치합니다. 기존 제품 identifier를 유지하며 프로젝트·설정·보관 입력을 보존합니다. 중요한 원본은 별도로 백업하십시오.
+- Windows10 19041 이상/Windows11 x64·WebView2가 필요합니다. SVN 협업에는 별도 TortoiseSVN/CLI·서버·계정이 필요합니다. 로컬 저장과 SVN 커밋, 백업과 미저장 입력 보관은 다릅니다.
+- GitHub updater .sig는 기존 운영 공개키로 검증합니다. Windows 게시자 인증서를 대신하지 않습니다. 이후 GitHub 업데이트는 앱 시작 시 stable feed를 확인하고 ‘업데이트 후 재시작’ 선택으로 진행합니다. Store 채널은 Store에서 업데이트합니다.
+- 앱 자체 SVN Revert/rollback, 자동 설치 복구·다운그레이드, 외부 SVN의 강제 최소 버전 차단은 제공하지 않습니다. 검색/백업 성능 잔여·역사적 첫 읽기 경고는 비차단 후속으로 유지합니다.
+- GPL-3.0-only와 원래 제3자 고지·lockfile·빌드 자료·정확한 자체/제3자 대응 소스를 제공합니다. 설치·복구·지원 안내는 README를 확인하십시오.
 
-사용 안내: [Wiki](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/wiki). 설치 파일은 검증한 draft를 별도 확인 후 [Releases](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases)에 게시합니다.
+설치 파일을 받을 때는 [1.0.0 릴리스 페이지](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/tag/v1.0.0)에 실제 게시된 Windows x64 파일과 대응 소스를 확인하십시오. GitHub 릴리스는 Store 게시 완료를 뜻하지 않습니다. 문의와 설치 실패 시 재설치·자료 보존 안내는 README를 따릅니다.

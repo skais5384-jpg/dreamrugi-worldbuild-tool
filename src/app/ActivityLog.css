@@ -83,15 +83,3 @@
 .activity-log dd {
   margin: 0;
 }
-.activity-log-setting-action {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
-  border-bottom: 1px solid var(--colorNeutralStroke2);
-}
-.activity-log-setting-action p {
-  margin: 0;
-  flex: 1 1 20rem;
-}

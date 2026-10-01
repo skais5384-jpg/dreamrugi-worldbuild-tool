@@ -1,11 +1,15 @@
-.workbench-shell .project-files-workspace {
+.workbench-shell .workspace.project-files-workspace {
   grid-template-columns:
-    minmax(220px, var(--project-files-navigation-width, 280px)) 5px
+    minmax(
+      220px,
+      var(--project-files-navigation-width, var(--navigation-default-width))
+    )
+    5px
     minmax(0, 1fr);
   align-items: stretch;
 }
 
-.workbench-shell .project-files-workspace.navigation-collapsed {
+.workbench-shell .workspace.project-files-workspace.navigation-collapsed {
   grid-template-columns: 40px 0 minmax(0, 1fr);
 }
 
@@ -26,7 +30,7 @@
   flex-direction: column;
   gap: var(--spacingVerticalM);
   padding: 8px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .project-files-resizer {
@@ -121,7 +125,7 @@
     var(--project-file-kind-width) minmax(0, 1fr)
     var(--project-file-protection-width) var(--project-file-size-width) 28px;
   align-items: center;
-  min-height: 32px;
+  min-height: 36px;
   padding-inline: var(--spacingHorizontalS) 0;
   border-bottom: 1px solid var(--colorNeutralStroke2);
   color: var(--colorNeutralForeground3);
@@ -137,6 +141,9 @@
   padding: 0;
   overflow: auto;
   list-style: none;
+}
+.project-files-list:empty {
+  display: none;
 }
 
 .project-files-list > li {
@@ -239,7 +246,7 @@
 }
 
 @media (max-width: 720px) {
-  .workbench-shell .project-files-workspace {
+  .workbench-shell .workspace.project-files-workspace {
     grid-template-columns: 1fr;
   }
 

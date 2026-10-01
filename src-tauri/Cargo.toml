@@ -1,6 +1,6 @@
 [package]
 name = "worldbuild-tool"
-version = "0.1.0"
+version = "1.0.0"
 description = "세계관 개발 및 관리 도구"
 license = "GPL-3.0-only"
 edition = "2021"
@@ -14,6 +14,12 @@ edition = "2021"
 name = "worldbuild_tool_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+# 독립 시험 빌드만 로컬 endpoint/시험 키와 부작용 없는 설치 관측을 포함한다.
+updater-test = []
+compatibility-test = []
+updater-integration-test = ["compatibility-test"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 serde_json = "=1.0.151"
@@ -21,6 +27,11 @@ serde_json = "=1.0.151"
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "=2.6.0"
+# Rust 전용 updater: WebView에는 plugin 설치 권한을 제공하지 않는다.
+tauri-plugin-updater = { version = "=2.12.0", default-features = false, features = ["rustls-tls", "system-proxy"] }
+reqwest = { version = "=0.13.4", default-features = false, features = ["json", "rustls-no-provider", "stream", "system-proxy"] }
+semver = "=1.0.28"
+tokio = { version = "=1.53.1", features = ["sync", "macros", "time"] }
 serde = { version = "1", features = ["derive"] }
 # Private transport namespace 방어가 이 backend 동작을 전제로 하므로 conformance 재감사 전에는 올리지 않는다.
 serde_json = { version = "=1.0.151", features = ["arbitrary_precision", "raw_value"] }
@@ -39,7 +50,7 @@ quick-xml = "=0.41.0"
 url = "=2.5.8"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "=0.61.3", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Win32_Storage_Packaging_Appx"] }
 webview2-com = "=0.38.2"
 
 [dev-dependencies]

@@ -1,0 +1,74 @@
+.floating-message-stack {
+  position: fixed;
+  z-index: 1100;
+  left: 64px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(480px, calc(100vw - 80px));
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  padding: 6px;
+  pointer-events: none;
+}
+.floating-message-entry:has(> :empty),
+.floating-message-entry:empty {
+  display: none;
+}
+.floating-message-stack .feedback-toast {
+  position: static;
+  max-width: 100%;
+  text-align: left;
+  pointer-events: auto;
+}
+.floating-message-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.floating-message-stack-dialog {
+  position: static;
+  box-sizing: border-box;
+  width: 100%;
+  max-height: min(10rem, 25dvh);
+  flex: 0 0 auto;
+  padding: 0 var(--spacingHorizontalL, 16px) var(--spacingVerticalM, 12px);
+  pointer-events: auto;
+}
+.floating-message-stack-dialog:empty {
+  display: none;
+}
+:root .fui-DialogSurface:has(> .floating-message-stack-dialog) {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+:root
+  .fui-DialogSurface:has(> .floating-message-stack-dialog)
+  > .fui-DialogBody {
+  min-height: 0;
+}
+.floating-notice-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: min(12rem, 40dvh);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.floating-notice > button {
+  flex: 0 0 auto;
+}
+.floating-notice.error,
+.floating-notice.warning {
+  border-color: var(--colorPaletteRedBorder2, #d13438);
+}
+.activity-log-dialog .floating-message-stack {
+  display: none;
+}
+.notice-control-scope {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}

@@ -45,9 +45,9 @@ export function useDraftReorder(
               : visiblePreview.order.indexOf(id) + 1,
           }
         : undefined,
-    draggable: enabled && !archived,
+    draggable: enabled && !archived && order.length > 1,
     onDragStart: (event) => {
-      if (!enabled || archived) {
+      if (!enabled || archived || order.length <= 1) {
         event.preventDefault();
         return;
       }

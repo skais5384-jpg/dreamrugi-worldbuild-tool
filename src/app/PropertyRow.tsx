@@ -10,6 +10,7 @@ export function PropertyRow({
   htmlFor,
   children,
   complex = false,
+  block = false,
   before,
   presentation = "",
 }: {
@@ -18,6 +19,8 @@ export function PropertyRow({
   children: ReactNode;
   /** 여러 입력과 동작이 함께 있는 내용은 아주 좁을 때만 위쪽 라벨로 전환한다. */
   complex?: boolean;
+  /** Narrative, groups and references use the full value width without nested labels. */
+  block?: boolean;
   before?: ReactNode;
   presentation?: string;
 }) {
@@ -28,7 +31,8 @@ export function PropertyRow({
         className={
           "property-row " +
           presentation +
-          (complex ? " property-row-complex" : "")
+          (complex ? " property-row-complex" : "") +
+          (block ? " property-row-block" : "")
         }
       >
         {htmlFor ? (
@@ -42,4 +46,16 @@ export function PropertyRow({
       </div>
     </>
   );
+}
+
+export function blockField(kind?: string) {
+  return [
+    "Text",
+    "RichText",
+    "Group",
+    "Relation",
+    "DocumentLink",
+    "Image",
+    "Attachment",
+  ].includes(kind ?? "");
 }

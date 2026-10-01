@@ -14,7 +14,7 @@ import {
 import type { DocumentController } from "./documentController";
 import type { EditEntry } from "./documentEdits";
 import { editableProblem, editDirty } from "./documentEdits";
-import { PropertyRow } from "./PropertyRow";
+import { blockField, PropertyRow } from "./PropertyRow";
 import { CreationValue } from "./CreationValue";
 import { ValueRead } from "./FieldValue";
 import { Checkbox, Input } from "../ui/Controls";
@@ -31,6 +31,7 @@ import { IconCommand } from "../ui/IconCommand";
 import { DocumentIssueNotices, type DocumentIssue } from "./DocumentIssues";
 import { SpellcheckDialog } from "./SpellcheckDialog";
 import { SvnCommitIcon } from "./SvnCommitIcon";
+import { useSaveShortcut } from "./useSaveShortcut";
 
 export function editLabel(e: EditEntry) {
   return text(
@@ -85,6 +86,13 @@ export function DocumentEditor({
     return () => cancelAnimationFrame(frame);
   }, [hidden]);
   const problem = editableProblem(entry);
+  useSaveShortcut({
+    root: article,
+    enabled: active && !hidden,
+    blocked: locked || entry.busy || !!problem || entry.paused,
+    composing: entry.body.composing,
+    save: () => controller.edits.submit(id),
+  });
   const fieldProblem =
     entry.status.generation === entry.generation ? entry.status.field : null;
   const invalidEnglishName =
@@ -175,9 +183,16 @@ export function DocumentEditor({
         }
       >
         <header className="document-edit-header">
-          <Badge appearance="tint" color="informative">
-            {text("documents.template")}: {read.template.name}
-          </Badge>
+          <div className="document-title-row">
+            <h1>
+              {entry.body.name.intent === "set"
+                ? entry.body.name.value
+                : read.name}
+            </h1>
+            <Badge appearance="tint" color="informative">
+              {text("documents.template")}: {read.template.name}
+            </Badge>
+          </div>
           <div
             className="document-save-state"
             data-state={statusKind}
@@ -439,6 +454,7 @@ export function DocumentEditor({
               )}
               label={f.label}
               complex
+              block={blockField(field?.kind)}
               htmlFor={"edit-" + id + "-" + f.id}
             >
               {field && entry.status.editable.includes(f.id) ? (

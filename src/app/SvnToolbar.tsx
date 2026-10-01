@@ -615,10 +615,9 @@ export function SvnToolbar({
         </DialogSurface>
       </Dialog>
       {(error || updateError) && (
-        <span className="svn-toolbar-error" role="alert">
-          {updateError || error}
-        </span>
+        <FloatingNotice intent="error">{updateError || error}</FloatingNotice>
       )}
     </div>
   );
 }
+import { FloatingNotice } from "../ui/FloatingNotice";

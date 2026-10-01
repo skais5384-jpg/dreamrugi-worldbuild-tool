@@ -35,12 +35,13 @@ import {
 } from "@fluentui/react-icons";
 import { Button } from "../ui/Controls";
 import { EmptyState } from "../ui/EmptyState";
-import { InlineNotice } from "../ui/InlineNotice";
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
 import { text } from "../strings";
 import type { TemplateController } from "./controller";
 import type { DocumentController } from "./documentController";
 import type { SvnStatus } from "./svnClient";
 import { SvnItemStatus } from "./SvnItemStatus";
+import { NAVIGATION_DEFAULT, NAVIGATION_MAX } from "./navigationSizing";
 import "./ProjectFiles.css";
 
 type Mode = "resources" | "trash";
@@ -89,7 +90,7 @@ export function ProjectFiles({
     text: string;
   } | null>(null);
   const [menu, setMenu] = useState<string | null>(null);
-  const [navigationWidth, setNavigationWidth] = useState(280);
+  const [navigationWidth, setNavigationWidth] = useState(NAVIGATION_DEFAULT);
   const [navigationCollapsed, setNavigationCollapsed] = useState(false);
   const resizeStart = useRef<{ x: number; width: number } | null>(null);
   const anchor = useRef<string | null>(null);
@@ -549,15 +550,23 @@ export function ProjectFiles({
             )}
           </div>
           {app.health?.error && (
-            <InlineNotice kind="error">{app.health.error}</InlineNotice>
+            <FloatingNotice intent="error">
+              <FloatingNoticeContent>{app.health.error}</FloatingNoticeContent>
+            </FloatingNotice>
           )}
           {app.health?.message && (
-            <InlineNotice kind="info">{app.health.message}</InlineNotice>
+            <FloatingNotice intent="info">
+              <FloatingNoticeContent>
+                {app.health.message}
+              </FloatingNoticeContent>
+            </FloatingNotice>
           )}
           {operationNotice && (
-            <InlineNotice kind={operationNotice.kind}>
-              {operationNotice.text}
-            </InlineNotice>
+            <FloatingNotice intent={operationNotice.kind}>
+              <FloatingNoticeContent>
+                {operationNotice.text}
+              </FloatingNoticeContent>
+            </FloatingNotice>
           )}
         </div>
       </aside>
@@ -568,7 +577,7 @@ export function ProjectFiles({
         aria-label={text("navigation.panelResize")}
         aria-orientation="vertical"
         aria-valuemin={220}
-        aria-valuemax={440}
+        aria-valuemax={NAVIGATION_MAX}
         aria-valuenow={navigationWidth}
         onPointerDown={(event) => {
           if (navigationCollapsed) return;
@@ -582,7 +591,7 @@ export function ProjectFiles({
             Math.max(
               220,
               Math.min(
-                440,
+                NAVIGATION_MAX,
                 resizeStart.current.width +
                   event.clientX -
                   resizeStart.current.x,

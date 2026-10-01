@@ -1,4 +1,10 @@
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { GuardedClient } from "../bridge/client";
 import type { DeletedBackupRow, ResultDto } from "../bridge/types";
@@ -122,7 +128,7 @@ it.each([".purging", ".worldbuild-backup"])(
     );
     await act(async () => await shell.refreshDeletedBackups());
     expect(shell.snapshot().projectData?.deletedCleanupFacts).toHaveLength(0);
-    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   },
 );
 
@@ -172,23 +178,37 @@ it.each([
     expect(
       shell.snapshot().projectData?.deletedCleanupFacts?.map((fact) => fact.id),
     ).toEqual([first, second]);
-    expect(screen.getByRole("alert")).toHaveTextContent(first);
-    expect(screen.getByRole("alert")).toHaveTextContent(second);
+    fireEvent.click(
+      within(screen.getByRole("alert")).getByRole("button", {
+        name: text("update.details"),
+      }),
+    );
+    expect(await screen.findByRole("dialog")).toHaveTextContent(first);
+    expect(screen.getByRole("dialog")).toHaveTextContent(second);
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "닫기" }),
+    );
     fixture.transport.omitDeletedBackupRows = true;
     await act(async () => await shell.refreshDeletedBackups());
     expect(shell.snapshot().projectData?.errorSource).toBe("deleted_list");
     expect(shell.snapshot().projectData?.deletedCleanupFacts).toHaveLength(2);
-    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
     fixture.transport.omitDeletedBackupRows = false;
     fixture.transport.deletedBackups.splice(0, 2, row(first, "uncertain"));
     await act(async () => await shell.refreshDeletedBackups());
     expect(
       shell.snapshot().projectData?.deletedCleanupFacts?.map((fact) => fact.id),
     ).toEqual([first]);
-    expect(screen.getByRole("alert")).toHaveTextContent(first);
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(1));
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      text("backup.deletedCleanupRequired"),
+    );
+    expect(
+      within(screen.getByRole("alert")).getAllByRole("button"),
+    ).toHaveLength(2);
     fixture.transport.deletedBackups.splice(0);
     await act(async () => await shell.refreshDeletedBackups());
     expect(shell.snapshot().projectData?.deletedCleanupFacts).toHaveLength(0);
-    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   },
 );

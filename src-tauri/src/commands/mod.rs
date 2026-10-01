@@ -76,10 +76,21 @@ pub(crate) fn register<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Builder
         crate::svn::svn_gui_update,
         crate::svn::svn_gui_cleanup,
         crate::svn::svn_commit_candidates,
+        crate::svn::policy::svn_policy_snapshot,
+        crate::svn::policy::svn_policy_initialize,
+        crate::svn::policy::svn_policy_save,
         crate::svn::svn_schedule_delete,
         crate::svn::svn_commit,
         crate::svn::svn_commit_recheck,
         crate::svn::svn_cancel,
-        crate::diagnostic_log::diagnostic_recent_events
+        crate::diagnostic_log::diagnostic_recent_events,
+        crate::updater::updater_status,
+        crate::updater::updater_check,
+        crate::updater::updater_download,
+        crate::updater::updater_cancel,
+        crate::updater::updater_continue,
+        crate::updater::updater_release,
+        crate::updater::updater_prepare,
+        crate::updater::updater_close_failed
     ])
 }

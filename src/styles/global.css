@@ -48,6 +48,18 @@
   --size-4-3: var(--spacingHorizontalM, 12px);
   --size-4-4: var(--spacingHorizontalL, 16px);
   --danger: var(--colorStatusDangerForeground1, #b10e1c);
+  /* MASTER2: document, form and management use distinct shared density roles. */
+  --document-reading-width: 920px;
+  --document-reading-font: var(--fontSizeBase400, 16px);
+  --document-reading-line: 26px;
+  --document-title-font: 24px;
+  --document-title-line: 32px;
+  --document-label-width: 148px;
+  --command-height: 32px;
+  --compact-command-height: 28px;
+  --navigation-default-width: 260px;
+  --space-section: var(--spacingVerticalXXL, 24px);
+  --space-document: var(--spacingVerticalXXXL, 32px);
 }
 :root {
   font-family: "Noto Sans", "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;

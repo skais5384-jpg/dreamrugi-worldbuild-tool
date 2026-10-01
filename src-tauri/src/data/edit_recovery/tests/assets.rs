@@ -1,4 +1,92 @@
 use super::*;
+// An explicit, persistent native fixture accompanies the real owned NSIS update.
+// This is a controlled attachment sample, separate from the GUI-entered draft.
+#[cfg(all(windows, feature = "compatibility-test"))]
+#[test]
+fn m8_owned_install_attachment_capture_and_cold_read() {
+    let base = PathBuf::from(
+        std::env::var("M8_B_INSTALL_FIXTURE").expect("owned install fixture required"),
+    );
+    assert!(
+        base.is_absolute()
+            && base
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .eq_ignore_ascii_case("M8-B-INSTALL-TEST")
+    );
+    let proof_path = base.join("attachment-proof.json");
+    let root = base.join("data/edit-recovery");
+    if std::env::var("M8_B_ASSET_PHASE").unwrap() == "capture" {
+        assert!(!proof_path.exists());
+        let project = base.join("attachment-sample-project");
+        fs::create_dir(&project).unwrap();
+        let source = base.join("attachment-sample.txt");
+        fs::write(
+            &source,
+            b"M8 B controlled attachment before actual NSIS update",
+        )
+        .unwrap();
+        let asset = crate::data::assets::Store::open(&project, true)
+            .unwrap()
+            .import(&source, false, &uuid::Uuid::new_v4().to_string())
+            .unwrap();
+        let mut store = Store::open(&root).unwrap();
+        let entries = store.list().unwrap();
+        let actual = entries
+            .entries
+            .iter()
+            .find(|entry| entry.key.is_some())
+            .unwrap();
+        let mut envelope = sample();
+        envelope.key.project_fingerprint = actual.key.as_ref().unwrap().project_fingerprint.clone();
+        envelope.key.draft_id = uuid::Uuid::new_v4().to_string();
+        envelope.deposit_id = uuid::Uuid::new_v4().to_string();
+        envelope.app_version = "0.2.1".into();
+        envelope.created_at_utc = crate::data::utc_time::now_utc_milliseconds().unwrap();
+        if let Draft::Template { name, fields, .. } = &mut envelope.draft {
+            *name = "첨부 보관 통제 표본 B".into();
+            fields[0].label = "시험 첨부".into();
+            fields[0].configuration = DraftConfiguration::File {};
+            fields[0].default = Intent::Set(ValueDto::File {
+                value: vec![asset.id.clone()],
+            });
+        }
+        let deposit = Deposit::freeze(envelope).unwrap();
+        store.capture_assets(&deposit, &project).unwrap();
+        let proof = store.accept(&deposit).unwrap();
+        assert!(proof.matches(
+            deposit.key(),
+            &deposit.envelope().deposit_id,
+            deposit.payload_digest()
+        ));
+        fs::write(&proof_path, serde_json::to_vec_pretty(&serde_json::json!({"key":deposit.key(),"depositId":deposit.envelope().deposit_id,"payloadDigest":deposit.payload_digest(),"assetId":asset.id,"sourceSHA256":model::digest(&fs::read(source).unwrap()),"controlledSample":true})).unwrap()).unwrap();
+    } else {
+        let proof: serde_json::Value =
+            serde_json::from_slice(&fs::read(proof_path).unwrap()).unwrap();
+        let key: Key = serde_json::from_value(proof["key"].clone()).unwrap();
+        let mut store = Store::open(&root).unwrap();
+        let cold = store
+            .read(&key, proof["depositId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            cold.payload_digest(),
+            proof["payloadDigest"].as_str().unwrap()
+        );
+        store.accept(&cold).unwrap();
+        let restored = base.join("attachment-restored-after-update");
+        fs::create_dir(&restored).unwrap();
+        store.restore_assets(&cold, &restored).unwrap();
+        let (_, bytes) = crate::data::assets::Store::open(&restored, false)
+            .unwrap()
+            .read(proof["assetId"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            model::digest(&bytes),
+            proof["sourceSHA256"].as_str().unwrap()
+        );
+    }
+}
 #[test]
 fn m37_receipt_requires_bytes_and_cold_restore_survives_unavailable_project() {
     let f = Fixture::new();
@@ -27,6 +115,13 @@ fn m37_receipt_requires_bytes_and_cold_restore_survives_unavailable_project() {
         &deposit.envelope().deposit_id,
         deposit.payload_digest()
     ));
+    let listing = store.list().unwrap();
+    assert!(listing.complete);
+    assert_eq!(listing.entries.len(), 1);
+    assert!(listing.entries[0].error.is_none());
+    store
+        .verify_handoff(deposit.key(), &deposit.envelope().deposit_id)
+        .unwrap();
     drop(store);
     fs::rename(&project, f.0.join("unavailable-project")).unwrap();
     let mut store = Store::open(&f.root()).unwrap();
@@ -53,7 +148,35 @@ fn m37_receipt_requires_bytes_and_cold_restore_survives_unavailable_project() {
     .unwrap();
     assert!(store.accept(&deposit).is_err());
     assert!(store.restore_assets(&cold, &restored).is_err());
+    assert!(store
+        .verify_handoff(deposit.key(), &deposit.envelope().deposit_id)
+        .is_err());
     assert_eq!(fs::read(&source).unwrap(), b"owned recovery bytes");
+}
+
+#[test]
+fn m8_asset_namespace_must_be_a_valid_directory_and_unknown_children_still_fail_listing() {
+    let f = Fixture::new();
+    let deposit = Deposit::freeze(sample()).unwrap();
+    let mut store = Store::open(&f.root()).unwrap();
+    store.accept(&deposit).unwrap();
+    let (path, guards) = store.directory(deposit.key(), false).unwrap();
+    drop(guards);
+    fs::write(path.join("assets"), b"not a directory").unwrap();
+    assert!(store
+        .list()
+        .unwrap()
+        .entries
+        .iter()
+        .any(|entry| entry.error.is_some()));
+    fs::remove_file(path.join("assets")).unwrap();
+    fs::create_dir(path.join("unrecognized")).unwrap();
+    assert!(store
+        .list()
+        .unwrap()
+        .entries
+        .iter()
+        .any(|entry| entry.error.is_some()));
 }
 
 #[test]

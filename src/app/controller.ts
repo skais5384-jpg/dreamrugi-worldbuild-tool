@@ -82,6 +82,7 @@ export interface ProjectDataDialog {
   locator: string | null;
   error: string | null;
   detail?: string | null;
+  noticeEvent?: number;
   errorSource?: "deleted_list" | "cleanup" | "other" | null;
   deletedCleanupWarning?: string | null;
   deletedCleanupBackupId?: string | null;
@@ -151,6 +152,7 @@ interface FeedbackNotice {
 }
 export interface HealthDialog {
   surface: "health" | "resources" | "trash";
+  check?: { id: number; documents: "checking" | "verified" | "unverified" };
   phase:
     | "idle"
     | "checking"
@@ -215,11 +217,13 @@ export interface ScreenState {
   defaultProjectRoot: string | null;
   defaultProjectObserved: boolean;
   startupFailure: string | null;
+  startupFailureEvent: number;
   startupFailureKind: "settings_read" | "project_open" | null;
   settingsNotice: {
     kind: "not_applied" | "durability_uncertain";
     message: string;
   } | null;
+  errorEvent: number;
   newProject: NewProjectDraft | null;
   projectData: ProjectDataDialog | null;
   health: HealthDialog | null;
@@ -362,8 +366,10 @@ export class TemplateController {
     defaultProjectRoot: null,
     defaultProjectObserved: false,
     startupFailure: null,
+    startupFailureEvent: 0,
     startupFailureKind: null,
     settingsNotice: null,
+    errorEvent: 0,
     newProject: null,
     projectData: null,
     health: null,
@@ -389,6 +395,8 @@ export class TemplateController {
   // 전체 편집 화면의 앱 owner가 native close의 미제출 입력 판단을 맡는다.
   workspaceClose: ((attempt: Id | null) => void) | null = null;
   workspaceOwnsView: ((view: Id) => boolean) | null = null;
+  workspaceInspectDocuments:
+    ((current: () => boolean) => Promise<boolean>) | null = null;
   private connection: Connection | null = null;
   private closeRequest = 0;
   private decision: { prompt: Prompt; request: number } | null = null;
@@ -401,10 +409,12 @@ export class TemplateController {
   private managementGeneration = 0;
   private pickerGeneration = 0;
   private startupGeneration = 0;
+  private noticeSequence = 0;
   private retiredProject: Id | null = null;
   private startupStarted = false;
   private projectRequestGeneration = 0;
   private inspectionEpoch = 0;
+  private healthRequest = 0;
   private inspectionRefreshing = false;
   private readonly inspectionPending = new Set<string>();
   projectGeneration() {
@@ -457,6 +467,11 @@ export class TemplateController {
     };
   };
   private publish(patch: Partial<ScreenState>) {
+    // New failures are distinct requests even when their displayed text agrees.
+    // Busy/disabled updates omit these fields and retain the current event.
+    if (patch.error) patch = { ...patch, errorEvent: ++this.noticeSequence };
+    if (patch.startupFailure)
+      patch = { ...patch, startupFailureEvent: ++this.noticeSequence };
     if (
       patch.error !== undefined &&
       patch.error !== this.state.error &&
@@ -517,6 +532,10 @@ export class TemplateController {
       return;
     }
     await this.restoreDeletedBackup(undo.storage, undo.id, undo.operation);
+  }
+  private startupGate: Promise<void> | null = null;
+  setStartupGate(gate: Promise<void>) {
+    if (!this.startupStarted) this.startupGate = gate;
   }
   start() {
     if (this.connection) return;
@@ -601,6 +620,7 @@ export class TemplateController {
         this.publish({
           projectData: {
             ...current,
+            noticeEvent: ++this.noticeSequence,
             error: safeFailure(error),
             detail: failureDetail(error),
             errorSource: "other",
@@ -631,6 +651,11 @@ export class TemplateController {
   private async loadStartupSettings(connection: Connection) {
     if (this.startupStarted) return;
     this.startupStarted = true;
+    if (this.startupGate) {
+      this.publish({ startupLoading: true });
+      await this.startupGate;
+      if (this.connection !== connection || this.state.closing) return;
+    }
     await this.readStartupSettings(connection, true);
   }
   private async readStartupSettings(
@@ -927,7 +952,78 @@ export class TemplateController {
         error: null,
       },
     });
-    if (this.state.projectId) void this.inspectAssets();
+    if (this.state.projectId) return this.inspectProjectHealth();
+  }
+  /** Both results belong to this opening/retry; closing retires the attempt. */
+  private async inspectProjectHealth() {
+    const dialog = this.state.health;
+    const project = this.state.projectId;
+    if (dialog?.surface !== "health" || !project || this.state.busy) return;
+    const id = ++this.healthRequest;
+    const generation = this.projectRequestGeneration;
+    const epoch = this.inspectionEpoch;
+    this.publish({
+      health: {
+        ...dialog,
+        phase: "checking",
+        check: { id, documents: "checking" },
+        inspection: null,
+        message: null,
+        error: null,
+      },
+    });
+    const current = () =>
+      this.state.projectId === project &&
+      this.projectRequestGeneration === generation &&
+      this.inspectionEpoch === epoch &&
+      this.state.health?.surface === "health" &&
+      this.state.health.check?.id === id;
+    const [documents, resources] = await Promise.allSettled([
+      this.workspaceInspectDocuments?.(current) ?? Promise.resolve(false),
+      this.operations.run(
+        { kind: "asset_inspect", project },
+        text("health.checking"),
+      ),
+    ]);
+    if (!current()) return;
+    const latest = this.state.health!;
+    const verified = documents.status === "fulfilled" && documents.value;
+    const check = {
+      id,
+      documents: verified ? ("verified" as const) : ("unverified" as const),
+    };
+    try {
+      if (resources.status === "rejected") throw resources.reason;
+      const data = requireKind(resources.value.result, "asset_maintenance");
+      if (data.action !== "inspect") throw new BridgeFailure("protocol");
+      if (data.inspection.complete) this.inspectionPending.clear();
+      this.publish({
+        assetInspection: data.inspection,
+        inspectionPendingDocuments: [...this.inspectionPending],
+        health: {
+          ...latest,
+          check,
+          phase: "ready",
+          inspection: data.inspection,
+          message: text(
+            verified && data.inspection.complete
+              ? "health.checkComplete"
+              : "health.checkPartial",
+          ),
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.publish({
+        health: {
+          ...latest,
+          check,
+          phase: "failed",
+          error: safeFailure(error),
+          message: null,
+        },
+      });
+    }
   }
   showFileManager(surface: "resources" | "trash") {
     if (this.state.busy || this.state.picking) return;
@@ -1001,6 +1097,9 @@ export class TemplateController {
         ? {
             health: {
               ...dialog,
+              ...(dialog.surface === "health"
+                ? { check: undefined, phase: "idle" as const }
+                : {}),
               inspection: retire(dialog.inspection),
               message: null,
             },
@@ -1035,7 +1134,7 @@ export class TemplateController {
           this.publish({
             assetInspection: data.inspection,
             inspectionPendingDocuments: [...this.inspectionPending],
-            ...(dialog
+            ...(dialog && dialog.surface !== "health"
               ? {
                   health: {
                     ...dialog,
@@ -1137,6 +1236,7 @@ export class TemplateController {
   }
   async inspectAssets() {
     const dialog = this.state.health;
+    if (dialog?.surface === "health") return this.inspectProjectHealth();
     const project = this.state.projectId;
     if (!dialog || !project || this.state.busy) return;
     const generation = this.projectRequestGeneration;
@@ -1787,6 +1887,9 @@ export class TemplateController {
             ...current,
             deletedBackups: rows,
             selectedDeleted: null,
+            noticeEvent: otherError
+              ? current.noticeEvent
+              : ++this.noticeSequence,
             error: otherError
               ? current.error
               : warning
@@ -1820,6 +1923,7 @@ export class TemplateController {
         this.publish({
           projectData: {
             ...current,
+            noticeEvent: ++this.noticeSequence,
             error: safeFailure(error),
             detail: failureDetail(error),
             errorSource: "deleted_list",
@@ -1904,6 +2008,9 @@ export class TemplateController {
             this.publish({
               projectData: {
                 ...dialog,
+                noticeEvent: otherError
+                  ? dialog.noticeEvent
+                  : ++this.noticeSequence,
                 error: otherError
                   ? dialog.error
                   : text("backup.deletedCleanupRequired"),
@@ -1931,6 +2038,7 @@ export class TemplateController {
           this.publish({
             projectData: {
               ...current,
+              noticeEvent: ++this.noticeSequence,
               error: text("backup.restoreUncertain"),
               detail: data.warning,
               errorSource: "other",
@@ -2010,6 +2118,9 @@ export class TemplateController {
             ...current,
             confirm: null,
             selectedDeleted: null,
+            noticeEvent: otherError
+              ? current.noticeEvent
+              : ++this.noticeSequence,
             error: otherError
               ? current.error
               : warning
@@ -2115,14 +2226,22 @@ export class TemplateController {
     if (!dialog || !["copy", "restore_new"].includes(dialog.kind)) return;
     if (!validProjectName(dialog.name)) {
       this.publish({
-        projectData: { ...dialog, error: text("project.nameInvalid") },
+        projectData: {
+          ...dialog,
+          noticeEvent: ++this.noticeSequence,
+          error: text("project.nameInvalid"),
+        },
       });
       return;
     }
     if (dialog.kind === "copy" && beforeCopy && !(await beforeCopy())) {
       if (this.state.projectData === dialog)
         this.publish({
-          projectData: { ...dialog, error: text("backup.copySaveFirst") },
+          projectData: {
+            ...dialog,
+            noticeEvent: ++this.noticeSequence,
+            error: text("backup.copySaveFirst"),
+          },
         });
       return;
     }
@@ -2220,6 +2339,7 @@ export class TemplateController {
             selected: null,
             locator: null,
             confirm: null,
+            noticeEvent: ++this.noticeSequence,
             error: uncertain ? text("backup.deleteUncertain") : null,
             detail: data.warning,
             errorSource: "other",
@@ -2245,6 +2365,7 @@ export class TemplateController {
             selected: null,
             locator: null,
             confirm: null,
+            noticeEvent: ++this.noticeSequence,
             error: text("backup.deleteUncertain"),
             detail: "backup_quarantine_readback_required",
             errorSource: "other",

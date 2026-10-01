@@ -30,6 +30,13 @@ afterEach(() => {
   try {
     cleanup();
   } finally {
+    // Each test mounts a new AppProvider/Griffel renderer. Its cache is new,
+    // while jsdom retains the shared bucket sheets after React unmounts.
+    // Remove only those test-generated sheets once every root is unmounted;
+    // otherwise duplicate CSS makes later accessible DOM queries time out.
+    document.head
+      .querySelectorAll("style[data-make-styles-bucket]")
+      .forEach((style) => style.remove());
     try {
       vi.useRealTimers();
     } finally {

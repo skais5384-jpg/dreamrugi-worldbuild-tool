@@ -1,4 +1,5 @@
 import { Button, Checkbox } from "../ui/Controls";
+import { ReOrderDotsVertical20Regular } from "@fluentui/react-icons";
 import { HelpText } from "../ui/HelpText";
 import { useRef, useState } from "react";
 import type { TemplateController } from "./controller";
@@ -159,7 +160,15 @@ export function OrderInput({
                 drag.current = null;
               }}
             >
-              <span className="literal">{name}</span>
+              <div className="order-card-heading">
+                {movable && (
+                  <ReOrderDotsVertical20Regular
+                    className="order-drag-handle"
+                    aria-hidden="true"
+                  />
+                )}
+                <span className="literal">{name}</span>
+              </div>
               <span className="identifier">{id}</span>
               <span>
                 {text("order.ordinal", {

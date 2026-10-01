@@ -98,6 +98,7 @@ function normalizeReason(reason: string): DocumentIssueReason | null {
     case "resource_uncertain":
     case "unregistered":
     case "validation_unknown":
+    case "inspection_pending":
       return reason;
     case "deleted_template":
     case "template_in_trash":

@@ -22,6 +22,9 @@ import {
 } from "@fluentui/react-components";
 
 const DisabledContext = createContext(false);
+export function useControlsDisabled() {
+  return useContext(DisabledContext);
+}
 const useStyles = makeStyles({
   control: { width: "100%", minWidth: 0 },
   button: { maxWidth: "100%", height: "auto", overflowWrap: "anywhere" },

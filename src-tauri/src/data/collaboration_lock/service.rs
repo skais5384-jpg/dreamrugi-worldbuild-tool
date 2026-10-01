@@ -33,6 +33,10 @@ pub(crate) trait HeldLock: Send {
 /// 아닌 blocking worker에서 실행해야 한다.
 pub(crate) trait LockService: Send + Sync {
     fn provider_info(&self) -> LockProviderInfo;
+    /// Admission is evaluated on the worker before any canonical operation.
+    fn authorize_project_operation(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// Fail closed before writing a new collaborative attachment ID.
     fn authorize_new_asset(&self, _id: &str) -> Result<(), String> {
         Err("svn_invalid_target".into())

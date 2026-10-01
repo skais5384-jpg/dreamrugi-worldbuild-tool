@@ -1,3 +1,4 @@
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
 import { GroupDefinition } from "./GroupDefinition";
 import {
   orderedTemplateItemIds,
@@ -5,15 +6,16 @@ import {
   repairSectionAnchors,
 } from "./SectionEditor";
 import { useEffect, useRef, useState } from "react";
-import { Badge, MessageBar, MessageBarBody } from "@fluentui/react-components";
+import { Badge } from "@fluentui/react-components";
 import {
   CheckmarkCircle16Regular,
   Clock16Regular,
   ArrowSync20Regular,
   Archive20Regular,
-  Dismiss20Regular,
+  DoorArrowRight20Regular,
   Edit16Regular,
   ErrorCircle16Regular,
+  ReOrderDotsVertical20Regular,
   Save20Regular,
 } from "@fluentui/react-icons";
 import { Button, Checkbox, Fieldset, Input, Select } from "../ui/Controls";
@@ -36,6 +38,7 @@ import { InlineNotice } from "../ui/InlineNotice";
 import { boundsProblem } from "./numberBounds";
 import { FormatControl } from "./FormatControl";
 import { IconCommand } from "../ui/IconCommand";
+import { useSaveShortcut } from "./useSaveShortcut";
 
 function token(intent: Intent<string>, original: string | null) {
   return intent.intent === "keep"
@@ -113,6 +116,7 @@ export function WholeTemplate({
     .snapshot()
     .rows.filter((row) => row.lifecycle === "Active");
   const errors = useRef<HTMLElement>(null);
+  const shortcutRoot = useRef<HTMLElement>(null);
   const revealed = useRef<string | null>(null);
   const problems =
     draft.status.generation === draft.generation ? draft.status.problems : [];
@@ -163,6 +167,13 @@ export function WholeTemplate({
   const actionBlocked =
     blocked ||
     ["saved_read_required", "uncertain"].includes(draft.status.phase);
+  useSaveShortcut({
+    root: shortcutRoot,
+    enabled: true,
+    blocked: actionBlocked,
+    composing: draft.body.composing,
+    save: () => controller.save(),
+  });
   const active = draft.body.fields.filter((f) => !f.archived);
   const ordered = orderedTemplateItemIds(draft.body);
   const archived = draft.body.fields.filter((f) => f.archived);
@@ -230,6 +241,7 @@ export function WholeTemplate({
   };
   return (
     <section
+      ref={shortcutRoot}
       className="whole-template"
       {...reorder.surface}
       aria-label={text("whole.operation")}
@@ -255,6 +267,12 @@ export function WholeTemplate({
           </span>
         </p>
         <div className="actions">
+          <IconCommand
+            label={text("whole.save")}
+            icon={<Save20Regular />}
+            disabled={actionBlocked || draft.body.composing}
+            onClick={() => void controller.save()}
+          />
           {draft.status.artifact && (
             <FormatControl
               shell={controller.shell}
@@ -281,12 +299,6 @@ export function WholeTemplate({
             />
           )}
           <IconCommand
-            label={text("whole.save")}
-            icon={<Save20Regular />}
-            disabled={actionBlocked || draft.body.composing}
-            onClick={() => void controller.save()}
-          />
-          <IconCommand
             label={text("whole.deposit")}
             icon={<Archive20Regular />}
             disabled={blocked}
@@ -294,31 +306,39 @@ export function WholeTemplate({
           />
           <IconCommand
             label={text("whole.endEditing")}
-            icon={<Dismiss20Regular />}
+            icon={<DoorArrowRight20Regular />}
             disabled={blocked}
             onClick={() => void controller.navigate({ kind: "browse" })}
           />
         </div>
       </div>
-      {!draft.loaded && (
-        <MessageBar intent="warning" layout="multiline">
-          <MessageBarBody>{text("whole.loadIncomplete")}</MessageBarBody>
-        </MessageBar>
+      {!draft.loaded && !state.busy && (
+        <FloatingNotice intent="warning">
+          <FloatingNoticeContent>
+            {text("whole.loadIncomplete")}
+          </FloatingNoticeContent>
+        </FloatingNotice>
       )}
       {draft.status.phase === "saved_read_required" && (
-        <MessageBar intent="warning" layout="multiline">
-          <MessageBarBody>{text("whole.readRequired")}</MessageBarBody>
-        </MessageBar>
+        <FloatingNotice intent="warning">
+          <FloatingNoticeContent>
+            {text("whole.readRequired")}
+          </FloatingNoticeContent>
+        </FloatingNotice>
       )}
       {draft.status.phase === "uncertain" && (
-        <MessageBar intent="error" layout="multiline">
-          <MessageBarBody>{text("whole.uncertain")}</MessageBarBody>
-        </MessageBar>
+        <FloatingNotice intent="error">
+          <FloatingNoticeContent>
+            {text("whole.uncertain")}
+          </FloatingNoticeContent>
+        </FloatingNotice>
       )}
       {draft.status.phase === "conflict" && (
-        <MessageBar intent="warning" layout="multiline">
-          <MessageBarBody>{text("whole.conflict")}</MessageBarBody>
-        </MessageBar>
+        <FloatingNotice intent="warning">
+          <FloatingNoticeContent>
+            {text("whole.conflict")}
+          </FloatingNoticeContent>
+        </FloatingNotice>
       )}
       {hasError && (
         <section
@@ -428,9 +448,13 @@ export function WholeTemplate({
                           reorderItem(id, delta);
                       }}
                     >
-                      <span className="whole-field-grip" aria-hidden="true">
-                        ⠿
-                      </span>
+                      {!blocked &&
+                        !draft.body.composing &&
+                        ordered.length > 1 && (
+                          <span className="whole-field-grip" aria-hidden="true">
+                            <ReOrderDotsVertical20Regular />
+                          </span>
+                        )}
                       <span className="whole-field-label">
                         {(field?.label || section?.title) ??
                           text("field.emptyLabel")}
@@ -861,14 +885,21 @@ export function WholeTemplate({
                             <PropertyRow
                               label={
                                 <span className="whole-option-label">
-                                  {!option.archived && (
-                                    <span
-                                      className="whole-field-grip"
-                                      aria-hidden="true"
-                                    >
-                                      ⠿
-                                    </span>
-                                  )}
+                                  {!blocked &&
+                                    !draft.body.composing &&
+                                    !option.archived &&
+                                    ("options" in current.configuration
+                                      ? current.configuration.options.filter(
+                                          (candidate) => !candidate.archived,
+                                        ).length
+                                      : 0) > 1 && (
+                                      <span
+                                        className="whole-field-grip"
+                                        aria-hidden="true"
+                                      >
+                                        <ReOrderDotsVertical20Regular />
+                                      </span>
+                                    )}
                                   {text("option.label")}
                                 </span>
                               }

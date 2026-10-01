@@ -104,11 +104,3 @@
 .svn-connection-fail {
   color: #c22424;
 }
-.svn-toolbar-error {
-  color: var(--text-error);
-  font-size: var(--font-ui-smaller);
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}

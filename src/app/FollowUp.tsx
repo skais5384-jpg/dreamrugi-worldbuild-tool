@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { FloatingMessage } from "../ui/FloatingNotice";
 import {
   Dialog,
   DialogSurface,
@@ -53,14 +54,22 @@ export function FollowUp({ controller }: { controller: TemplateController }) {
 
   return (
     <>
-      <div className="follow-up-floating" role="status">
-        <InlineNotice kind="warning">
-          {text("followUp.actionRequired")}
-          <Button type="button" size="small" onClick={() => setRequested(true)}>
-            {text("followUp.openActions")}
-          </Button>
-        </InlineNotice>
-      </div>
+      {!requested && (
+        <FloatingMessage>
+          <div className="feedback-toast" role="status">
+            <InlineNotice kind="warning">
+              {text("followUp.actionRequired")}
+              <Button
+                type="button"
+                size="small"
+                onClick={() => setRequested(true)}
+              >
+                {text("followUp.openActions")}
+              </Button>
+            </InlineNotice>
+          </div>
+        </FloatingMessage>
+      )}
       {requested && (
         <Dialog
           open

@@ -4,6 +4,8 @@ import copy
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import os
 import unittest
 from unittest.mock import patch
 
@@ -11,6 +13,9 @@ spec = importlib.util.spec_from_file_location('release', Path(__file__).with_nam
 r = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(r)
 HEAD = 'a' * 40
+identity_spec = importlib.util.spec_from_file_location('store_identity', Path(__file__).with_name('store-identity.py'))
+store = importlib.util.module_from_spec(identity_spec)
+identity_spec.loader.exec_module(store)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -22,14 +27,15 @@ class ReleaseTests(unittest.TestCase):
     def save(self, name, value):
         (self.folder / name).write_text(json.dumps(value), encoding='utf-8')
 
-    def candidate(self, technical=False, committed=True):
+    def candidate(self, technical=False, committed=True, version="0.1.0"):
         payload = {'Dreamrugi Worldbuild Tool_0.1.0_x64-setup.exe': b'synthetic installer',
                    'release-notes.md': b'Trial release', 'updater-public.key.pub': b'synthetic public key'}
         for name in ['corresponding-source.zip','third-party-source.zip','third-party-source.manifest.json','LICENSE','README.md','Dreamrugi Worldbuild Tool_0.1.0_x64-setup.exe.sig']:
             payload[name] = b'local synthetic fixture'
+        payload = {name.replace("0.1.0", version): data for name, data in payload.items()}
         for name, data in payload.items():
             (self.folder / name).write_bytes(data)
-        manifest = {'tag': 'v0.1.0', 'version': '0.1.0', 'candidate_id': 'c' * 64,
+        manifest = {'tag': 'v' + version, 'version': version, 'candidate_id': 'c' * 64,
                     'technicalOnly': technical, 'publicKeySha256': 'f' * 64, 'identifier': r.IDENTITY, 'mode': 'Release',
                     'source': {'committed_source': committed, 'base_head': HEAD},
                     'assets': [{'name': n, 'bytes': len(d), 'sha256': r.digest(d)} for n, d in payload.items()]}
@@ -37,7 +43,7 @@ class ReleaseTests(unittest.TestCase):
         return manifest
 
     def call_draft(self, **kwargs):
-        return r.draft_request(self.folder, 'owner/repo', HEAD, 'v0.1.0', **kwargs)
+        return r.draft_request(self.folder, 'owner/repo', HEAD, r.load(self.folder / 'release-manifest.json')['tag'], **kwargs)
 
     def test_paths_and_secret_boundary(self):
         for path in ['../secret', 'C:/secret', 'secrets/foo', 'logs/foo', 'key.dpapi', '.env.local']:
@@ -62,6 +68,7 @@ class ReleaseTests(unittest.TestCase):
                  'src-tauri/Cargo.toml': b'version = "0.1.0"\nlicense = "GPL-3.0-only"',
                  'src-tauri/tauri.conf.json': json.dumps(tauri).encode()}
         for name in ['LICENSE','README.md','scripts/package-windows.ps1','scripts/check-strings.mjs','src-tauri/Cargo.lock']: files[name] = b'fixture'
+        files['src-tauri/Cargo.lock'] = b'[[package]]\nname = "worldbuild-tool"\nversion = "0.1.0"\n'
         r.metadata(files, '0.1.0')
         with self.assertRaises(ValueError): r.metadata(files, '0.1.2')
         tauri['identifier'] += '.e.localtest'
@@ -130,11 +137,11 @@ class ReleaseTests(unittest.TestCase):
 
     def remote_case(self, *, existing=True, refs=None, changed=None, partial=False,
                     lookup_error=None, final_error=False, upload_error=False, corrupt_asset=False,
-                    normalize_names=False, duplicate_alias=False, unknown_rename=False):
-        manifest = self.candidate()
+                    normalize_names=False, duplicate_alias=False, unknown_rename=False, version="0.1.0"):
+        manifest = self.candidate(version=version)
         assets = [{'name':a['name'], 'digest':'sha256:'+a['sha256']} for a in manifest['assets']]
         assets.append({'name':'release-manifest.json','digest':'sha256:'+r.digest((self.folder/'release-manifest.json').read_bytes())})
-        remote = {'id':1,'tag_name':'v0.1.0','target_commitish':HEAD,'draft':True,'prerelease':True,
+        remote = {'id':1,'tag_name':manifest['tag'],'target_commitish':HEAD,'draft':True,'prerelease':version.startswith('0.'),
                   'body':'<!-- worldbuild-candidate:'+manifest['candidate_id']+' -->',
                   'assets':copy.deepcopy(assets[:2] if partial else assets),'html_url':'https://example.invalid/draft'}
         if normalize_names:
@@ -263,6 +270,65 @@ class ReleaseTests(unittest.TestCase):
         result, mutations, _ = self.remote_case(normalize_names=True, unknown_rename=True)
         self.assertIsInstance(result, ValueError)
         self.assertEqual(mutations, [])
+
+    def test_formal_draft_create_resume_and_prerelease_mismatch(self):
+        for existing in [False, True]:
+            result, _, remote = self.remote_case(existing=existing, version='1.0.0', partial=True)
+            self.assertIsInstance(result, dict)
+            self.assertFalse(result['prerelease'])
+            self.assertTrue(remote['draft'])
+            self.assertEqual(remote['tag_name'], 'v1.0.0')
+        result, _, _ = self.remote_case(version='1.0.0', partial=True, changed={'prerelease':True})
+        self.assertIsInstance(result, ValueError)
+
+    def test_formal_metadata_and_lock_match(self):
+        files = {name: (r.ROOT / name).read_bytes() for name in [
+            'package.json','package-lock.json','src-tauri/Cargo.toml','src-tauri/Cargo.lock','src-tauri/tauri.conf.json']}
+        tauri = json.loads(files['src-tauri/tauri.conf.json'])
+        import posixpath
+        required = ['LICENSE','scripts/package-windows.ps1','scripts/check-strings.mjs']
+        required += [posixpath.normpath('src-tauri/' + n) for n in tauri['bundle']['resources']]
+        required += ['src-tauri/' + n for n in tauri['bundle']['icon']]
+        files.update({n:(r.ROOT / n).read_bytes() for n in required})
+        r.metadata(files, '1.0.0')
+        for version in ['01.0.0','1.0','1.0.0-beta.1','1.0.0+other','2.0.0']:
+            with self.assertRaises(ValueError): r.metadata(files, version)
+        files['src-tauri/Cargo.lock'] = files['src-tauri/Cargo.lock'].replace(b'name = "worldbuild-tool"\nversion = "1.0.0"', b'name = "worldbuild-tool"\nversion = "0.2.0"')
+        with self.assertRaises(ValueError): r.metadata(files, '1.0.0')
+
+    def test_verified_store_identity_and_same_family_history(self):
+        i = dict(source='PartnerCenter', verified=True, historyVerified=True,
+                 name='Synthetic.Product', publisher='CN=Synthetic', publisherDisplayName='Synthetic',
+                 storeId='9SYNTHETIC01', checkedUtc='2026-09-30T00:00:00Z',
+                 noPublishedPackages=True, latestPackageVersion=None)
+        self.assertEqual(store.validate(i, '1.0.0')['packageVersion'], '1.0.0.0')
+        for change in [{'verified':False},{'historyVerified':False},{'name':'Dreamrugi.WorldbuildTool.ELocalTest'},
+                       {'publisherDisplayName':'Local Test'},{'packageVersion':'2.0.0.0'},
+                       {'latestPackageVersion':'1.0.0.0'},{'noPublishedPackages':None}]:
+            with self.assertRaises(ValueError): store.validate(dict(i, **change), '1.0.0')
+        i.update(noPublishedPackages=False, latestPackageVersion='2.0.0.5')
+        with self.assertRaises(ValueError): store.validate(i, '1.0.0')
+        i['packageVersion'] = '2.0.1.0'
+        self.assertEqual(store.validate(i, '1.0.0')['packageVersion'], '2.0.1.0')
+        for v in ['0.0.0.0','1.0.0.1','1.00.0.0','65536.0.0.0']:
+            with self.assertRaises(ValueError): store.validate(dict(i, packageVersion=v), '1.0.0')
+
+    @unittest.skipUnless(os.name == 'nt', 'Windows packaging boundary')
+    def test_actual_packaging_rejects_missing_identity_and_store_secrets_before_prepare(self):
+        env = dict(os.environ)
+        for key in ['TAURI_SIGNING_PRIVATE_KEY','TAURI_SIGNING_PRIVATE_KEY_PATH','TAURI_SIGNING_PRIVATE_KEY_PASSWORD']:
+            env.pop(key, None)
+        cmd = ['pwsh','-NoProfile','-File',str(r.ROOT/'scripts/package-windows.ps1'),
+               '-Channel','Store','-Mode','Release','-PrepareOnly','-OutputDirectory',str(self.folder/'out')]
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('StoreIdentityPath is required', result.stderr)
+        self.assertFalse((self.folder/'out').exists())
+        env['TAURI_SIGNING_PRIVATE_KEY_PASSWORD'] = 'synthetic-not-a-secret'
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('cannot receive GitHub updater', result.stderr)
+        self.assertFalse((self.folder/'out').exists())
 
 
 if __name__ == '__main__': unittest.main()

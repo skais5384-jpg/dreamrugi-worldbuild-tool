@@ -296,6 +296,98 @@ fn m42_fix001_group_references_save_reopen_and_copy_with_fresh_connection_identi
 }
 
 #[test]
+fn removing_one_relation_preserves_other_incoming_references_and_target() {
+    const FIRST: &str = "cccccccc-cccc-4ccc-8ccc-000000000020";
+    const SECOND: &str = "cccccccc-cccc-4ccc-8ccc-000000000021";
+    let h = Harness::new();
+    let project = h.open();
+    let template = reference_template(&h, &project);
+    let target = create(&h, &project, &template, "target");
+    let source = create(&h, &project, &template, "source");
+    let target_path = h.root.join(format!("documents/{target}.json"));
+    let target_before = fs::read(&target_path).unwrap();
+    let relation = |id: &str| {
+        json!({"field":RELATION,"value":{"intent":"set","value":{
+            "kind":"relation","links":[{"id":id,"document":target,"oneWay":false,"name":"known"}]
+        }}})
+    };
+    let mut first = card(A, None, None);
+    first["fields"] = json!([
+        relation(FIRST),
+        {"field":LINK,"value":{"intent":"set","value":{"kind":"document_link","documents":[target]}}}
+    ]);
+    let mut second = card(B, None, None);
+    second["fields"] = json!([relation(SECOND)]);
+    let editing = edit_begin(&h, &project, &source);
+    let saved = edit_save(&h, &project, &editing, "2", body(vec![first, second]));
+    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+    edit_release(&h, &project, &saved);
+    let incoming = request(
+        &h,
+        &project,
+        json!({"action":"references","document":target}),
+    )["value"]["incoming"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(incoming.len(), 3);
+
+    let editing = edit_begin(&h, &project, &source);
+    let mut first = card(A, Some(A), None);
+    first["fields"] = json!([{"field":RELATION,"value":{"intent":"set","value":{
+        "kind":"relation","links":[]
+    }}}]);
+    let saved = edit_save(
+        &h,
+        &project,
+        &editing,
+        "2",
+        body(vec![first, card(B, Some(B), None)]),
+    );
+    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+    edit_release(&h, &project, &saved);
+    let stored = disk(&h, &source);
+    assert!(!stored.to_string().contains(FIRST));
+    assert_eq!(
+        stored["fieldValues"][GROUP]["instances"][B]["values"][RELATION]["links"][0]["id"],
+        SECOND
+    );
+    assert_eq!(
+        stored["fieldValues"][GROUP]["instances"][A]["values"][LINK]["documentIds"][0],
+        target
+    );
+    assert_eq!(fs::read(&target_path).unwrap(), target_before);
+    let reopened = edit_begin(&h, &project, &source);
+    assert_eq!(reopened["problem"], Value::Null, "{reopened}");
+    edit_release(&h, &project, &reopened);
+    let incoming = request(
+        &h,
+        &project,
+        json!({"action":"references","document":target}),
+    )["value"]["incoming"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(incoming.len(), 2);
+    let relations: Vec<_> = incoming
+        .iter()
+        .filter(|item| item["kind"] == "relation")
+        .collect();
+    assert_eq!(relations.len(), 1);
+    assert_eq!(relations[0]["connection"], SECOND);
+    assert_eq!(relations[0]["source"], source);
+    assert_eq!(relations[0]["target"], target);
+    let links: Vec<_> = incoming
+        .iter()
+        .filter(|item| item["kind"] == "document_link")
+        .collect();
+    assert_eq!(links.len(), 1);
+    assert_eq!(links[0]["source"], source);
+    assert_eq!(links[0]["target"], target);
+    h.close_clean();
+}
+
+#[test]
 fn m42_fix002_group_relation_name_survives_cold_recovery_and_save() {
     const CONNECTION: &str = "cccccccc-cccc-4ccc-8ccc-000000000010";
     let base = std::env::temp_dir().join(format!(

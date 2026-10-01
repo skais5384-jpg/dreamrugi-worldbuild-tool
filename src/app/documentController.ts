@@ -1,4 +1,9 @@
 import type { TemplateController } from "./controller";
+import {
+  NAVIGATION_DEFAULT,
+  NAVIGATION_MIN,
+  NAVIGATION_MAX,
+} from "./navigationSizing";
 import type {
   Creation,
   CreationBody,
@@ -176,6 +181,7 @@ interface State {
   navigationBusy: boolean;
   error: string | null;
   message: string | null;
+  messageIntent: "success" | "warning";
   uiError: boolean;
   prompt: boolean;
   progress: { files: string; phase: number; requested: boolean } | null;
@@ -202,12 +208,11 @@ interface State {
   referencesError: string | null;
   referenceFocus: ReferenceFocus | null;
 }
-export const DOCUMENT_NAVIGATION_MIN = 220;
-export const DOCUMENT_NAVIGATION_MAX = 420;
+export const DOCUMENT_NAVIGATION_MIN = NAVIGATION_MIN;
+export const DOCUMENT_NAVIGATION_MAX = NAVIGATION_MAX;
 export const DOCUMENT_GLOSSARY_MIN = 220;
 export const DOCUMENT_GLOSSARY_MAX = 380;
-const defaultNavigationWidth = () =>
-  typeof window !== "undefined" && window.innerWidth <= 1100 ? 260 : 280;
+const defaultNavigationWidth = () => NAVIGATION_DEFAULT;
 const emptyUi = (): UiState => ({
   tabs: [],
   active: null,
@@ -255,6 +260,7 @@ export class DocumentController {
     navigationBusy: false,
     error: null,
     message: null,
+    messageIntent: "success",
     uiError: false,
     prompt: false,
     progress: null,
@@ -273,6 +279,7 @@ export class DocumentController {
   private project: string | null = null;
   private projectGeneration = -1;
   private listRequest = 0;
+  private ownerRevision = 0;
   private reloadAfterBusy = false;
   private previewEpoch = 0;
   private searchRequest = 0;
@@ -433,6 +440,7 @@ export class DocumentController {
     };
   };
   private publish(p: Partial<State>) {
+    if (p.draft !== undefined || p.editors !== undefined) ++this.ownerRevision;
     this.state = { ...this.state, ...p };
     this.listeners.forEach((l) => l());
   }
@@ -799,7 +807,11 @@ export class DocumentController {
       "opening",
     );
   }
-  private async refreshList(restoreUi = false, refreshSearch = true) {
+  private async refreshList(
+    restoreUi = false,
+    refreshSearch = true,
+    preserveCommitted = false,
+  ) {
     let restoreFailed = false;
     const project = this.project;
     const generation = this.projectGeneration;
@@ -813,7 +825,16 @@ export class DocumentController {
       generation !== this.shell.projectGeneration() ||
       request !== this.listRequest
     )
-      return;
+      return false;
+    // A failed inventory refresh cannot replace the just-committed read/tab
+    // with a partial response or recategorize a successful creation as lost.
+    if (
+      preserveCommitted &&
+      (result.problem ||
+        result.issueStatus !== "complete" ||
+        result.unverifiedDocuments?.length)
+    )
+      return false;
     this.publish({ list: result, validationIssues: result.issues ?? [] });
     if (restoreUi) {
       try {
@@ -848,6 +869,43 @@ export class DocumentController {
     } else this.publish({ read: null });
     if (this.state.searchQuery.trim() || this.state.searchTemplate)
       await this.requestSearch(refreshSearch, false);
+    return true;
+  }
+
+  /** Validate only the list. Diagnostics must not reselect tabs or read a body. */
+  async refreshForHealth(
+    current: () => boolean = () => true,
+  ): Promise<boolean> {
+    if (!this.project || this.hasOwners() || this.state.busy) return false;
+    const project = this.project;
+    const generation = this.projectGeneration;
+    const ownerRevision = this.ownerRevision;
+    const request = ++this.listRequest;
+    try {
+      const result = await this.work({ action: "list", refreshSearch: false });
+      if (result.kind !== "list") throw new BridgeFailure("protocol");
+      if (
+        !current() ||
+        project !== this.project ||
+        project !== this.shell.snapshot().projectId ||
+        generation !== this.projectGeneration ||
+        generation !== this.shell.projectGeneration() ||
+        request !== this.listRequest ||
+        ownerRevision !== this.ownerRevision ||
+        this.hasOwners() ||
+        this.state.busy ||
+        this.state.previewClosing
+      )
+        return false;
+      this.publish({ list: result, validationIssues: result.issues ?? [] });
+      return (
+        !result.problem &&
+        result.issueStatus === "complete" &&
+        !result.unverifiedDocuments?.length
+      );
+    } catch {
+      return false;
+    }
   }
 
   searchDocuments(query: string, template: string | null) {
@@ -1759,6 +1817,7 @@ export class DocumentController {
       });
       if (!deposit && r.outcome?.kind === "write") {
         this.publish({
+          messageIntent: r.outcome.disk === "committed" ? "success" : "warning",
           message: text(
             r.outcome.disk === "committed"
               ? r.outcome.cleanup_failed || r.outcome.recovery_required
@@ -1862,6 +1921,14 @@ export class DocumentController {
             active: id,
             tabs: [...tabs.filter((tab) => tab !== id), id].slice(-256),
           });
+          // A committed read validates this document, but only a fresh list
+          // validates the project's complete document inventory.
+          try {
+            await this.refreshList(false, false, true);
+          } catch {
+            // Keep the committed document and its unverified marker. A later
+            // explicit health check or reload can retry the list validation.
+          }
           await this.refreshSearch(false);
         } else this.publish({ error: text("documents.lateInput") });
       } else if (r.problem || (!deposit && r.outcome?.kind === "write"))
@@ -1963,6 +2030,10 @@ export class DocumentController {
       });
       if (r.kind === "write")
         this.publish({
+          messageIntent:
+            r.disk === "committed" || r.disk === "no_write"
+              ? "success"
+              : "warning",
           message: text(
             r.disk === "committed"
               ? r.cleanup_failed || r.recovery_required

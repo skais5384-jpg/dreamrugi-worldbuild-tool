@@ -2136,6 +2136,42 @@ fn creation_and_move_preserve_unplaced_until_explicit_adoption() {
 }
 
 #[test]
+fn document_create_acquire_failure_reports_error_and_preserves_draft() {
+    let provider = Arc::new(Provider::new());
+    let h = Harness::with_provider(provider.clone());
+    let p = h.open();
+    let (t, _) = h.template(&p);
+    let d = begin(&h, &p, &t);
+    let mut body = d["body"].clone();
+    body["name"] = "retained draft".into();
+    provider
+        .fail_acquire
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let failed = save(&h, &p, &d, "2", body.clone());
+    assert_eq!(failed["kind"], "draft", "{failed}");
+    assert_eq!(failed["problem"], "SessionRejected", "{failed}");
+    assert_eq!(failed["body"], body);
+    assert_ne!(failed["outcome"]["disk"], "committed");
+    assert!(!h.root.join("workspace/document-layout.json").exists());
+    assert!(
+        !h.root.join("documents").exists()
+            || fs::read_dir(h.root.join("documents")).unwrap().count() == 0
+    );
+    provider
+        .fail_acquire
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let deposited = request(
+        &h,
+        &p,
+        json!({"action":"deposit","owner":d["owner"],"generation":"2","body":body}),
+    )["value"]
+        .clone();
+    assert_eq!(deposited["deposited"], true, "{deposited}");
+    release(&h, &p, &deposited, false);
+    h.close_clean();
+}
+
+#[test]
 fn document_workspace_raw_deposit_restore_duplicate_owner_and_single_create() {
     let h = Harness::new();
     let p = h.open();

@@ -37,6 +37,8 @@ pub(crate) fn handle<R: Runtime>(
     match event {
         #[cfg(windows)]
         RunEvent::Ready => {
+            #[cfg(feature = "updater-test")]
+            crate::updater::record_window_metrics(app);
             let installed = app.get_webview_window("main").and_then(|main| {
                 crate::youtube::install(&main, Arc::clone(&state));
                 main.hwnd()
@@ -49,7 +51,13 @@ pub(crate) fn handle<R: Runtime>(
                 state.clear_wake();
             }
         }
-        RunEvent::WindowEvent { label, event, .. } => window_event(&state, label, event),
+        RunEvent::WindowEvent { label, event, .. } => {
+            #[cfg(feature = "updater-test")]
+            if matches!(event, WindowEvent::Resized(_)) {
+                crate::updater::record_window_metrics(app);
+            }
+            window_event(&state, label, event);
+        }
         RunEvent::ExitRequested { api, .. } => {
             if !state.exit_approved() {
                 api.prevent_exit();
@@ -62,10 +70,19 @@ pub(crate) fn handle<R: Runtime>(
             // a stopped app might not produce another window event to wake us.
             state.poll();
             cleanup_pass(&state);
+            if state.ordinary_shutdown() {
+                if let Some(manager) = app.try_state::<Arc<crate::updater::Manager>>() {
+                    manager.cancel_all();
+                }
+            }
+            crate::updater::handoff(app, &state);
+            if let Some(manager) = app.try_state::<Arc<crate::updater::Manager>>() {
+                manager.observe(app, &state);
+            }
             if state.poll() {
-                state.clear_wake();
                 // AppHandle::exit에는 request 실패 시 강제 종료 fallback이 있어 이 위치에서만 호출한다.
                 if !app.state::<crate::svn::Manager>().has_active() && state.take_exit_approval() {
+                    state.clear_wake();
                     app.exit(0);
                 }
             } else if state.join_pending() {

@@ -100,6 +100,8 @@ export class WorkspaceController {
   private sourceView: Id | null = null;
   constructor(readonly shell: TemplateController = appController()) {
     this.documents = new DocumentController(shell);
+    shell.workspaceInspectDocuments = (current) =>
+      this.documents.refreshForHealth(current);
     // shell의 읽기 갱신이 초안 session이 보유한 원본 view를 회수하지 않도록 한다.
     shell.workspaceOwnsView = (view) => this.sourceView === view;
     shell.workspaceClose = (attempt) => {

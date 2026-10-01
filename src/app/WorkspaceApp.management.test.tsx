@@ -24,6 +24,86 @@ beforeEach(() => {
 });
 
 describe("whole template workspace", () => {
+  it("두 백업 중 선택한 행의 locator만 새 프로젝트 복원 명령에 전달한다", async () => {
+    const fixture = transportFixture();
+    const locatorA = "C:\\backups\\first.worldbuild-backup";
+    const locatorB = "C:\\backups\\second.worldbuild-backup";
+    fixture.transport.backups.push(
+      {
+        id: "first-backup",
+        label: "첫 백업",
+        createdAtUtc: "2026-09-20T00:00:00.000Z",
+        kind: "manual",
+        size: "12",
+        status: "verification_required",
+        coverage: "complete",
+        unnamedOrdinal: null,
+        locator: locatorA,
+      },
+      {
+        id: "second-backup",
+        label: "둘째 백업",
+        createdAtUtc: "2026-09-21T00:00:00.000Z",
+        kind: "manual",
+        size: "12",
+        status: "verification_required",
+        coverage: "complete",
+        unnamedOrdinal: null,
+        locator: locatorB,
+      },
+    );
+    const picker = vi
+      .fn()
+      .mockResolvedValueOnce("C:\\project")
+      .mockResolvedValueOnce("C:\\backups")
+      .mockResolvedValueOnce("C:\\restored");
+    const shell = new TemplateController(
+      new GuardedClient(fixture.transport),
+      picker,
+    );
+    render(<WorkspaceApp controller={new WorkspaceController(shell)} />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: text("app.message07") }),
+    );
+    await waitFor(() => expect(shell.snapshot().projectId).toBe("project-one"));
+    fireEvent.click(screen.getByRole("button", { name: "project" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: text("backup.manage") }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: text("backup.location") }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "둘째 백업" }));
+    await waitFor(() =>
+      expect(shell.snapshot().projectData?.selected).toBe("second-backup"),
+    );
+    expect(shell.snapshot().projectData?.locator).toBe(locatorB);
+    expect(screen.getByRole("button", { name: "둘째 백업" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: text("backup.restoreNew") }),
+    );
+    await act(async () => shell.confirmProjectDataName());
+    expect(
+      fixture.transport.commands.some(
+        (command) =>
+          command.action === "submit" &&
+          command.input.kind === "restore_new" &&
+          command.input.locator === locatorB,
+      ),
+    ).toBe(true);
+    expect(
+      fixture.transport.commands.some(
+        (command) =>
+          command.action === "submit" &&
+          command.input.kind === "restore_new" &&
+          command.input.locator === locatorA,
+      ),
+    ).toBe(false);
+  });
+
   it("백업 센터는 메뉴 진입만으로 만들지 않고 위치·지역 시각·미지정 순번과 삭제 뒤 목록 복귀를 표시한다", async () => {
     const fixture = transportFixture();
     const picker = vi
@@ -227,6 +307,11 @@ describe("whole template workspace", () => {
       screen.getByRole("button", { name: text("backup.deletedEntry") }),
     ).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText(text("backup.deleteUncertain"))).toBeVisible();
+    fireEvent.click(
+      within(screen.getByRole("alert")).getByRole("button", {
+        name: text("update.details"),
+      }),
+    );
     fireEvent.click(screen.getByText(text("error.details")));
     expect(
       screen.getByText("backup_quarantine_readback_required"),
@@ -560,11 +645,35 @@ describe("whole template workspace", () => {
         row.backup.id,
       );
       expect(screen.getAllByRole("alert")).toHaveLength(2);
-      expect(screen.getAllByRole("alert")[1]).toHaveTextContent(
-        "backup_receipt_cleanup_required",
+      const cleanupNotice = screen
+        .getByText(text("backup.deletedCleanupRequired"))
+        .closest(".floating-notice")!;
+      expect(cleanupNotice).toHaveAttribute("role", "alert");
+      fireEvent.click(
+        within(cleanupNotice as HTMLElement).getByRole("button", {
+          name: text("update.details"),
+        }),
+      );
+      const record = await screen.findByRole("dialog", { name: "실행 기록" });
+      const cleanupRow = within(record)
+        .getAllByText(text("backup.deletedCleanupRequired"), {
+          selector: "summary",
+        })[0]
+        .closest("td")!;
+      fireEvent.click(within(cleanupRow).getByText(text("error.details")));
+      expect(
+        within(record)
+          .getByText("backup_receipt_cleanup_required")
+          .closest("table"),
+      ).not.toBeNull();
+      fireEvent.click(within(record).getByRole("button", { name: "닫기" }));
+      await waitFor(() =>
+        expect(screen.queryByRole("dialog", { name: "실행 기록" })).toBeNull(),
       );
       expect(
-        screen.getByRole("button", { name: text("backup.deletedRetry") }),
+        await screen.findByRole("button", {
+          name: text("backup.deletedRetry"),
+        }),
       ).toBeVisible();
       expect(screen.queryByText(text("backup.deletedEmpty"))).toBeNull();
 
@@ -580,13 +689,13 @@ describe("whole template workspace", () => {
       expect(shell.snapshot().projectData?.deletedCleanupWarning).toBe(
         "backup_receipt_cleanup_required",
       );
-      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(1));
 
       fixture.transport.deletedBackups.splice(0);
       await act(async () => await shell.refreshDeletedBackups());
       expect(shell.snapshot().projectData?.deletedCleanupWarning).toBeNull();
       expect(shell.snapshot().projectData?.error).toBeNull();
-      expect(screen.queryByRole("alert")).toBeNull();
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
       expect(screen.getByText(text("backup.deletedEmpty"))).toBeVisible();
     },
   );
@@ -993,16 +1102,22 @@ describe("whole template workspace", () => {
     fireEvent.click(
       within(dialog).getByRole("button", { name: text("trash.purge") }),
     );
-    expect(
-      await screen.findByText(
-        text("trash.batchPartial", {
-          completed: "3",
-          protected: "2",
-          failed: "0",
-          cleanup: "0",
-        }),
-      ),
-    ).toBeVisible();
+    // Three distinct native operations complete before the aggregate notice.
+    // Wait for that observable completion, preserving the exact counts.
+    await waitFor(
+      () =>
+        expect(
+          screen.getByText(
+            text("trash.batchPartial", {
+              completed: "3",
+              protected: "2",
+              failed: "0",
+              cleanup: "0",
+            }),
+          ),
+        ).toBeVisible(),
+      { timeout: 5_000 },
+    );
     expect(purged).toBe(true);
     expect(
       fixture.transport.commands.some(
@@ -1219,6 +1334,7 @@ describe("whole template workspace", () => {
       screen.getByRole("button", { name: text("documents.trash") }),
     );
     await screen.findByText("부모 문서");
+    await waitFor(() => expect(shell.snapshot().busy).toBe(false));
     for (const key of [
       `resource:${assetId}`,
       `template:${templateId}`,
@@ -1238,7 +1354,11 @@ describe("whole template workspace", () => {
       await screen.findByRole("menuitem", { name: text("health.restore") }),
     );
     expect(
-      await screen.findByText(text("trash.restoreComplete")),
+      await screen.findByText(
+        text("trash.restoreComplete"),
+        {},
+        { timeout: 5_000 },
+      ),
     ).toBeVisible();
     expect(edits).toEqual([
       { kind: "restore", document: parentId, destination: null },
@@ -1618,7 +1738,11 @@ describe("whole template workspace", () => {
       screen.getByRole("button", { name: text("backup.restoreCurrent") }),
     ).toBeEnabled();
 
-    fireEvent.click(screen.getByRole("button", { name: /^백업 3복원/u }));
+    const thirdBackup = screen.getByRole("button", { name: "백업 3" });
+    expect(thirdBackup.closest("tr")).toHaveTextContent(
+      text("backup.verificationRequired"),
+    );
+    fireEvent.click(thirdBackup);
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: text("backup.restoreCurrent") }),
@@ -1658,11 +1782,19 @@ describe("whole template workspace", () => {
 
     await act(() => shell.setCurrentAsDefault());
     expect(
-      screen.queryByText(text("project.defaultUncertainObserved")),
-    ).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /실행 기록/ }));
+      (
+        await screen.findByText(text("project.defaultUncertainObserved"))
+      ).closest(".floating-message-stack"),
+    ).not.toBeNull();
+    fireEvent.click(
+      within(
+        screen.getByRole("navigation", { name: text("documents.modes") }),
+      ).getByRole("button", { name: /실행 기록/ }),
+    );
     expect(
-      await screen.findByText(text("project.defaultUncertainObserved")),
+      await screen.findByText(text("project.defaultUncertainObserved"), {
+        selector: "summary",
+      }),
     ).toBeVisible();
     expect(shell.snapshot().defaultProjectRoot).toBe("C:\\current-project");
     expect(shell.snapshot().defaultProjectObserved).toBe(true);
@@ -1679,13 +1811,24 @@ describe("whole template workspace", () => {
     await waitFor(() => expect(shell.snapshot().projectId).toBe("project-one"));
 
     await act(() => shell.clearDefaultProject());
-    fireEvent.click(screen.getByRole("button", { name: /실행 기록/ }));
+    fireEvent.click(
+      within(
+        screen.getByRole("navigation", { name: text("documents.modes") }),
+      ).getByRole("button", { name: /실행 기록/ }),
+    );
     expect(
-      await screen.findByText(text("project.defaultUncertainUnknown")),
+      await screen.findByText(text("project.defaultUncertainUnknown"), {
+        selector: "summary",
+      }),
     ).toBeVisible();
     expect(fixture.transport.defaultProjectRoot).toBeNull();
     expect(shell.snapshot().defaultProjectObserved).toBe(false);
     expect(screen.queryByText(text("project.defaultCleared"))).toBeNull();
+    fireEvent.click(
+      screen.getByText(text("project.defaultUncertainUnknown"), {
+        selector: "summary",
+      }),
+    );
     expect(
       screen.getByRole("button", { name: text("project.retrySettings") }),
     ).toBeEnabled();
@@ -1701,20 +1844,33 @@ describe("whole template workspace", () => {
     await waitFor(() => expect(shell.snapshot().projectId).toBe("project-one"));
 
     await act(() => shell.clearDefaultProject());
-    fireEvent.click(screen.getByRole("button", { name: /실행 기록/ }));
+    fireEvent.click(
+      within(
+        screen.getByRole("navigation", { name: text("documents.modes") }),
+      ).getByRole("button", { name: /실행 기록/ }),
+    );
     expect(
-      await screen.findByText(text("project.defaultNotAppliedUnknown")),
+      await screen.findByText(text("project.defaultNotAppliedUnknown"), {
+        selector: "summary",
+      }),
     ).toBeVisible();
     expect(shell.snapshot().defaultProjectObserved).toBe(false);
 
     fixture.transport.failSettingsReadback = false;
     fixture.transport.failSettingsRead = false;
     fireEvent.click(
+      screen.getByText(text("project.defaultNotAppliedUnknown"), {
+        selector: "summary",
+      }),
+    );
+    fireEvent.click(
       screen.getByRole("button", { name: text("project.retrySettings") }),
     );
 
     expect(
-      await screen.findByText(text("project.defaultNotAppliedObserved")),
+      await screen.findByText(text("project.defaultNotAppliedObserved"), {
+        selector: "summary",
+      }),
     ).toBeVisible();
     expect(shell.snapshot().defaultProjectRoot).toBe("C:\\old-default");
     expect(shell.snapshot().defaultProjectObserved).toBe(true);
@@ -1780,9 +1936,11 @@ describe("whole template workspace", () => {
       screen.getByRole("button", { name: text("project.chooseLocation") }),
     );
 
-    expect(
-      await screen.findByText(text("project.createCleanupPreserved")),
-    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getByText(text("project.createCleanupPreserved")),
+      ).toBeVisible(),
+    );
     expect(shell.snapshot().projectId).toBeNull();
   });
 
@@ -1818,7 +1976,9 @@ describe("whole template workspace", () => {
       screen.queryByText(text("project.initializationFailed")),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /실행 기록 · 확인할 오류 있음/u }),
+      await screen.findByRole("button", {
+        name: /실행 기록 · 확인할 오류 있음/u,
+      }),
     ).toBeVisible();
 
     fixture.transport.initializationFailed = false;

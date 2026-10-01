@@ -1,35 +1,33 @@
 # Dreamrugi Worldbuild Tool
 
-한국어 Windows용 세계관 개발 및 관리 도구입니다. 개인 프로젝트에서 Template을 만들고 문서, 관계, 이미지와 리소스, 배치를 관리할 수 있습니다. TortoiseSVN을 사용하는 팀은 SVN 작업 사본에서 문서 잠금, 로컬 저장, 선택 커밋과 명시적 갱신을 사용할 수 있습니다.
+Windows용 세계관 개발 및 관리 도구입니다. 한국어 UI로 Template 기반 문서, 관계, 이미지와 프로젝트를 관리하며 개인 프로젝트와 TortoiseSVN 협업을 지원합니다.
 
-## 시작하기
+## 버전과 설치
 
-**0.1.0 Windows x64 시험판을 공개했습니다.** [설치 파일 다운로드](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/download/v0.1.0/Dreamrugi.Worldbuild.Tool_0.1.0_x64-setup.exe) 후 수동 설치하거나, [v0.1.0 시험판](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/tag/v0.1.0)에서 설치 파일·검증용 서명·대응 소스를 확인하십시오. 무료 공개 시험판이며 정식/stable 배포는 아닙니다.
+이 안내는 **1.0.0**의 설치와 사용 기준입니다. 설치 파일을 받을 때는 [1.0.0 릴리스 페이지](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/tag/v1.0.0)에서 실제 게시된 Windows x64 설치 파일과 대응 소스를 확인합니다. 버전별 게시 상태는 [릴리스 목록](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases)에서 확인할 수 있습니다. 공개 소스의 대상은 [공개 저장소](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool)입니다.
 
-- [사용 안내 Wiki](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/wiki)
-- [시작하기](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/wiki/시작하기)
-- [자주 묻는 질문](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/wiki/FAQ)
+Windows 10 19041 이상/Windows 11 x64와 Microsoft Edge WebView2 Runtime이 필요합니다. GitHub NSIS는 현재 사용자 범위 설치입니다. WebView2가 없으면 설치 중 인터넷 연결이 필요하며 오프라인 PC는 Microsoft 공식 Evergreen Standalone Installer로 런타임을 미리 준비합니다. Store MSIX도 WebView2가 사전 설치되어 있어야 합니다. GitHub 게시와 Store 심사·게시는 별도로 진행되므로 GitHub 릴리스가 Store 게시를 뜻하지 않습니다.
 
-## 제공하는 기능
+공개0.1.0에는 updater가 없으므로 첫1.0.0은 수동 설치합니다. 실제 게시된 신뢰할 수 있는1.0.0 설치 파일로 업데이트하고 기존 프로젝트·설정·복구 센터의 보관 입력을 확인합니다. 프로젝트 폴더와 보관 입력을 삭제하지 마십시오. 기존 GitHub 제품 identifier를 유지합니다.
 
-- Template 기반 문서 작성과 프로젝트별 관리
-- 문서 관계, 검색, 글로서리, 이미지와 리소스 관리
-- 개인 프로젝트의 로컬 편집·저장과 입력 복구
-- SVN 작업 사본의 읽기, 잠금 기반 편집, 선택 커밋, 수동 상태 확인과 갱신
-- 실행 기록과 복구 센터에서 결과 및 보관된 입력 확인
+## 사용과 보존
 
-Windows 10 19041 이상 또는 Windows 11 x64와 Microsoft Edge WebView2 Runtime이 필요합니다. WebView2가 없다면 설치 과정에 인터넷 연결이 필요합니다. 오프라인 PC에서는 Microsoft의 WebView2 Evergreen Standalone Installer를 먼저 준비하십시오. SVN 협업에는 [TortoiseSVN](https://tortoisesvn.net/)의 명령줄 도구, HTTPS SVN 서버 계정과 올바른 작업 사본이 별도로 필요합니다.
+홈에서 **새 프로젝트**로 이름과 보관 위치를 선택하거나 **프로젝트 열기**로 기존 프로젝트 폴더를 엽니다. Template으로 문서를 만들고 읽기·편집·명시 저장을 사용합니다. Ctrl+S는 활성 편집 문서/Template의 저장이며 한글 조합·모달·잠금 상태를 보호합니다. 관계와 첨부 이미지, 탐색 순서, 관리 목록을 제공합니다.
 
-프로젝트는 사용자가 선택한 폴더에 저장합니다. 로컬 저장은 SVN 서버 커밋과 다른 작업입니다. 저장된 미커밋 변경이 있으면 편집을 종료해도 잠금이 유지될 수 있습니다. 강제 잠금 획득 전에는 상대방과 작업 상태를 확인하십시오. 중요한 프로젝트와 복구 입력은 별도로 백업하십시오.
+**백업 및 복원**에서 별도 위치를 지정한 뒤 백업을 만듭니다. 백업에는 저장된 프로젝트가 들어가며 미저장 입력은 포함되지 않습니다. 선택한 백업은 새 프로젝트 폴더로 복원합니다. 복구 센터의 보관 입력과 삭제 문서의 휴지통은 서로 다릅니다. 중요한 원본은 별도로 보관하십시오.
 
-현재 앱 자체의 SVN Revert/rollback UI와 자동 업데이트는 제공하지 않습니다. Microsoft Store에는 아직 게시하지 않았습니다. 0.x 시험판의 Windows Authenticode는 미서명이며 updater 서명은 별도의 파일 검증 수단입니다.
+협업에는 [TortoiseSVN](https://tortoisesvn.net/)과 명령줄 도구·사용자 서버/계정이 별도로 필요합니다. 로컬 저장과 SVN 커밋은 다르며 문서 잠금·선택 커밋·명시 수신을 지원합니다. 지원 앱의 최소 버전 정책은 외부 SVN 도구나 이를 모르는0.1.0의 서버 접근을 강제로 막지 않습니다. 앱 자체 Revert/rollback UI와 앱 다운그레이드는 제공하지 않습니다.
 
-## 소스 빌드와 배포 검증
+## 업데이트와 지원
 
-[배포 안내](docs/release-guide.md)와 [Windows 패키징 안내](docs/m7-windows-packaging.md)를 참고하십시오. 잠긴 Node.js·Rust 및 npm/Cargo 의존성으로 빌드합니다. 수동 Actions는 검토한 공개 main commit에서 설치 파일·updater 서명·대응 소스를 만들고 **draft/prerelease**로 보관합니다. 일반 사용자에게 게시하는 단계는 별도의 사람 확인을 거칩니다.
+GitHub 정식 채널은 앱 시작 시 공개 저장소의 stable feed를 확인하고 기존 운영 공개키로 서명된 설치물을 검증합니다. 확인이 실패하면 연결 상태와 실행 기록을 확인하고 안내에 따라 다시 시도하거나 이번 시작을 넘깁니다. 이후 업데이트는 ‘업데이트 후 재시작’ 선택으로 진행합니다. Store 채널은 Microsoft Store에서 업데이트하며 GitHub 설치물을 내려받아 설치하지 않습니다. 로컬 시험본·개발 빌드는 운영판과 구별됩니다.
 
-## 라이선스
+설치가 실패하면 오류를 남기고 창을 닫은 뒤 신뢰할 수 있는 동일/상위 설치판으로 재설치합니다. 프로젝트와 보관 입력을 보존하고 다시 열어 확인합니다. 자동 설치 복구나 자동 rollback을 약속하지 않습니다. 도움말의 프로그램 정보·좌하단 실행 기록에서 오류를 확인합니다. 검색/큰 백업의 성능 잔여와 새 문서 첫 읽기 상태 확인의 역사적 경고는 후속 추적 중이며 해결 완료로 표시하지 않습니다.
 
-애플리케이션 자체 코드는 [GNU GPL version 3 only](LICENSE), `GPL-3.0-only`로 제공합니다. 이 라이선스가 사용자가 작성한 프로젝트 문서에 자동 적용되는 것은 아닙니다. Hunspell, 한글 사전, Lexical, Fluent UI, 폰트와 테마의 원래 라이선스·고지는 각각 유지합니다. 동봉된 고지와 `src-tauri/about-notices/`, `src-tauri/spellcheck/`, `src/assets/fonts/LICENSE`를 확인하십시오.
+문의: [블로그](https://dreamrugi.tistory.com/), [이메일](mailto:skais5384@naver.com). 원문·계정·인증 자료가 포함되지 않도록 확인한 뒤 문제를 전달하십시오. 네트워크/개인정보 범위는 [제출 준비 자료](packaging/store-submission.md)에 있습니다.
 
-배포 시 `corresponding-source.zip`에는 정확한 제품 소스·lockfile·빌드 자료·고지를, `third-party-source.zip`에는 잠긴 실행 의존 소스를 제공합니다. 개인 키, 인증정보와 사용자 프로젝트는 공개 소스에 포함하지 않습니다.
+## 라이선스와 개발
+
+앱 자체 코드는 [GNU GPL version 3 only](LICENSE)입니다. 사용자가 작성한 문서에 이 라이선스를 자동 적용하지 않습니다. 포함된 Hunspell·한글 사전·Lexical·Fluent UI·폰트 등은 원래 고지와 라이선스를 유지하며 실행물에 고지·사전·대응 소스를 동봉합니다. SOURCE.json과 release-manifest.json이 고정 소스와 설치물 지문을 연결합니다. updater .sig는 Windows Authenticode 인증서와 별개이며 실제 상태는 배포 receipt에서 확인합니다.
+
+Node.js24.20.0, Rust1.98.0, Tauri CLI2.12.0 및 잠금 파일을 사용합니다. npm ci 후 npm run check로 검사하며 고정 소스·서명·채널 절차는 [배포 안내](docs/release-guide.md)를 따릅니다. 개인 키·암호·계정·프로젝트·내부 보고는 공개 소스에 포함하지 않습니다.

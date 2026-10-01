@@ -33,6 +33,53 @@ beforeEach(() => {
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
 });
 afterEach(() => vi.restoreAllMocks());
+
+it("saves through the visible document owner before autosave and keeps read-only Ctrl+S inert", async () => {
+  const { controller, transport } = await setup();
+  await controller.open("a");
+  await controller.beginEdit("a");
+  vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue({
+    length: 1,
+  } as DOMRectList);
+  render(<DocumentWorkspace controller={controller} />);
+  await screen.findByRole("button", { name: text("common.save") });
+  const saves = () =>
+    transport.commands.filter(
+      (command) =>
+        command.action === "submit" &&
+        command.input.kind === "document_workspace" &&
+        command.input.request.action === "edit_draft" &&
+        command.input.request.save,
+    );
+  vi.useFakeTimers();
+  try {
+    act(() =>
+      controller.edits.update("a", (body) => ({
+        ...body,
+        name: { intent: "set", value: "명시 단축키 저장" },
+      })),
+    );
+    expect(saves()).toHaveLength(0);
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "s", ctrlKey: true });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(saves()).toHaveLength(1);
+    expect(controller.edits.entries.a.status.read.name).toBe(
+      "명시 단축키 저장",
+    );
+    fireEvent.keyUp(document, { key: "s", ctrlKey: true });
+    await act(async () => controller.edits.close("a"));
+    const before = transport.commands.length;
+    await act(async () => {
+      fireEvent.keyDown(document, { key: "s", ctrlKey: true });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(transport.commands).toHaveLength(before);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 async function setup(kind: "Number" | "Url" = "Number") {
   const transport = new TestTransport();
   const template: Template = {
@@ -554,9 +601,9 @@ it("저장된 문서 참조만 점검에서 갱신하고 실패한 저장은 기
       .get("b")
       ?.some((issue) => issue.reason === "resource_in_trash"),
   ).toBe(true);
-  expect(shell.snapshot().health?.inspection?.documentIssues).toEqual(
-    shell.snapshot().assetInspection?.documentIssues,
-  );
+  // A background refresh cannot certify a new explicit project check.
+  expect(shell.snapshot().health?.check).toBeUndefined();
+  expect(shell.snapshot().health?.inspection?.complete).toBe(false);
   expect(savedReferences).toEqual(["resource-s"]);
   expect(
     f.transport.commands.some(
@@ -610,7 +657,8 @@ it("저장 이전 검사의 늦은 응답과 재검사 실패는 최신 문서�
   f.transport.completeHeld();
   await oldInspection;
   expect(shell.snapshot().assetInspection?.documentIssues).toEqual([]);
-  expect(shell.snapshot().health?.inspection?.documentIssues).toEqual([]);
+  expect(shell.snapshot().health?.inspection).toBeNull();
+  expect(shell.snapshot().health?.check).toBeUndefined();
 
   const original = f.transport.workspaceResult;
   f.transport.workspaceResult = (input) =>
@@ -1554,9 +1602,13 @@ it("searches saved fields, opens the existing document path, and Escape restores
   fireEvent.change(input, { target: { value: "필드" } });
 
   const result = await screen.findByRole("button", {
-    name: /첫 문서.*시험 템플릿.*설명: 필드에서 찾은 저장 본문/,
+    name: "첫 문서",
   });
-  expect(result).toHaveClass("document-search-result-link");
+  expect(result).toHaveClass("search-document-command");
+  expect(result).toHaveAccessibleDescription(
+    /시험 템플릿.*설명: 필드에서 찾은 저장 본문/,
+  );
+  expect(result.closest("table")).not.toBeNull();
   fireEvent.click(result);
   await waitFor(() => expect(controller.snapshot().ui.active).toBe("a"));
 
@@ -1984,8 +2036,9 @@ it("revalidates a stale search result and preserves the already open edit", asyn
       target: { value: "첫" },
     },
   );
+  const searchTable = await screen.findByRole("table");
   fireEvent.click(
-    await screen.findByRole("button", { name: /첫 문서.*시험 템플릿/ }),
+    await within(searchTable).findByRole("button", { name: "첫 문서" }),
   );
 
   await waitFor(() =>
@@ -2722,45 +2775,375 @@ it("restores each tab scroll and text selection after the read/active transition
   expect(b.selectionStart).toBe(2);
   expect(body.scrollTop).toBe(40);
 });
-describe("document workspace", () => {
-  it("생성 커밋 응답으로 목록·본문을 공개하고 후속 전수 목록/read 호출을 만들지 않는다", async () => {
-    const f = await setup();
-    await f.controller.begin("t");
-    f.controller.edit((body) => ({ ...body, name: "즉시 공개" }));
-    f.setOutcome({
-      kind: "write",
-      session: "session",
-      artifact: "created",
-      disk: "committed",
-      recovery_required: false,
-      cleanup_failed: false,
-      error: null,
-      diagnostic: {
-        stage: "complete",
-        category: null,
-        sessionState: "ReadOnly",
-        lockCategory: null,
-        nextAction: "",
-      },
-      changed: true,
-      warnings: [],
-    });
-    const before = f.transport.commands.length;
-    await f.controller.submit();
-    const requests = f.transport.commands
-      .slice(before)
-      .flatMap((command) =>
-        command.action === "submit" &&
-        command.input.kind === "document_workspace"
-          ? [command.input.request.action]
-          : [],
-      );
-    expect(requests).toEqual(["draft", "release"]);
-    const documents = f.controller.snapshot().list?.documents ?? [];
-    expect(documents[documents.length - 1]?.id).toBe("created");
-    expect(f.controller.snapshot().read?.id).toBe("created");
-    expect(f.controller.snapshot().ui.active).toBe("created");
+function healthGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
   });
+  return { promise, resolve };
+}
+
+describe("project check lifetime", () => {
+  it("revalidates on opening, retry and reopening; one completed side never reports success", async () => {
+    const f = await setup();
+    f.list.issueStatus = "complete";
+    await f.controller.load();
+    const shell = f.controller.shell;
+    const run = shell.operations.run.bind(shell.operations);
+    const entered = healthGate();
+    const release = healthGate();
+    let hold = true;
+    const original = f.transport.workspaceResult!;
+    f.transport.workspaceResult = (input) => {
+      const result = original(input);
+      if (
+        input.kind === "document_workspace" &&
+        input.request.action === "list" &&
+        result?.kind === "document_workspace" &&
+        result.value.kind === "list"
+      )
+        return {
+          ...result,
+          value: {
+            ...result.value,
+            problem: "document_invalid",
+            issueStatus: "unavailable",
+          },
+        };
+      return result;
+    };
+    vi.spyOn(shell.operations, "run").mockImplementation(async (...args) => {
+      const result = await run(...args);
+      if (
+        hold &&
+        args[0].kind === "document_workspace" &&
+        args[0].request.action === "list"
+      ) {
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    });
+    shell.showHealth();
+    await entered.promise;
+    expect(shell.snapshot().health).toMatchObject({
+      phase: "checking",
+      message: null,
+      inspection: null,
+      check: { documents: "checking" },
+    });
+    release.resolve();
+    await waitFor(() => expect(shell.snapshot().health?.phase).toBe("ready"));
+    expect(shell.snapshot().health?.check?.documents).toBe("unverified");
+    expect(shell.snapshot().health?.message).toBe(text("health.checkPartial"));
+    hold = false;
+    await shell.inspectAssets();
+    expect(shell.snapshot().health?.check?.documents).toBe("unverified");
+    shell.closeHealth();
+    shell.showHealth();
+    await waitFor(() => expect(shell.snapshot().health?.phase).toBe("ready"));
+    expect(shell.snapshot().health?.check?.documents).toBe("unverified");
+    f.transport.workspaceResult = original;
+    await shell.inspectAssets();
+    expect(shell.snapshot().health?.check?.documents).toBe("verified");
+    expect(shell.snapshot().health?.message).toBe(text("health.checkComplete"));
+  });
+
+  it.each(["complete", "incomplete", "failed"] as const)(
+    "waits for resources and preserves their %s result",
+    async (outcome) => {
+      const f = await setup();
+      f.list.issueStatus = "complete";
+      const shell = f.controller.shell;
+      const run = shell.operations.run.bind(shell.operations);
+      const entered = healthGate();
+      const release = healthGate();
+      f.transport.assetInspection.complete = outcome !== "incomplete";
+      vi.spyOn(shell.operations, "run").mockImplementation(async (...args) => {
+        const result = await run(...args);
+        if (args[0].kind === "asset_inspect") {
+          entered.resolve();
+          await release.promise;
+          if (outcome === "failed")
+            throw new Error("synthetic inspection failure");
+        }
+        return result;
+      });
+      shell.showHealth();
+      await entered.promise;
+      expect(shell.snapshot().health?.phase).toBe("checking");
+      expect(shell.snapshot().health?.message).toBeNull();
+      release.resolve();
+      await waitFor(() =>
+        expect(shell.snapshot().health?.phase).toBe(
+          outcome === "failed" ? "failed" : "ready",
+        ),
+      );
+      expect(shell.snapshot().health?.message).toBe(
+        outcome === "complete"
+          ? text("health.checkComplete")
+          : outcome === "incomplete"
+            ? text("health.checkPartial")
+            : null,
+      );
+    },
+  );
+
+  it.each([
+    [true, "list"],
+    [false, "list"],
+    [true, "assets"],
+    [false, "assets"],
+  ] as const)(
+    "discards a closed check without reading A or overwriting B (old first=%s, delayed=%s)",
+    async (oldFirst, delayed) => {
+      const f = await setup();
+      f.list.issueStatus = "complete";
+      await f.controller.open("a");
+      const shell = f.controller.shell;
+      const run = shell.operations.run.bind(shell.operations);
+      const entered = [healthGate(), healthGate()];
+      const release = [healthGate(), healthGate()];
+      let listIndex = 0;
+      const requests: string[] = [];
+      vi.spyOn(shell.operations, "run").mockImplementation(async (...args) => {
+        const result = await run(...args);
+        if (args[0].kind === "document_workspace") {
+          requests.push(args[0].request.action);
+        }
+        if (
+          (delayed === "list" &&
+            args[0].kind === "document_workspace" &&
+            args[0].request.action === "list") ||
+          (delayed === "assets" && args[0].kind === "asset_inspect")
+        ) {
+          const index = listIndex++;
+          entered[index].resolve();
+          await release[index].promise;
+        }
+        return result;
+      });
+      const oldCheck = shell.showHealth();
+      await entered[0].promise;
+      shell.closeHealth();
+      await f.controller.open("b");
+      const selected = f.controller.snapshot().read;
+      const newCheck = shell.showHealth();
+      await entered[1].promise;
+      const currentId = shell.snapshot().health?.check?.id;
+      release[oldFirst ? 0 : 1].resolve();
+      if (oldFirst) {
+        await Promise.resolve();
+        expect(shell.snapshot().health?.phase).toBe("checking");
+      } else
+        await waitFor(() =>
+          expect(shell.snapshot().health?.phase).toBe("ready"),
+        );
+      release[oldFirst ? 1 : 0].resolve();
+      await Promise.all([oldCheck, newCheck]);
+      await waitFor(() => expect(shell.snapshot().health?.phase).toBe("ready"));
+      expect(shell.snapshot().health?.check?.id).toBe(currentId);
+      expect(f.controller.snapshot().ui.active).toBe("b");
+      expect(f.controller.snapshot().read).toBe(selected);
+      expect(f.controller.snapshot().read?.id).toBe("b");
+      expect(requests.filter((action) => action === "read")).toHaveLength(1);
+    },
+  );
+
+  it.each([true, false])(
+    "does not publish a pending list after an editor lifetime change (owner remains=%s)",
+    async (remains) => {
+      const f = await setup();
+      f.list.issueStatus = "complete";
+      await f.controller.open("a");
+      const shell = f.controller.shell;
+      const run = shell.operations.run.bind(shell.operations);
+      const entered = healthGate();
+      const release = healthGate();
+      vi.spyOn(shell.operations, "run").mockImplementation(async (...args) => {
+        const result = await run(...args);
+        if (
+          args[0].kind === "document_workspace" &&
+          args[0].request.action === "list"
+        ) {
+          entered.resolve();
+          await release.promise;
+        }
+        return result;
+      });
+      const checking = f.controller.refreshForHealth();
+      await entered.promise;
+      await f.controller.beginEdit("a");
+      if (!remains) await f.controller.endEdit("a");
+      const before = f.controller.snapshot();
+      const owner = f.controller.edits.entries.a;
+      release.resolve();
+      expect(await checking).toBe(false);
+      expect(f.controller.snapshot().list).toBe(before.list);
+      expect(f.controller.snapshot().read).toBe(before.read);
+      expect(f.controller.edits.entries.a).toBe(owner);
+    },
+  );
+
+  it("rejects a previous project's list after the next project is loaded", async () => {
+    const f = await setup();
+    await f.controller.open("a");
+    const shell = f.controller.shell;
+    const run = shell.operations.run.bind(shell.operations);
+    const entered = healthGate();
+    const release = healthGate();
+    let hold = true;
+    vi.spyOn(shell.operations, "run").mockImplementation(async (...args) => {
+      const result = await run(...args);
+      if (
+        hold &&
+        args[0].kind === "document_workspace" &&
+        args[0].request.action === "list"
+      ) {
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    });
+    const checking = f.controller.refreshForHealth();
+    await entered.promise;
+    hold = false;
+    const state = shell.snapshot();
+    vi.spyOn(shell, "snapshot").mockImplementation(() => ({
+      ...state,
+      projectId: "next-project",
+    }));
+    vi.spyOn(shell, "projectGeneration").mockReturnValue(9);
+    await f.controller.load();
+    const next = f.controller.snapshot();
+    release.resolve();
+    expect(await checking).toBe(false);
+    expect(f.controller.snapshot().list).toBe(next.list);
+    expect(f.controller.snapshot().read).toBe(next.read);
+    expect(f.controller.snapshot().ui).toBe(next.ui);
+  });
+});
+
+describe("document workspace", () => {
+  it.each(["committed", "retry", "reload", "unavailable"])(
+    "생성 성공 뒤 목록 검증 실패를 보존하고 %s 경로에서 복구한다",
+    async (recovery) => {
+      const f = await setup();
+      const original = f.transport.workspaceResult;
+      f.transport.workspaceResult = (input) => {
+        const result = original!(input);
+        if (
+          input.kind === "document_workspace" &&
+          input.request.action === "draft"
+        ) {
+          f.list.documents.push({
+            id: "created",
+            template: "t",
+            name: "즉시 공개",
+          });
+          f.list.layout.rootOrder.push("created");
+          f.list.layout.nodes.created = {
+            parentId: null,
+            childOrder: [],
+            state: "active",
+            trash: null,
+          };
+          f.list.issueStatus = "complete";
+          f.list.unverifiedDocuments = [];
+        }
+        return result;
+      };
+      await f.controller.begin("t");
+      f.controller.edit((body) => ({ ...body, name: "즉시 공개" }));
+      f.setOutcome({
+        kind: "write",
+        session: "session",
+        artifact: "created",
+        disk: "committed",
+        recovery_required: false,
+        cleanup_failed: false,
+        error: null,
+        diagnostic: {
+          stage: "complete",
+          category: null,
+          sessionState: "ReadOnly",
+          lockCategory: null,
+          nextAction: "",
+        },
+        changed: true,
+        warnings: [],
+      });
+      const before = f.transport.commands.length;
+      const run = f.controller.shell.operations.run.bind(
+        f.controller.shell.operations,
+      );
+      const failing =
+        recovery === "committed"
+          ? null
+          : vi
+              .spyOn(f.controller.shell.operations, "run")
+              .mockImplementation(async (...args) => {
+                if (
+                  args[0].kind === "document_workspace" &&
+                  args[0].request.action === "list"
+                ) {
+                  if (recovery === "unavailable") {
+                    const result = await run(...args);
+                    return {
+                      ...result,
+                      result: {
+                        kind: "document_workspace",
+                        value: {
+                          ...f.list,
+                          documents: [],
+                          issueStatus: "unavailable",
+                          problem: "document_invalid",
+                        },
+                      },
+                    };
+                  }
+                  throw new Error(
+                    "synthetic list failure after committed create",
+                  );
+                }
+                return run(...args);
+              });
+      await f.controller.submit();
+      if (failing) {
+        expect(f.controller.snapshot().list?.issueStatus).toBe("partial");
+        expect(f.controller.snapshot().list?.unverifiedDocuments).toContain(
+          "created",
+        );
+        expect(f.controller.snapshot().read?.id).toBe("created");
+        expect(f.controller.snapshot().ui.active).toBe("created");
+        expect(f.controller.snapshot().error).toBeNull();
+        failing.mockRestore();
+        if (recovery === "reload") await f.controller.load();
+        else expect(await f.controller.refreshForHealth()).toBe(true);
+      }
+      const requests = f.transport.commands
+        .slice(before)
+        .flatMap((command) =>
+          command.action === "submit" &&
+          command.input.kind === "document_workspace"
+            ? [command.input.request.action]
+            : [],
+        );
+      expect(requests).toEqual(
+        recovery === "unavailable"
+          ? ["draft", "release", "list", "list"]
+          : recovery === "retry"
+            ? ["draft", "release", "list"]
+            : ["draft", "release", "list", "read"],
+      );
+      const documents = f.controller.snapshot().list?.documents ?? [];
+      expect(documents[documents.length - 1]?.id).toBe("created");
+      expect(f.controller.snapshot().read?.id).toBe("created");
+      expect(f.controller.snapshot().ui.active).toBe("created");
+      expect(f.controller.snapshot().list?.issueStatus).toBe("complete");
+      expect(f.controller.snapshot().list?.unverifiedDocuments).toEqual([]);
+    },
+  );
   it("복원 후 이름 수정·오류 응답에도 부모 선택을 유지하고 오류 요약을 한 번 표시한다", async () => {
     const f = await setup();
     render(<DocumentWorkspace controller={f.controller} />);

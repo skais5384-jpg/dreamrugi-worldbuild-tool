@@ -20,6 +20,17 @@
 .media-files > li {
   min-width: 0;
 }
+.media-gallery > li,
+.media-files > li {
+  border: 1px solid var(--colorNeutralStroke2);
+  border-radius: var(--borderRadiusLarge);
+  background: var(--colorNeutralBackground1);
+  padding: var(--spacingVerticalS, 8px) var(--spacingHorizontalM, 12px);
+}
+.media-gallery > li:focus-within,
+.media-files > li:focus-within {
+  border-color: var(--colorBrandStroke1);
+}
 .media-item-body {
   display: flex;
   flex-wrap: wrap;

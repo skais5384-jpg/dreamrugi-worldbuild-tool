@@ -482,7 +482,18 @@ describe("Field 정의 편집", () => {
     );
     await idle(controller);
     expect(controller.snapshot().fieldEditor!.drafts[0].committed).toBe(true);
-    expect(screen.getByText(text("field.followup"))).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: text("update.details") }),
+    );
+    expect(
+      within(await screen.findByRole("dialog"))
+        .getAllByText(text("field.followup"))
+        .every((item) => item.closest("td")),
+    ).toBe(true);
+    fireEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "닫기" }),
+    );
+    await screen.findByRole("form", { name: text("field.add") });
     expect(
       form(text("field.add")).getByRole("button", { name: "필드 추가 적용" }),
     ).toBeDisabled();

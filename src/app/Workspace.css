@@ -11,6 +11,10 @@
   align-items: center;
   gap: 6px 12px;
 }
+.whole-template {
+  container-type: inline-size;
+  min-width: 0;
+}
 .whole-heading > div:first-child {
   min-width: 0;
 }
@@ -26,8 +30,27 @@
   justify-self: end;
 }
 .whole-heading h2 {
-  margin-bottom: 4px;
+  margin: 0;
+  font-size: var(--document-title-font);
+  line-height: var(--document-title-line);
   overflow-wrap: anywhere;
+}
+@container (max-width: 700px) {
+  .whole-heading {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .whole-heading > div:first-child {
+    grid-column: 1 / -1;
+  }
+  .whole-heading > .document-save-state {
+    grid-column: 1;
+    grid-row: 2;
+    justify-self: start;
+  }
+  .whole-heading > .actions {
+    grid-column: 2;
+    grid-row: 2;
+  }
 }
 .whole-inputs {
   border: 0;
@@ -84,7 +107,7 @@
 .whole-field-list .whole-field-card {
   border: 1px solid var(--colorNeutralStroke2);
   background: var(--colorNeutralBackground1);
-  box-shadow: var(--shadow2);
+  box-shadow: none;
 }
 .whole-field-list .whole-field-card:hover {
   border-color: var(--colorNeutralStroke1Hover);
@@ -117,8 +140,14 @@
 }
 .whole-field-grip {
   flex: none;
+  display: inline-flex;
+  align-items: center;
   color: var(--text-muted);
   cursor: grab;
+}
+.whole-field-grip svg {
+  width: 20px;
+  height: 20px;
 }
 .whole-field-label {
   flex: 1 1 auto;
@@ -155,11 +184,12 @@
   font-size: var(--fontSizeBase400);
   line-height: var(--lineHeightBase400);
 }
-.whole-option {
+.whole-options > .whole-option {
   display: grid;
   gap: 8px;
   padding: 12px;
-  border: 1px solid var(--background-modifier-border);
+  border: 1px solid var(--colorNeutralStroke2);
+  background: var(--colorNeutralBackground1);
   border-radius: var(--borderRadiusMedium);
 }
 .whole-options {
@@ -194,15 +224,6 @@
   outline-offset: -2px;
   background: var(--colorBrandBackground2);
 }
-.whole-drag-handle {
-  display: block;
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  margin-bottom: 4px;
-}
-.whole-drag-handle::before {
-  content: "⠿ ";
-}
 .whole-errors:focus {
   outline: 2px solid var(--colorStatusDangerBorder1);
 }
@@ -212,7 +233,7 @@
 }
 .property-row {
   display: grid;
-  grid-template-columns: minmax(132px, 11rem) minmax(0, 1fr);
+  grid-template-columns: var(--document-label-width) minmax(0, 1fr);
   align-items: start;
   border-bottom: 1px solid var(--background-modifier-border);
   border-radius: 0;
@@ -223,7 +244,7 @@
 .property-label {
   align-self: start;
   margin: 0;
-  padding: 10px 12px 10px 0;
+  padding: 8px 12px 8px 0;
   color: var(--text-muted);
   background: transparent;
   font-size: var(--fontSizeBase200);
@@ -233,13 +254,32 @@
 }
 .property-content {
   min-width: 0;
-  padding: 8px 0 12px;
+  padding: 8px 0;
   display: grid;
   gap: 8px;
   align-content: start;
 }
 .property-content > p {
   margin: 0;
+}
+.property-row-block {
+  grid-template-columns: minmax(0, 1fr);
+  margin-block: var(--spacingVerticalM, 12px);
+}
+.property-row-block > .property-label {
+  padding: 0 0 var(--spacingVerticalXS, 4px);
+  color: var(--text-normal);
+  font-weight: var(--fontWeightSemibold);
+}
+.property-row-block > .property-content {
+  padding: 0;
+}
+.property-content > .fui-Badge {
+  justify-self: start;
+  width: fit-content;
+}
+.repeat-card .property-row {
+  margin-inline: 0;
 }
 .template-read-detail {
   display: grid;
@@ -250,6 +290,10 @@
 .template-read-field h3 {
   margin: 0;
   overflow-wrap: anywhere;
+}
+.template-detail-header h2 {
+  font-size: var(--document-title-font);
+  line-height: var(--document-title-line);
 }
 .template-read-detail > p {
   margin: -8px 0 0;
@@ -277,12 +321,15 @@
   justify-content: space-between;
   overflow-wrap: anywhere;
 }
-@container (max-width: 430px) {
-  .property-row-complex {
+@container (max-width: 640px) {
+  .property-row {
     grid-template-columns: 1fr;
   }
-  .property-row-complex .property-label {
-    border-bottom: 1px solid var(--background-modifier-border);
+  .property-row > .property-label {
+    padding-bottom: 4px;
+  }
+  .property-row > .property-content {
+    padding-left: 0;
   }
 }
 .whole-errors {

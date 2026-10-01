@@ -1,6 +1,7 @@
 use super::*;
 mod m523;
 mod m545;
+mod m8;
 mod preview;
 mod workspace;
 use crate::commands::{self, dto};
@@ -36,6 +37,7 @@ struct Provider {
     validations: std::sync::atomic::AtomicUsize,
     threads: Mutex<Vec<thread::ThreadId>>,
     lose: std::sync::atomic::AtomicBool,
+    fail_acquire: std::sync::atomic::AtomicBool,
 }
 impl Provider {
     fn new() -> Self {
@@ -45,6 +47,7 @@ impl Provider {
             validations: std::sync::atomic::AtomicUsize::new(0),
             threads: Mutex::new(Vec::new()),
             lose: std::sync::atomic::AtomicBool::new(false),
+            fail_acquire: std::sync::atomic::AtomicBool::new(false),
         }
     }
     fn hold(&self) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
@@ -60,6 +63,14 @@ impl LockService for Provider {
     }
     fn acquire(&self, r: LockAcquireRequest<'_>) -> Result<Box<dyn HeldLock>, LockError> {
         self.threads.lock().unwrap().push(thread::current().id());
+        if self.fail_acquire.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(LockError::for_request(
+                crate::data::collaboration_lock::LockErrorCategory::LockAcquireFailed,
+                self.original.provider_info().kind,
+                crate::data::collaboration_lock::LockOperation::Acquire,
+                &r,
+            ));
+        }
         self.original.acquire(r)
     }
     fn validate(&self, h: &mut dyn HeldLock) -> Result<(), LockError> {
@@ -353,16 +364,17 @@ impl Drop for Harness {
 }
 
 #[test]
-fn m7_svn_working_copy_is_readable_but_native_mutation_is_rejected() {
+fn m8_svn_without_server_policy_authority_is_blocked_before_native_runtime() {
     let h = Harness::new();
     fs::create_dir(h.root.join(".svn")).unwrap();
-    let project = h.open();
+    let opened = h.work(json!({"kind":"open","root":h.root}));
+    let project = opened["project"].as_str().unwrap();
     let status = h.call(json!({"action":"project_status","project":project}));
     assert_eq!(status["collaborative"], true);
-    let canonical = h.root.canonicalize().unwrap();
-    assert_eq!(h.state.svn_update_admission(&canonical), Ok(()));
-    let listing = h.work(json!({"kind":"list_templates","project":project}));
-    assert_eq!(listing["kind"], "templates");
+    assert_eq!(status["status"], "InitializationFailed");
+    assert_eq!(status["error"]["code"], "collaboration_policy_rejected");
+    assert!(status["runtime"].is_null());
+    assert!(!h.root.join(".worldbuild").exists());
     let operation = h.reserve("ordinary");
     let rejected = h
         .ipc(json!({
@@ -375,14 +387,72 @@ fn m7_svn_working_copy_is_readable_but_native_mutation_is_rejected() {
     h.close_clean();
 }
 
-#[test]
-fn m76_fix001_force_permit_and_project_close_share_native_lifetime() {
+fn policy_svn_harness() -> (Harness, PathBuf) {
     let base =
         std::env::temp_dir().join(format!("worldbuild-m76-fix-force-{}", uuid::Uuid::new_v4()));
     let root = base.join("project");
-    fs::create_dir_all(root.join(".svn")).unwrap();
-    let manager = crate::svn::Manager::new(base.join("config"));
-    let h = Harness::owned_svn(base, manager);
+    fs::create_dir_all(&base).unwrap();
+    let cli = PathBuf::from("C:/Program Files/TortoiseSVN/bin/svn.exe");
+    let admin = cli.with_file_name("svnadmin.exe");
+    let repository = base.join("repo");
+    let create = std::process::Command::new(&admin)
+        .args(["create", repository.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(create.status.success());
+    let url = url::Url::from_directory_path(&repository)
+        .unwrap()
+        .to_string();
+    let checkout = std::process::Command::new(&cli)
+        .args(["checkout", &url, root.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(checkout.status.success());
+    // Policy initialization accepts an empty project only when its app
+    // registration parents and ignore rules are versioned at this WC URL.
+    for name in ["assets", "documents", "templates", "workspace"] {
+        let child = root.join(name);
+        fs::create_dir(&child).unwrap();
+        let add = std::process::Command::new(&cli)
+            .args(["add", child.to_str().unwrap()])
+            .output()
+            .unwrap();
+        assert!(add.status.success(), "svn add {name}: {:?}", add.stderr);
+    }
+    let ignore = std::process::Command::new(&cli)
+        .args([
+            "propset",
+            "svn:ignore",
+            ".worldbuild\n.git\nlogs\ncache",
+            root.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(ignore.status.success(), "svn propset: {:?}", ignore.stderr);
+    let commit = std::process::Command::new(&cli)
+        .args([
+            "commit",
+            root.to_str().unwrap(),
+            "-m",
+            "app registration metadata",
+        ])
+        .output()
+        .unwrap();
+    assert!(commit.status.success(), "svn commit: {:?}", commit.stderr);
+    fs::create_dir(base.join("config")).unwrap();
+    let manager =
+        crate::svn::Manager::new_with_version(base.join("config"), semver::Version::new(1, 0, 0));
+    assert!(crate::svn::probe(&manager, Some(cli.to_string_lossy().into_owned()), None).installed);
+    crate::svn::SvnLockService::new(manager.clone(), root.clone())
+        .policy_initialize(&uuid::Uuid::new_v4().to_string(), "1.0.0")
+        .unwrap();
+    (Harness::owned_svn(base, manager), cli)
+}
+
+#[test]
+fn m76_fix001_force_permit_and_project_close_share_native_lifetime() {
+    let (h, _cli) = policy_svn_harness();
+    let root = h.root.clone();
     let project = h.open();
     let document = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     let mut permit = h.state.begin_force(&root, document.into()).unwrap();
@@ -1650,3 +1720,221 @@ mod m51;
 mod recovery;
 
 mod document_workspace;
+
+#[test]
+fn m8_policy_rise_preserves_actual_template_input_and_deposit_failure_keeps_owner() {
+    use crate::data::edit_recovery::error::Stage;
+    for fault in [false, true] {
+        let (h, cli) = policy_svn_harness();
+        let p = h.open();
+        let opened = h.work(json!({"kind":"begin_template_draft","project":p,"view":null}));
+        assert_eq!(opened["kind"], "template_draft", "{opened}");
+        let status = &opened["status"];
+        let content = h.work(json!({"kind":"template_draft_content","project":p,"session":status["owner"],"snapshot":status["snapshot"],"offset":"0"}));
+        let full: Value =
+            serde_json::from_str(content["content"]["text"].as_str().unwrap()).unwrap();
+        let mut body = full["body"].clone();
+        body["name"] = "기준 상승 전에 입력한 제목".into();
+        let other = h.base.join("other");
+        let url = url::Url::from_directory_path(h.base.join("repo"))
+            .unwrap()
+            .to_string();
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new(&cli)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "owned SVN command failed");
+        };
+        run(&["checkout", &url, other.to_str().unwrap()]);
+        let file = other.join(crate::svn::policy::FILE);
+        let mut policy: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        policy["minimumAppVersion"] = "1.1.0".into();
+        fs::write(&file, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
+        run(&[
+            "commit",
+            "-m",
+            "raise owned test minimum",
+            file.to_str().unwrap(),
+        ]);
+        let original = fs::read(h.root.join(crate::svn::policy::FILE)).unwrap();
+        let store = h.state.recovery.connect().unwrap();
+        if fault {
+            store.lock().unwrap().fault = Some(Stage::Reopen);
+        }
+        let input = json!({"kind":"template_draft","project":p,"session":status["owner"],"generation":"2","body":body,"action":"save"});
+        let rejected = h.work(input.clone());
+        assert_eq!(rejected["kind"], "template_draft", "{rejected}");
+        let blocked = &rejected["status"];
+        assert_eq!(blocked["error"]["code"], "collaboration_policy_rejected");
+        assert_eq!(blocked["generation"], "2");
+        assert_eq!(
+            fs::read(h.root.join(crate::svn::policy::FILE)).unwrap(),
+            original
+        );
+        assert_eq!(fs::read_dir(h.root.join("templates")).unwrap().count(), 0);
+        if fault {
+            assert!(blocked["error"]["nextAction"]
+                .as_str()
+                .unwrap()
+                .contains("현재 창과 입력을 유지"));
+            store.lock().unwrap().fault = None;
+            let mut retry = input.clone();
+            retry["action"] = "deposit".into();
+            let saved = h.control(retry);
+            assert_eq!(saved["kind"], "template_draft", "{saved}");
+        }
+        if !fault {
+            assert!(
+                blocked["error"]["nextAction"]
+                    .as_str()
+                    .unwrap()
+                    .contains("보관했습니다"),
+                "{rejected}"
+            );
+        }
+        let entries = store.lock().unwrap().list().unwrap();
+        assert!(entries.complete);
+        assert_eq!(entries.entries.len(), 1);
+        let entry = &entries.entries[0];
+        let frozen = store
+            .lock()
+            .unwrap()
+            .read(
+                entry.key.as_ref().unwrap(),
+                entry.deposit_id.as_ref().unwrap(),
+            )
+            .unwrap();
+        let crate::data::edit_recovery::model::Draft::Template { name, .. } =
+            &frozen.envelope().draft
+        else {
+            panic!("wrong recovery kind")
+        };
+        assert_eq!(name, body["name"].as_str().unwrap());
+        let released = h.control(json!({"kind":"release_template_draft","project":p,"session":status["owner"],"generation":"2","body":body,"discard":false}));
+        assert_eq!(released["kind"], "control", "{released}");
+        assert!(released["error"].is_null(), "{released}");
+        h.close_clean();
+    }
+}
+
+#[test]
+fn m8_policy_rise_legacy_document_receipt_acknowledges_exact_input() {
+    let seed = Harness::new();
+    let seed_p = seed.open();
+    let (template, _) = seed.template(&seed_p);
+    let seed_t = seed.read_template(&seed_p, &template);
+    let created = seed.work(
+        json!({"kind":"create_document","project":seed_p,"view":seed_t["view"],"name":"original"}),
+    );
+    let document = created["artifact"].as_str().unwrap().to_owned();
+    let (h, cli) = policy_svn_harness();
+    for directory in ["templates", "documents"] {
+        for entry in fs::read_dir(seed.root.join(directory)).unwrap() {
+            let entry = entry.unwrap();
+            if entry
+                .path()
+                .extension()
+                .is_some_and(|value| value == "json")
+            {
+                let target = h.root.join(directory).join(entry.file_name());
+                fs::copy(entry.path(), &target).unwrap();
+                assert!(std::process::Command::new(&cli)
+                    .args(["add", target.to_str().unwrap()])
+                    .output()
+                    .unwrap()
+                    .status
+                    .success());
+            }
+        }
+    }
+    seed.close_clean();
+    let property = h.base.join("needs-lock.txt");
+    fs::write(&property, b"*").unwrap();
+    for target in [
+        format!("templates/{template}.json"),
+        format!("documents/{document}.json"),
+    ] {
+        assert!(std::process::Command::new(&cli)
+            .args([
+                "propset",
+                "svn:needs-lock",
+                "--file",
+                property.to_str().unwrap(),
+                h.root.join(target).to_str().unwrap()
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success());
+    }
+    h.state.svn.as_ref().unwrap().set_owned_fsfs_identity(
+        url::Url::from_directory_path(h.base.join("repo"))
+            .unwrap()
+            .to_string(),
+        "owned-legacy",
+    );
+    assert!(std::process::Command::new(&cli)
+        .args([
+            "commit",
+            "-m",
+            "own legacy fixture",
+            h.root.to_str().unwrap()
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let p = h.open();
+    let t = h.read_template(&p, &template);
+    let d = h.work(json!({"kind":"read_document","project":p,"document":document}));
+    let s = h.session(&p, vec![d["view"].clone(), t["view"].clone()], "document");
+    let before = fs::read(h.root.join(format!("documents/{document}.json"))).unwrap();
+    let other = h.base.join("other");
+    let url = url::Url::from_directory_path(h.base.join("repo"))
+        .unwrap()
+        .to_string();
+    let run = |args: &[&str]| {
+        assert!(std::process::Command::new(&cli)
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success());
+    };
+    run(&["checkout", &url, other.to_str().unwrap()]);
+    let file = other.join(crate::svn::policy::FILE);
+    let mut policy: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+    policy["minimumAppVersion"] = "1.1.0".into();
+    fs::write(&file, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
+    run(&["commit", "-m", "raise own minimum", file.to_str().unwrap()]);
+    let result = h.work(json!({"kind":"save_document","project":p,"session":s,"document":d["view"],"template":t["view"],"revision":"1","edits":[{"kind":"rename","name":"정책 상승 전 실제 입력"}]}));
+    assert_eq!(
+        result["error"]["code"], "collaboration_policy_rejected",
+        "{result}"
+    );
+    assert_eq!(
+        before,
+        fs::read(h.root.join(format!("documents/{document}.json"))).unwrap()
+    );
+    assert_eq!(h.state.lock().retained.len(), 0);
+    let store = h.state.recovery.connect().unwrap();
+    let entries = store.lock().unwrap().list().unwrap();
+    assert_eq!(entries.entries.len(), 1);
+    let entry = &entries.entries[0];
+    let frozen = store
+        .lock()
+        .unwrap()
+        .read(
+            entry.key.as_ref().unwrap(),
+            entry.deposit_id.as_ref().unwrap(),
+        )
+        .unwrap();
+    assert!(serde_json::to_string(frozen.envelope())
+        .unwrap()
+        .contains("정책 상승 전 실제 입력"));
+    let release =
+        h.control(json!({"kind":"session_control","project":p,"session":s,"control":"end"}));
+    assert!(release["error"].is_null(), "{release}");
+    h.close_clean();
+}

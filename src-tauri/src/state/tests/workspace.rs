@@ -121,6 +121,11 @@ fn workspace_create_one_candidate_update_once_noop_and_fixed_new_identity() {
 
 #[test]
 fn workspace_invalid_normal_deposit_exact_generation_retry_and_native_close() {
+    invalid_deposit_and_close(false);
+    invalid_deposit_and_close(true);
+}
+
+fn invalid_deposit_and_close(updating: bool) {
     let h = Harness::new();
     let p = h.open();
     let s = begin(&h, &p, Value::Null);
@@ -146,7 +151,15 @@ fn workspace_invalid_normal_deposit_exact_generation_retry_and_native_close() {
     store.lock().unwrap().fault = Some(crate::data::edit_recovery::error::Stage::Reopen);
     let failed_deposit = submit(&h, &p, &s, "7", &body, "deposit");
     assert!(failed_deposit["receipt"].is_null());
-    h.call(json!({"action":"app_shutdown"}));
+    if updating {
+        h.call(json!({"action":"ui_ready"}));
+        h.state.prepare_update("m8-saved-input").unwrap();
+        let attempt = h.call(json!({"action":"ui_close_status"}))["attempt"].clone();
+        h.call(json!({"action":"ui_close_decision","attempt":attempt,"proceed":true}));
+        assert!(!h.state.consume_update_approval("m8-saved-input"));
+    } else {
+        h.call(json!({"action":"app_shutdown"}));
+    }
     assert!(!h.state.lock().closed);
     store.lock().unwrap().fault = None;
     let deposited = submit(&h, &p, &s, "7", &body, "deposit");
@@ -163,7 +176,15 @@ fn workspace_invalid_normal_deposit_exact_generation_retry_and_native_close() {
     assert_eq!(rows.entries.len(), 2);
     assert!(release(&h, &p, &later, false)["error"].is_null());
     drop(store);
+    if updating {
+        h.state.request_shutdown();
+        let attempt = h.call(json!({"action":"ui_close_status"}))["attempt"].clone();
+        h.call(json!({"action":"ui_close_decision","attempt":attempt,"proceed":true}));
+    }
     h.close_clean();
+    if updating {
+        assert!(h.state.consume_update_approval("m8-saved-input"));
+    }
 }
 
 #[test]

@@ -209,6 +209,7 @@ pub(super) struct ShutdownState {
     report: Option<ShutdownReport>,
     pub(super) pending: bool,
     pub(super) running: bool,
+    rejected_before_acquisition: bool,
 }
 impl ShutdownState {
     pub(super) fn request(&mut self, policy: RetryPolicy) {
@@ -324,6 +325,17 @@ impl ShutdownState {
         }
         self.pending = false;
     }
+    pub(super) fn rejected_admission(&mut self) {
+        // No project runtime or resource owner was acquired. This is a
+        // compatibility rejection, not a failed runtime cleanup.
+        self.rejected_before_acquisition = true;
+        self.view.phase = ShutdownPhase::Stopping;
+        self.view.resources_complete = true;
+        self.view.report_pending = false;
+        self.view.blockers.clear();
+        self.pending = false;
+        self.machine = None;
+    }
     pub(super) fn absent_runtime(&mut self, error: Option<RuntimeError>) {
         self.report = Some(ShutdownReport {
             round: 1,
@@ -358,7 +370,8 @@ impl ShutdownState {
         self.view.resources_complete = !self.view.report_pending;
         self.view.normal_exit_allowed = self.view.blockers.is_empty()
             && !self.view.report_pending
-            && matches!(self.view.close, Some(CloseObservation::Closed(s)) if s.state == RuntimeState::Ready);
+            && (self.rejected_before_acquisition
+                || matches!(self.view.close, Some(CloseObservation::Closed(s)) if s.state == RuntimeState::Ready));
     }
 }
 

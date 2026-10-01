@@ -426,7 +426,7 @@ export function AssetList({
   const reorder = useDraftReorder(
     id,
     JSON.stringify(ids),
-    !!change && !disabled && !busy,
+    !!change && ids.length > 1 && !disabled && !busy,
     (_, next) => change?.(next),
     setMessage,
   );
@@ -459,7 +459,7 @@ export function AssetList({
                   : undefined
               }
               handle={
-                change && ids.length > 1 ? (
+                change && ids.length > 1 && !disabled && !busy ? (
                   <Button
                     type="button"
                     appearance="subtle"

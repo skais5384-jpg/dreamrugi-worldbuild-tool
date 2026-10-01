@@ -66,8 +66,8 @@ fn resource<R: Runtime>(app: &tauri::AppHandle<R>, name: &str) -> Result<PathBuf
 fn expected_resource_hash(name: &str) -> Result<&'static str, String> {
     Ok(match name {
         "hunspell-runner.exe" => "8cf5636bb13ed4fc0ef08c82d5f88d23cac5f92dd5c926e5ba1524f19b8ff27a",
-        "ko.aff" => "c2d6b231e0f6c58c9a23eea25070bd98250dd2f3d12d7cc4e7252e7845057f9a",
-        "ko.dic" => "136dfab0e6a6fc0729df6977f274c6ffc3cd5b20a1b8643fabf71de5d683153e",
+        "ko.aff" => "7b8930ce1357691591a3c38afc9cba787ec6dce0e30d0438bd156c4b4c94dbdf",
+        "ko.dic" => "14117a72811ed6a083ed374ceb728b0846a689da6f4dbfe0a84d3b3bce124e80",
         _ => return Err("검사기 자료 이름이 올바르지 않습니다.".into()),
     })
 }
@@ -316,6 +316,38 @@ mod resource_tests {
                 .join("spellcheck/resources")
                 .join(name);
             verified(source, expected_resource_hash(name).unwrap()).unwrap();
+        }
+    }
+
+    #[test]
+    fn canonical_dictionary_verification_rejects_changed_or_crlf_bytes() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let folder = Fixture(std::env::temp_dir().join(format!(
+            "worldbuild-spell-resource-{}",
+            uuid::Uuid::new_v4()
+        )));
+        fs::create_dir(&folder.0).unwrap();
+        for name in ["ko.aff", "ko.dic"] {
+            let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("spellcheck/resources")
+                .join(name);
+            let bytes = fs::read(source).unwrap();
+            assert!(!bytes.windows(2).any(|pair| pair == b"\r\n"));
+            let target = folder.0.join(name);
+            let crlf = String::from_utf8(bytes.clone())
+                .unwrap()
+                .replace('\n', "\r\n");
+            fs::write(&target, crlf).unwrap();
+            assert!(verified(target.clone(), expected_resource_hash(name).unwrap()).is_err());
+            let mut changed = bytes;
+            changed.push(b' ');
+            fs::write(&target, changed).unwrap();
+            assert!(verified(target, expected_resource_hash(name).unwrap()).is_err());
         }
     }
 }

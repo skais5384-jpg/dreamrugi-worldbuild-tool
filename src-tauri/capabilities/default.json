@@ -2,7 +2,9 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
@@ -22,6 +24,14 @@
     "allow-svn-login",
     "allow-svn-logout",
     "allow-diagnostic-recent-events",
+    "allow-updater-status",
+    "allow-updater-check",
+    "allow-updater-download",
+    "allow-updater-cancel",
+    "allow-updater-continue",
+    "allow-updater-release",
+    "allow-updater-prepare",
+    "allow-updater-close-failed",
     "allow-svn-inspect",
     "allow-svn-checkout",
     "allow-svn-register-preview",
@@ -36,6 +46,9 @@
     "allow-svn-schedule-delete",
     "allow-svn-commit",
     "allow-svn-commit-recheck",
-    "allow-svn-cancel"
+    "allow-svn-cancel",
+    "allow-svn-policy-snapshot",
+    "allow-svn-policy-initialize",
+    "allow-svn-policy-save"
   ]
 }

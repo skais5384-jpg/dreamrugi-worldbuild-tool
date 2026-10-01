@@ -30,15 +30,10 @@ pub(crate) fn about_channel<R: Runtime>(
     state: State<'_, Arc<AppState>>,
 ) -> Result<&'static str, String> {
     authorized(&webview, &state)?;
-    let channel = match (
+    let channel = crate::release_contract::channel_label(
         env!("WORLDBUILD_BUILD_CHANNEL"),
         env!("WORLDBUILD_PACKAGE_MODE"),
-    ) {
-        ("github", "test") => "GitHub 로컬 시험본",
-        ("github", "release") => "GitHub 시험판",
-        ("store", "test") => "Store 로컬 시험본",
-        _ => "개발 빌드",
-    };
+    );
     Ok(channel)
 }
 
@@ -52,14 +47,14 @@ pub(crate) fn about_open_link<R: Runtime>(
     let url = match target.as_str() {
         "blog" => "https://dreamrugi.tistory.com/",
         "email" => "mailto:skais5384@naver.com",
-        "source" => "https://github.com/skais5384-jpg/worldbuild-tool",
+        "source" => "https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool",
         _ => return Err("연락처 선택이 올바르지 않습니다.".into()),
     };
     open(url).map_err(|_| "기본 앱에서 연락처를 열지 못했습니다.".to_string())
 }
 
 #[cfg(windows)]
-fn open(url: &str) -> Result<(), ()> {
+pub(crate) fn open(url: &str) -> Result<(), ()> {
     use windows::{
         core::PCWSTR,
         Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL},
@@ -83,6 +78,6 @@ fn open(url: &str) -> Result<(), ()> {
 }
 
 #[cfg(not(windows))]
-fn open(_: &str) -> Result<(), ()> {
+pub(crate) fn open(_: &str) -> Result<(), ()> {
     Err(())
 }

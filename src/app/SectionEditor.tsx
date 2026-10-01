@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ReOrderDotsVertical20Regular } from "@fluentui/react-icons";
 import type { TemplateBody } from "../bridge/workspace";
 import { Button, Input } from "../ui/Controls";
 import { text } from "../strings";
@@ -119,10 +120,20 @@ export function SectionEditor({
       <ul className="whole-field-list">
         {order.map((id, index) => {
           const section = sections.find((s) => s.id === id);
+          const card = drag.card("sections", id, order);
           return (
-            <li key={id} {...drag.card("sections", id, order)}>
+            <li
+              key={id}
+              {...card}
+              className={`${card.className} whole-field-card`}
+            >
               <Button
                 type="button"
+                icon={
+                  !disabled && order.length > 1 ? (
+                    <ReOrderDotsVertical20Regular />
+                  ) : undefined
+                }
                 disabled={disabled}
                 aria-label={
                   text("section.manage") +

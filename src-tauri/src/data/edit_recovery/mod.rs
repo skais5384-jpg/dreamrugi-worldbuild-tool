@@ -330,6 +330,11 @@ impl Store {
         }
         Ok(deposit)
     }
+    /// 설치 인계의 읽기 증거다. receipt 발급/채택/삭제 없이 참조 자산까지 다시 검사한다.
+    pub(crate) fn verify_handoff(&self, key: &Key, deposit_id: &str) -> Result<(), RecoveryError> {
+        let deposit = self.read(key, deposit_id)?;
+        self.verify_assets(&deposit)
+    }
     #[allow(dead_code, reason = "2B 응답 유실 뒤 key/deposit/digest 재검증 API")]
     pub(crate) fn revalidate(
         &mut self,
@@ -390,6 +395,15 @@ impl Store {
                 error: None,
             };
             let result = (|| {
+                if parts.len() == 2 && name == "assets" {
+                    // Assets belong to this draft, not to the generation-file list.
+                    // Validate the namespace here; handoff validates every referenced byte.
+                    ProjectDirectory::open_root(&entry.path())
+                        .map_err(|e| RecoveryError::io(Stage::List, e))?
+                        .validate()
+                        .map_err(|e| RecoveryError::io(Stage::List, e))?;
+                    return Ok(false);
+                }
                 if parts.len() < 2 {
                     let valid = if parts.is_empty() {
                         model::valid_digest(&name)

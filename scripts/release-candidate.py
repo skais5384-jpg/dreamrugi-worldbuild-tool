@@ -58,8 +58,12 @@ def metadata(files, version):
     tauri = json.loads(files['src-tauri/tauri.conf.json'])
     cargo = files['src-tauri/Cargo.toml'].decode('utf-8')
     cargo_version = re.search(r'^version = "([^"]+)"', cargo, re.M).group(1)
-    if not re.fullmatch(r'0\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
-        raise ValueError('Only numeric 0.x prerelease versions are supported')
+    if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', version):
+        raise ValueError('Expected a three-part numeric release version')
+    cargo_lock = files['src-tauri/Cargo.lock'].decode('utf-8-sig')
+    own = [block for block in cargo_lock.split('[[package]]') if re.search(r'^name = "worldbuild-tool"$', block, re.M)]
+    if len(own) != 1 or not re.search(r'^version = "' + re.escape(version) + r'"$', own[0], re.M):
+        raise ValueError('Cargo.lock app version mismatch')
     if any(v != version for v in (npm['version'], lock['version'], lock['packages']['']['version'], tauri['version'], cargo_version)):
         raise ValueError('Version metadata mismatch')
     if npm['license'] != 'GPL-3.0-only' or tauri['bundle']['license'] != npm['license'] or 'license = "GPL-3.0-only"' not in cargo:
@@ -239,7 +243,7 @@ def bundle(folder, public_key, receipt, expected_version, technical=False):
         key_receipt = load(receipt)
         if key_receipt.get('role') != 'Release' or key_receipt.get('portableBackupVerified') is not True:
             raise ValueError('Deployment key/independent backup verification pending')
-        result = json.loads(run('node', str(ROOT / 'scripts/verify-updater-signature.mjs'), str(folder / installers[0]['name']), str(public_key)))
+        result = json.loads(run('node', str(ROOT / 'scripts/verify-updater-signature.mjs'), str(folder / installers[0]['name']), str(public_key), str(folder / (installers[0]['name'] + '.sig')), expected_version if not expected_version.startswith('0.') else ''))
         key_fingerprint = result['publicKeySha256']
         if key_fingerprint != key_receipt['publicKeySha256']:
             raise ValueError('Public key does not match deployment receipt')
@@ -267,7 +271,7 @@ def draft_request(folder, repo, target, tag, execute=False, expected_public_key=
     manifest = load(folder / 'release-manifest.json')
     if manifest.get('identifier') != IDENTITY or manifest.get('mode') != 'Release':
         raise ValueError('Draft requires the official release identity')
-    if not re.fullmatch(r'0\.(0|[1-9]\d*)\.(0|[1-9]\d*)', manifest['version']) or manifest['tag'] != 'v' + manifest['version']:
+    if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', manifest['version']) or manifest['tag'] != 'v' + manifest['version']:
         raise ValueError('Release version/tag metadata mismatch')
     if not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo) or not re.fullmatch(r'[0-9a-f]{40}', target):
         raise ValueError('Expected repository owner/name and exact target SHA')
@@ -282,7 +286,9 @@ def draft_request(folder, repo, target, tag, execute=False, expected_public_key=
             raise ValueError('Draft asset inventory mismatch')
         verified = json.loads(run('node', str(ROOT / 'scripts/verify-updater-signature.mjs'),
                                   str(folder / next(a['name'] for a in manifest['assets'] if a['name'].endswith('-setup.exe'))),
-                                  str(folder / 'updater-public.key.pub')))
+                                  str(folder / 'updater-public.key.pub'),
+                                  str(folder / (next(a['name'] for a in manifest['assets'] if a['name'].endswith('-setup.exe')) + '.sig')),
+                                  manifest['version'] if not manifest['version'].startswith('0.') else ''))
         if not expected_public_key or verified['publicKeySha256'] != expected_public_key or verified['publicKeySha256'] != manifest['publicKeySha256']:
             raise ValueError('Draft key does not match trusted deployment fingerprint')
     for asset in manifest['assets']:
@@ -294,7 +300,7 @@ def draft_request(folder, repo, target, tag, execute=False, expected_public_key=
     marker = '<!-- worldbuild-candidate:' + manifest['candidate_id'] + ' -->'
     request = {'tag_name': tag, 'target_commitish': target, 'name': 'Dreamrugi Worldbuild Tool ' + manifest['version'],
                'body': (folder / 'release-notes.md').read_text(encoding='utf-8-sig') + '\n\n' + marker,
-               'draft': True, 'prerelease': True, 'make_latest': 'false'}
+               'draft': True, 'prerelease': manifest['version'].startswith('0.'), 'make_latest': 'false'}
     preview = {'repository': repo, 'request': request, 'assets': manifest['assets'],
                'executeBlocked': manifest['technicalOnly'] or not manifest['source']['committed_source'] or target != manifest['source']['base_head']}
     (folder / 'draft-preview.json').write_text(json.dumps(preview, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -341,7 +347,7 @@ def draft_request(folder, repo, target, tag, execute=False, expected_public_key=
                     raise ValueError('Tag already exists; explicit reconciliation required')
 
     def require_candidate(release):
-        if (release.get('draft') is not True or release.get('prerelease') is not True
+        if (release.get('draft') is not True or release.get('prerelease') is not request['prerelease']
                 or release.get('tag_name') != tag or release.get('target_commitish') != target
                 or not isinstance(release.get('body'), str) or marker not in release['body']):
             raise ValueError('Release metadata differs from candidate; uploaded assets are preserved')
@@ -377,7 +383,7 @@ def draft_request(folder, repo, target, tag, execute=False, expected_public_key=
     # observation, not an atomic guard; explicit publication must recheck it.
     require_absent_tag()
     (folder / 'draft-result.json').write_text(json.dumps(fresh, ensure_ascii=False, indent=2), encoding='utf-8')
-    return {'url': fresh['html_url'], 'draft': True, 'prerelease': True}
+    return {'url': fresh['html_url'], 'draft': True, 'prerelease': request['prerelease']}
 
 
 def main():

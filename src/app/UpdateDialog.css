@@ -1,0 +1,66 @@
+.fui-DialogSurface.update-dialog {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: min(620px, calc(100vw - 32px));
+  max-width: min(620px, calc(100vw - 32px));
+  height: fit-content;
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+}
+.update-dialog .fui-DialogBody {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+.update-dialog .fui-DialogContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+}
+.update-dialog .fui-DialogTitle,
+.update-dialog .fui-DialogActions {
+  flex: 0 0 auto;
+}
+.update-versions {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 20px;
+}
+.update-versions dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.update-notes h3 {
+  font-size: var(--fontSizeBase400);
+  margin-bottom: 8px;
+}
+.update-notes p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.update-secondary {
+  color: var(--colorNeutralForeground3);
+  font-size: var(--fontSizeBase200);
+}
+.update-progress {
+  margin-top: 16px;
+}
+.update-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+.update-toast {
+  position: fixed;
+  left: 64px;
+  bottom: 16px;
+  z-index: 1100;
+  max-width: min(480px, calc(100vw - 80px));
+  text-align: left;
+}

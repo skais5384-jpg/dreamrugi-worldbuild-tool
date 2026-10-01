@@ -1,5 +1,6 @@
+import { text } from "../strings";
 import { invoke } from "@tauri-apps/api/core";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, it, vi } from "vitest";
 import { render } from "../test/render";
 import { GuardedClient } from "../bridge/client";
@@ -46,8 +47,22 @@ it("홈에서 구 보관본 인계 실패를 숨기지 않고 재확인 뒤 경�
     ),
   ).toBeVisible();
   expect(screen.getByText(/이전 설치본을 제거하지 말고/)).toBeVisible();
-  expect(screen.getByRole("button", { name: "실행 기록" })).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "보관 재확인" }));
+  expect(
+    screen.getByRole("button", { name: text("update.details") }),
+  ).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: text("update.details") }));
+  fireEvent.click(await screen.findByRole("button", { name: "보관 재확인" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "보관 재확인" })).toBeNull(),
+  );
+  expect(
+    within(screen.getByRole("table")).getAllByText(
+      /이전 설치본을 제거하지 말고/,
+    ).length,
+  ).toBeGreaterThan(0);
+  fireEvent.click(
+    within(screen.getByRole("dialog")).getByRole("button", { name: "닫기" }),
+  );
   await waitFor(() =>
     expect(screen.queryByText(/이전 설치본을 제거하지 말고/)).toBeNull(),
   );

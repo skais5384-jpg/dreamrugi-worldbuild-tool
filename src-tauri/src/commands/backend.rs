@@ -91,6 +91,7 @@ pub(crate) struct Binding {
     pub(crate) draft_input: Option<Arc<Work>>,
     pub(crate) recovery: Arc<recovery::Observation>,
 }
+#[derive(Clone)]
 pub(crate) struct Job {
     pub(crate) input: Arc<Work>,
     pub(crate) views: Vec<(Id, Arc<View>)>,
@@ -181,6 +182,16 @@ fn diagnostic_outcome(result: &Result<ResultDto, ErrorDto>) -> &'static str {
         Err(_) | Ok(ResultDto::Rejected { .. }) => "rejected",
         Ok(ResultDto::Open { error: Some(_), .. })
         | Ok(ResultDto::Write { error: Some(_), .. }) => "failed",
+        Ok(ResultDto::TemplateDraft { status }) if status.error.is_some() => "failed",
+        Ok(ResultDto::DocumentWorkspace { value }) => match &**value {
+            super::document_workspace::Response::Draft {
+                problem, outcome, ..
+            }
+            | super::document_workspace::Response::Editing {
+                problem, outcome, ..
+            } => document_edit_diagnostic_outcome(problem.as_deref(), outcome.as_deref()),
+            _ => "complete",
+        },
         Ok(ResultDto::ProjectData {
             recovery_required: true,
             ..
@@ -205,6 +216,103 @@ fn diagnostic_outcome(result: &Result<ResultDto, ErrorDto>) -> &'static str {
         Ok(ResultDto::AssetMaintenance { partial: true, .. }) => "partial",
         Ok(ResultDto::AssetMaintenance { inspection, .. }) if !inspection.complete => "incomplete",
         _ => "complete",
+    }
+}
+
+fn document_edit_diagnostic_outcome(
+    problem: Option<&str>,
+    outcome: Option<&ResultDto>,
+) -> &'static str {
+    if problem.is_some() {
+        return "failed";
+    }
+    match outcome {
+        Some(ResultDto::Rejected { .. }) => "rejected",
+        Some(ResultDto::Write { disk, error, .. }) => {
+            document_write_diagnostic_outcome(*disk, error.as_ref())
+        }
+        _ => "complete",
+    }
+}
+
+fn document_write_diagnostic_outcome(disk: DiskDto, error: Option<&ErrorDto>) -> &'static str {
+    if disk == DiskDto::Uncertain {
+        "recovery_required"
+    } else if error.is_none() && matches!(disk, DiskDto::Committed | DiskDto::NoWrite) {
+        "complete"
+    } else {
+        "failed"
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_template_draft_is_not_logged_as_a_completed_write() {
+        let mut status = crate::commands::workspace::DraftStatus {
+            owner: Id::new(),
+            draft_id: "draft".into(),
+            project_fingerprint: "fixture".into(),
+            artifact: "template".into(),
+            generation: "1".into(),
+            saved_generation: None,
+            base_revision: "0".into(),
+            source_digest: None,
+            snapshot: Id::new(),
+            phase: "dirty",
+            receipt: None,
+            error: Some(ErrorDto::new(Code::SaveRejected)),
+            problems: vec![],
+            identities: Default::default(),
+            outcome: None,
+        };
+        assert_eq!(
+            diagnostic_outcome(&Ok(ResultDto::TemplateDraft {
+                status: Box::new(status.clone()),
+            })),
+            "failed"
+        );
+        status.error = None;
+        status.phase = "saved";
+        assert_eq!(
+            diagnostic_outcome(&Ok(ResultDto::TemplateDraft {
+                status: Box::new(status),
+            })),
+            "complete"
+        );
+    }
+
+    #[test]
+    fn document_draft_failure_is_not_logged_as_a_completed_write() {
+        assert_eq!(
+            document_edit_diagnostic_outcome(Some("SaveRejected"), None),
+            "failed"
+        );
+        assert_eq!(
+            document_edit_diagnostic_outcome(
+                None,
+                Some(&ResultDto::Rejected {
+                    error: Code::SaveRejected.into(),
+                    input_retained: true,
+                })
+            ),
+            "rejected"
+        );
+        assert_eq!(document_edit_diagnostic_outcome(None, None), "complete");
+        assert_eq!(
+            document_write_diagnostic_outcome(DiskDto::NoWrite, None),
+            "complete"
+        );
+        assert_eq!(
+            document_write_diagnostic_outcome(DiskDto::NotApplied, None),
+            "failed"
+        );
+        assert_eq!(
+            document_write_diagnostic_outcome(DiskDto::Uncertain, None),
+            "recovery_required"
+        );
     }
 }
 impl Completed {
@@ -417,7 +525,172 @@ pub(crate) fn g6_intent(input: &Work) -> Option<G6Intent> {
         _ => None,
     }
 }
+pub(crate) fn policy_error(reason: String) -> ErrorDto {
+    let mut error = ErrorDto::new(Code::CollaborationPolicyRejected);
+    error.next_action = "팀에서 요구하는 앱 버전과 연결 상태를 확인하세요. 보관 입력은 유지되며 홈에서 앱을 업데이트할 수 있습니다";
+    error.diagnostic = Some(ErrorDiagnosticDto {
+        stage: "compatibility".into(),
+        category: reason,
+        outcome: None,
+        io_kind: None,
+        os_code: None,
+        cleanup_outcome: None,
+        cleanup_io_kind: None,
+        cleanup_os_code: None,
+    });
+    error
+}
+fn policy_deposit_input(work: &Work) -> Option<Work> {
+    use super::document_workspace::Request;
+    match work {
+        Work::DocumentWorkspace { project, request } => {
+            let request = match request {
+                Request::EditDraft {
+                    owner,
+                    generation,
+                    body,
+                    ..
+                } => Request::EditDeposit {
+                    owner: *owner,
+                    generation: generation.clone(),
+                    body: body.clone(),
+                },
+                Request::Draft {
+                    owner,
+                    generation,
+                    body,
+                    ..
+                } => Request::Deposit {
+                    owner: *owner,
+                    generation: generation.clone(),
+                    body: body.clone(),
+                },
+                _ => return None,
+            };
+            Some(Work::DocumentWorkspace {
+                project: *project,
+                request,
+            })
+        }
+        Work::TemplateDraft {
+            project,
+            session,
+            generation,
+            body,
+            ..
+        } => Some(Work::TemplateDraft {
+            project: *project,
+            session: *session,
+            generation: generation.clone(),
+            body: body.clone(),
+            action: super::workspace::DraftAction::Deposit,
+        }),
+        _ => None,
+    }
+}
 fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
+    if job.collaborative && crate::svn_guard::policy_required(&job.input) {
+        if let Err(reason) = job.provider.authorize_project_operation() {
+            let mut error = policy_error(reason);
+            // Freeze the submitted generation through the existing external
+            // recovery sink; never turn rejection into a canonical write.
+            if let Some(input) = policy_deposit_input(&job.input) {
+                let mut deposit_job = job.clone();
+                deposit_job.input = Arc::new(input);
+                let mut result = match &*deposit_job.input {
+                    Work::DocumentWorkspace { project, request } => {
+                        document_workspace::execute(ctx, &deposit_job, *project, request)
+                    }
+                    _ => workspace::control(&mut ctx.session_control(), &deposit_job),
+                };
+                let deposited = result.as_ref().is_ok_and(|completed| match &completed.dto {
+                    Ok(ResultDto::TemplateDraft { status }) => {
+                        status.receipt.is_some() && status.error.is_none()
+                    }
+                    Ok(ResultDto::DocumentWorkspace { value }) => matches!(
+                        &**value,
+                        super::document_workspace::Response::Draft {
+                            deposited: true,
+                            ..
+                        } | super::document_workspace::Response::Editing {
+                            deposited: true,
+                            ..
+                        }
+                    ),
+                    _ => false,
+                });
+                error.next_action = if deposited {
+                    "입력을 복구 센터에 보관했습니다. 홈으로 돌아가 앱을 업데이트한 뒤 보관 입력을 다시 여세요"
+                } else {
+                    "입력을 외부에 보관하지 못했습니다. 현재 창과 입력을 유지하고 보관을 재시도하세요"
+                };
+                // The current native draft owner already retains this exact
+                // generation. Return its real receipt/status instead of
+                // manufacturing a second unhandled retained-input owner.
+                if let Ok(completed) = &mut result {
+                    match &mut completed.dto {
+                        Ok(ResultDto::TemplateDraft { status }) => {
+                            status.error = Some(error.clone());
+                            return result;
+                        }
+                        Ok(ResultDto::DocumentWorkspace { value }) => match &mut **value {
+                            super::document_workspace::Response::Draft { outcome, .. }
+                            | super::document_workspace::Response::Editing { outcome, .. } => {
+                                *outcome = Some(Box::new(ResultDto::Rejected {
+                                    error: error.clone(),
+                                    input_retained: true,
+                                }));
+                                return result;
+                            }
+                            _ => (),
+                        },
+                        _ => (),
+                    }
+                }
+            }
+            if matches!(
+                &*job.input,
+                Work::SaveDocument { .. } | Work::SaveComposite { .. }
+            ) {
+                let mut bound = false;
+                let preserved = (|| -> Reply<()> {
+                    let mut session = ctx.session(job.key()?).map_err(|_| Code::SessionRejected)?;
+                    let snapshot = session.snapshot();
+                    let payload = PendingEdit::new(
+                        job,
+                        snapshot.project_fingerprint().ok_or(Code::WrongBinding)?,
+                    )?;
+                    session
+                        .bind_draft(payload)
+                        .map_err(|_| Code::OwnersRemain)?;
+                    bound = true;
+                    drop(session);
+                    ctx.session_control()
+                        .deposit_whole_draft(
+                            &job.binding.as_ref().ok_or(Code::WrongBinding)?.registration,
+                        )
+                        .map_err(|_| Code::SessionRejected)?
+                        .map_err(|e| handoff_error(&e))?
+                        .ok_or(Code::NoReceipt)?;
+                    Ok(())
+                })();
+                error.next_action = if preserved.is_ok() {
+                    "입력을 복구 센터에 보관했습니다. 홈으로 돌아가 앱을 업데이트한 뒤 보관 입력을 다시 여세요"
+                } else {
+                    "입력을 외부에 보관하지 못했습니다. 현재 창과 입력을 유지하고 보관을 재시도하세요"
+                };
+                if bound {
+                    let mut result = Completed::reject(job.input.clone(), error);
+                    let mut binding = job.binding.clone().ok_or(Code::WrongBinding)?;
+                    binding.draft_input = Some(job.input.clone());
+                    result.acknowledged_session = preserved.is_ok().then_some(binding.id);
+                    result.binding = Some(binding);
+                    return Ok(result);
+                }
+            }
+            return Err(error);
+        }
+    }
     match &*job.input {
         Work::DocumentWorkspace { project, request } => {
             document_workspace::execute(ctx, job, *project, request)

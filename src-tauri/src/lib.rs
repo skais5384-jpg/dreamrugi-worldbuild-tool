@@ -6,12 +6,14 @@ mod diagnostic_log;
 mod events;
 mod pdf_export;
 mod platform;
+mod release_contract;
 mod spellcheck;
 mod state;
 mod support_diagnostics;
 mod svn;
 mod svn_guard;
 mod svn_shared;
+mod updater;
 #[cfg(windows)]
 mod youtube;
 mod native_strings {
@@ -27,6 +29,7 @@ pub fn run() {
     use tauri::Manager;
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             commands::asset_picker::install(app.handle().clone());
             if let Some(main) = app.get_webview_window("main") {
@@ -49,7 +52,10 @@ pub fn run() {
                 diagnostic_log::record("app", "panic", "panic_observed", "abnormal", None, None);
                 eprintln!("[panic_observed] 안전 진단에 제한된 panic 사건을 기록했습니다.");
             }));
-            let svn_manager = svn::Manager::new(app_data.join("svn"));
+            let svn_manager = svn::Manager::new_with_version(
+                app_data.join("svn"),
+                app.package_info().version.clone(),
+            );
             let state = Arc::new(
                 state::AppState::with_recovery_root(
                     app_paths::project_lock_root()?,
@@ -62,6 +68,11 @@ pub fn run() {
             // This is deliberately synchronous: an immediate normal exit after
             // opening the home screen cannot abandon a pending legacy handoff.
             state.run_recovery_handoff("startup");
+            state.hold_project_startup();
+            app.manage(Arc::new(updater::Manager::new(
+                app_data.join("settings"),
+                app.package_info().version.to_string(),
+            )));
             let idle_app = app.handle().clone();
             let idle_state = Arc::clone(&state);
             svn_manager.set_idle_wake(Arc::new(move || {
@@ -124,6 +135,7 @@ pub fn run() {
                     }
                 }
                 if matches!(event, tauri::RunEvent::Exit) {
+                    app.state::<Arc<updater::Manager>>().cancel_all();
                     spellcheck::cancel_all();
                     app.state::<svn::Manager>().cancel_active();
                 }

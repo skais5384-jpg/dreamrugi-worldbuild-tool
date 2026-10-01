@@ -1,15 +1,12 @@
-import {
-  Field,
-  Label,
-  MessageBar,
-  MessageBarBody,
-} from "@fluentui/react-components";
+import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
+import { Field, Label } from "@fluentui/react-components";
 import { Button, Input, Textarea } from "../ui/Controls";
 import { HelpText } from "../ui/HelpText";
 import { EmptyState } from "../ui/EmptyState";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { appController, type TemplateController } from "./controller";
 import { Confirm } from "./Confirm";
+import { ActivityLog, useActivityLog } from "./ActivityLog";
 import { FollowUp } from "./FollowUp";
 import { Fields } from "./Fields";
 import { TemplateManagement } from "./TemplateManagement";
@@ -25,6 +22,19 @@ function App({
   controller?: TemplateController;
 }) {
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot);
+  const activityLog = useActivityLog(true);
+  const [logOpen, setLogOpen] = useState(false);
+  const [logNoticeKey, setLogNoticeKey] = useState<string>();
+  useEffect(() => {
+    const open = (event: Event) => {
+      setLogNoticeKey(
+        event instanceof CustomEvent ? event.detail?.noticeKey : undefined,
+      );
+      setLogOpen(true);
+    };
+    window.addEventListener("open-activity-log", open);
+    return () => window.removeEventListener("open-activity-log", open);
+  }, []);
   const nameInput = useRef<HTMLTextAreaElement>(null);
   const rootInput = useRef<HTMLInputElement>(null);
   const browse = useRef<HTMLButtonElement>(null);
@@ -126,13 +136,11 @@ function App({
             </Button>
           </div>
         </header>
-        <p className="app-status" role="status" aria-live="polite">
-          {state.message}
-        </p>
+        {state.message && <FloatingNotice>{state.message}</FloatingNotice>}
         {state.error && (
-          <MessageBar intent="error" role="alert" layout="multiline">
-            <MessageBarBody>{state.error}</MessageBarBody>
-          </MessageBar>
+          <FloatingNotice intent="error">
+            <FloatingNoticeContent>{state.error}</FloatingNoticeContent>
+          </FloatingNotice>
         )}
         <FollowUp controller={controller} />
         {!state.project && (
@@ -431,6 +439,14 @@ function App({
       </div>
       {/* Dialog를 유지해야 닫힘 뒤 Tabster가 배경 접근성을 복구할 수 있다. */}
       <Confirm controller={controller} />
+      {logOpen && (
+        <ActivityLog
+          noticeKey={logNoticeKey}
+          events={activityLog.events}
+          droppedEvents={activityLog.droppedEvents}
+          close={() => setLogOpen(false)}
+        />
+      )}
       <SvnDialog
         open={svnEntry !== null}
         entry={svnEntry ?? "connect"}

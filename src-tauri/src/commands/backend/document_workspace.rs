@@ -2102,22 +2102,33 @@ pub(crate) fn execute(
                         d.created_snapshot = Some(snapshot);
                         d.attempt = Some(attempt);
                     }
-                    if let Ok(result) = &completed.dto {
-                        d.committed = matches!(
-                            result,
-                            ResultDto::Write {
-                                disk: DiskDto::Committed,
-                                ..
+                    match &completed.dto {
+                        Ok(result) => {
+                            if let ResultDto::Rejected { error, .. } = result {
+                                d.problem = Some(format!("{:?}", error.code));
                             }
-                        );
-                        d.uncertain = matches!(
-                            result,
-                            ResultDto::Write {
-                                disk: DiskDto::Uncertain,
-                                ..
-                            }
-                        );
-                        d.outcome = Some(Box::new(result.clone()));
+                            d.committed = matches!(
+                                result,
+                                ResultDto::Write {
+                                    disk: DiskDto::Committed,
+                                    ..
+                                }
+                            );
+                            d.uncertain = matches!(
+                                result,
+                                ResultDto::Write {
+                                    disk: DiskDto::Uncertain,
+                                    ..
+                                }
+                            );
+                            d.outcome = Some(Box::new(result.clone()));
+                        }
+                        Err(error) => {
+                            // Keep the draft and its original execution for recovery, but
+                            // never return a silent success when the nested write failed.
+                            d.problem = Some(format!("{:?}", error.code));
+                            d.outcome = None;
+                        }
                     }
                     if d.committed {
                         d.saved_generation = Some(d.generation);

@@ -13,7 +13,7 @@ import { text } from "../strings";
 import type { Field } from "../bridge/types";
 import { CreationValue } from "./CreationValue";
 import { ValueRead } from "./FieldValue";
-import { PropertyRow } from "./PropertyRow";
+import { blockField, PropertyRow } from "./PropertyRow";
 import { HelpText } from "../ui/HelpText";
 import { useDraftReorder } from "./useDraftReorder";
 import {
@@ -45,10 +45,11 @@ export function GroupEditor({
   const [folded, setFolded] = useState<Record<string, boolean>>({});
   const [notice, setNotice] = useState("");
   const order = value.instances.map((i) => i.id);
+  const canReorder = order.length > 1 && !disabled && !context.composing;
   const reorder = useDraftReorder(
     context.owner,
     context.generation,
-    !disabled && !context.composing,
+    canReorder,
     (_, ids) =>
       change({
         kind: "group",
@@ -112,41 +113,44 @@ export function GroupEditor({
               className={`repeat-card ${drag.className ?? ""}`}
             >
               <div className="repeat-header">
-                <Tooltip
-                  content={text("whole.fieldReorderHelp")}
-                  relationship="description"
-                >
-                  <Button
-                    type="button"
-                    icon={<ReOrderDotsVertical20Regular />}
-                    aria-label={text("group.reorder")}
-                    aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                    disabled={disabled || context.composing}
-                    draggable={!disabled && !context.composing}
-                    onDragStart={drag.onDragStart}
-                    onDragEnd={drag.onDragEnd}
-                    onKeyDown={(e) => {
-                      if (
-                        !e.altKey ||
-                        e.ctrlKey ||
-                        e.metaKey ||
-                        e.shiftKey ||
-                        !["ArrowUp", "ArrowDown"].includes(e.key)
-                      )
-                        return;
-                      e.preventDefault();
-                      const target = index + (e.key === "ArrowUp" ? -1 : 1);
-                      if (target < 0 || target >= order.length) return;
-                      const instances = [...value.instances];
-                      [instances[index], instances[target]] = [
-                        instances[target],
-                        instances[index],
-                      ];
-                      change({ ...value, instances });
-                      setNotice(text("whole.reordered"));
-                    }}
-                  />
-                </Tooltip>
+                {canReorder && (
+                  <Tooltip
+                    content={text("whole.fieldReorderHelp")}
+                    relationship="description"
+                  >
+                    <Button
+                      type="button"
+                      appearance="subtle"
+                      className="repeat-drag-handle"
+                      icon={<ReOrderDotsVertical20Regular />}
+                      aria-label={text("group.reorder")}
+                      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                      draggable
+                      onDragStart={drag.onDragStart}
+                      onDragEnd={drag.onDragEnd}
+                      onKeyDown={(e) => {
+                        if (
+                          !e.altKey ||
+                          e.ctrlKey ||
+                          e.metaKey ||
+                          e.shiftKey ||
+                          !["ArrowUp", "ArrowDown"].includes(e.key)
+                        )
+                          return;
+                        e.preventDefault();
+                        const target = index + (e.key === "ArrowUp" ? -1 : 1);
+                        if (target < 0 || target >= order.length) return;
+                        const instances = [...value.instances];
+                        [instances[index], instances[target]] = [
+                          instances[target],
+                          instances[index],
+                        ];
+                        change({ ...value, instances });
+                        setNotice(text("whole.reordered"));
+                      }}
+                    />
+                  </Tooltip>
+                )}
                 <Button
                   type="button"
                   appearance="subtle"
@@ -241,6 +245,7 @@ export function GroupEditor({
                       }
                       htmlFor={prefix + key}
                       complex
+                      block={blockField(child.kind)}
                     >
                       {readOnly ? (
                         <>
@@ -342,6 +347,7 @@ export function GroupRead({
                         cell.field)
                   }
                   complex
+                  block={blockField(child?.kind)}
                 >
                   <ValueRead
                     value={
