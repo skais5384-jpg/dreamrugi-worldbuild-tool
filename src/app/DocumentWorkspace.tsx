@@ -938,13 +938,13 @@ export function DocumentWorkspace({
                             )}
                           >
                             {f.state !== "Active" && (
-                              <p>
+                              <InlineNotice kind="warning">
                                 {text(
                                   f.state === "Archived"
                                     ? "field.archived"
                                     : "documents.orphan",
                                 )}
-                              </p>
+                              </InlineNotice>
                             )}
                             {f.provenance === "HistoricalInitialDefault" && (
                               <p>{text("documents.historical")}</p>

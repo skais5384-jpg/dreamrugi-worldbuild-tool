@@ -3785,10 +3785,18 @@ describe("document workspace", () => {
     expect(screen.getByText(text("documents.orphan"))).toBeInTheDocument();
     expect(screen.getByText("보존 원문")).toBeInTheDocument();
     expect(screen.getByText("강조된 원문").closest("strong")).not.toBeNull();
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      text("documents.warning"),
-    );
-    expect(screen.getByRole("alert")).not.toHaveTextContent("UnknownBinding");
+    const alerts = screen.getAllByRole("alert");
+    expect(
+      alerts.some((alert) =>
+        alert.textContent?.includes(text("documents.warning")),
+      ),
+    ).toBe(true);
+    expect(
+      screen.getByText(text("documents.orphan")).closest('[role="alert"]'),
+    ).not.toBeNull();
+    expect(
+      alerts.every((alert) => !alert.textContent?.includes("UnknownBinding")),
+    ).toBe(true);
     expect(
       f.transport.writes.filter((w) => w.input.kind === "save_document"),
     ).toHaveLength(0);
