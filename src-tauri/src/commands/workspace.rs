@@ -70,6 +70,7 @@ pub(crate) enum ReapplyIntent {
     FieldRequired { field: String },
     FieldWritingGuide { field: String },
     FieldPresentation { field: String },
+    FieldCardTitle { field: String },
     FieldDefault { field: String },
 }
 #[derive(Clone, Serialize)]

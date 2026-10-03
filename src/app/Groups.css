@@ -85,3 +85,9 @@
   padding: var(--spacingVerticalL, 16px) var(--spacingHorizontalL, 16px);
   background: var(--colorNeutralBackground1);
 }
+
+.repeat-card-title {
+  font-weight: var(--fontWeightSemibold);
+  margin-block-end: var(--spacingVerticalS, 8px);
+  overflow-wrap: anywhere;
+}

@@ -54,6 +54,7 @@ fn writing_guide_schema_upgrade_uses_exact_backup_and_existing_recovery() -> Tes
                     glossary_excluded: loaded.artifact().glossary_excluded(),
                     presentation_token: None,
                     fields: vec![FieldDraftInput {
+                        card_title_field: crate::data::edit_recovery::model::Intent::Keep,
                         members: vec![],
                         id: FIELD.parse()?,
                         label: "인구".into(),

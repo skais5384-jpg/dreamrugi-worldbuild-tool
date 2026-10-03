@@ -2,8 +2,8 @@ import { useState } from "react";
 import { fireEvent, screen, within, waitFor } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { render } from "../test/render";
-import type { Field } from "../bridge/types";
-import { GroupEditor } from "./GroupValue";
+import type { Field, Value } from "../bridge/types";
+import { GroupEditor, GroupRead } from "./GroupValue";
 import { cellKey, groupDraft, groupProblem, type GroupValue } from "./groups";
 import { GroupDefinition } from "./GroupDefinition";
 import type { DraftField } from "../bridge/workspace";
@@ -30,6 +30,186 @@ const field: Field = {
   members: [child],
   memberOrder: [child.id],
 };
+
+it("read cards omit automatic numbered headings and preserve all unassigned values", () => {
+  render(
+    <GroupRead
+      field={field}
+      value={{
+        kind: "group",
+        instances: [
+          {
+            id: "card",
+            source: null,
+            fields: [
+              {
+                field: "n",
+                value: {
+                  intent: "set",
+                  value: { kind: "number", value: "17" },
+                },
+              },
+            ],
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.queryByText("항목 1")).not.toBeInTheDocument();
+  expect(screen.getByText("17")).toBeInTheDocument();
+  expect(screen.getByText("값")).toBeInTheDocument();
+});
+
+const richTitle = (value: string): Value => ({
+  kind: "rich_text",
+  content: {
+    kind: "root",
+    children: [
+      {
+        kind: "heading",
+        level: 2,
+        children: [{ kind: "text", text: value, marks: ["bold"] }],
+      },
+    ],
+  },
+});
+
+it("keeps visible checkbox meaning even when the assigned title has no text", () => {
+  const title = { ...child, id: "title", kind: "RichText", label: "제목 필드" };
+  render(
+    <GroupRead
+      field={{ ...field, members: [title], cardTitleField: "title" }}
+      value={{
+        kind: "group",
+        instances: [
+          {
+            id: "one",
+            source: null,
+            fields: [
+              {
+                field: "title",
+                value: {
+                  intent: "set",
+                  value: {
+                    kind: "rich_text",
+                    content: {
+                      kind: "root",
+                      children: [
+                        {
+                          kind: "taskList",
+                          children: [
+                            { kind: "taskItem", checked: true, children: [] },
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByText("☑")).toBeInTheDocument();
+  expect(screen.queryByText("제목 필드")).not.toBeInTheDocument();
+});
+it.each(["見出し 제목 <script>", "긴 제목 ".repeat(30), " "])(
+  "promotes only the assigned active rich title once and keeps safe rich content (%s)",
+  (value) => {
+    const title = {
+      ...child,
+      id: "title",
+      kind: "RichText",
+      label: "제목 필드",
+    };
+    const group = {
+      ...field,
+      cardTitleField: title.id,
+      members: [title, child],
+      memberOrder: [child.id, title.id],
+    };
+    const view = render(
+      <GroupRead
+        field={group}
+        value={{
+          kind: "group",
+          instances: [
+            {
+              id: "one",
+              source: null,
+              fields: [
+                {
+                  field: title.id,
+                  value: { intent: "set", value: richTitle(value) },
+                },
+                {
+                  field: child.id,
+                  value: {
+                    intent: "set",
+                    value: { kind: "number", value: "8" },
+                  },
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.queryByText("제목 필드")).not.toBeInTheDocument();
+    expect(view.container.querySelectorAll(".repeat-card-title")).toHaveLength(
+      value.trim() ? 1 : 0,
+    );
+    expect(view.container.querySelector("script")).toBeNull();
+    expect(view.container.querySelector("h4 h2")).toBeNull();
+    expect(screen.getByText("8")).toBeInTheDocument();
+    if (value.trim())
+      expect(
+        view.container.querySelectorAll(".repeat-card-title h2 strong"),
+      ).toHaveLength(1);
+  },
+);
+it.each(["Archived", "protected", "missing", "wrong-kind"])(
+  "preserves unpromotable title content (%s)",
+  (mode) => {
+    const title = {
+      ...child,
+      id: "title",
+      kind: mode === "wrong-kind" ? "Number" : "RichText",
+      label: "제목 필드",
+      lifecycle: mode === "Archived" ? "Archived" : "Active",
+    };
+    const view = render(
+      <GroupRead
+        field={{
+          ...field,
+          cardTitleField: mode === "missing" ? "other" : title.id,
+          members: [title],
+        }}
+        value={{
+          kind: "group",
+          instances: [
+            {
+              id: "one",
+              source: null,
+              protected: mode === "protected" ? [title.id] : [],
+              fields: [
+                {
+                  field: title.id,
+                  value: { intent: "set", value: richTitle("보존 제목") },
+                },
+              ],
+            },
+          ],
+        }}
+      />,
+    );
+    expect(view.container.querySelector(".repeat-card-title")).toBeNull();
+    expect(screen.getByText("보존 제목")).toBeInTheDocument();
+    expect(screen.getByText("제목 필드")).toBeInTheDocument();
+  },
+);
 
 function Editor({
   initial = { kind: "group", instances: [] },

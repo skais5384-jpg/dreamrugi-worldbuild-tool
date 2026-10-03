@@ -27,6 +27,18 @@ pub(crate) struct SafeEvent {
     outcome: &'static str,
     correlation: Option<String>,
     project_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    inspection_observation: Option<InspectionObservation>,
+}
+
+/// Closed numeric observations only; never accepts names, paths or content.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct InspectionObservation {
+    pub(crate) epoch: u64,
+    pub(crate) generation: u64,
+    pub(crate) pending_count: u32,
+    pub(crate) re_requested: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -202,6 +214,26 @@ pub(crate) fn record(
     correlation: Option<String>,
     project_fingerprint: Option<String>,
 ) {
+    record_inspection(
+        feature,
+        stage,
+        category,
+        outcome,
+        correlation,
+        project_fingerprint,
+        None,
+    );
+}
+
+pub(crate) fn record_inspection(
+    feature: &'static str,
+    stage: &'static str,
+    category: &'static str,
+    outcome: &'static str,
+    correlation: Option<String>,
+    project_fingerprint: Option<String>,
+    inspection_observation: Option<InspectionObservation>,
+) {
     let Some(owner) = STATE.get() else {
         return;
     };
@@ -218,6 +250,7 @@ pub(crate) fn record(
         outcome,
         correlation: correlation.filter(|value| safe_id(value)),
         project_fingerprint: project_fingerprint.filter(|value| valid_fingerprint(value)),
+        inspection_observation,
     };
     retain_event(&mut state, event);
 }

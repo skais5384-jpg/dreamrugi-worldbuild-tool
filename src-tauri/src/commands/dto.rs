@@ -302,6 +302,8 @@ pub(crate) enum Work {
     },
     AssetInspect {
         project: Id,
+        #[serde(default)]
+        observation: Option<crate::diagnostic_log::InspectionObservation>,
     },
     AssetTrashMove {
         project: Id,
@@ -450,7 +452,7 @@ impl Work {
             | Self::BackupDeletedRestore { project, .. }
             | Self::BackupDeletedPurge { project, .. }
             | Self::RestoreCurrent { project, .. }
-            | Self::AssetInspect { project }
+            | Self::AssetInspect { project, .. }
             | Self::AssetTrashMove { project, .. }
             | Self::AssetRename { project, .. }
             | Self::AssetTrashRestore { project, .. }
@@ -964,6 +966,7 @@ pub(crate) struct TemplateDto {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct FieldDto {
+    pub(crate) card_title_field: Option<String>,
     pub(crate) members: Vec<FieldDto>,
     pub(crate) member_order: Vec<String>,
     pub(crate) minimum: Option<String>,

@@ -10,6 +10,8 @@ import "./Groups.css";
 
 export function GroupDefinition({
   members,
+  cardTitleField,
+  changeTitle,
   original,
   owner,
   generation,
@@ -20,6 +22,8 @@ export function GroupDefinition({
   templates = [],
 }: {
   members: DraftField[];
+  cardTitleField?: string | null;
+  changeTitle?: (id: string | null) => void;
   original?: Field;
   owner: string;
   generation: string;
@@ -73,6 +77,40 @@ export function GroupDefinition({
       {...reorder.surface}
     >
       <h4>{text("group.members")}</h4>
+      {changeTitle && (
+        <PropertyRow
+          label={text("group.cardTitleField")}
+          htmlFor={"group-title-" + (original?.id ?? owner)}
+        >
+          <Select
+            id={"group-title-" + (original?.id ?? owner)}
+            disabled={disabled || composing}
+            value={cardTitleField ?? ""}
+            onChange={(e) => changeTitle(e.target.value || null)}
+          >
+            <option value="">{text("group.noCardTitle")}</option>
+            {members
+              .filter(
+                (f) => !f.archived && f.configuration.kind === "rich_text",
+              )
+              .map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.label || text("field.emptyLabel")}
+                </option>
+              ))}
+            {cardTitleField &&
+              !active.some(
+                (f) =>
+                  f.id === cardTitleField &&
+                  f.configuration.kind === "rich_text",
+              ) && (
+                <option value={cardTitleField} disabled>
+                  {text("group.archivedTitle")}
+                </option>
+              )}
+          </Select>
+        </PropertyRow>
+      )}
       <div className="repeat-member-editor">
         <div
           className="repeat-members"

@@ -16,7 +16,7 @@ export interface DraftOption {
   archived: boolean;
 }
 export type DraftConfiguration =
-  | { kind: "group"; members: DraftField[] }
+  | { kind: "group"; members: DraftField[]; cardTitleField?: Intent<string> }
   | { kind: "number"; minimum?: string; maximum?: string }
   | {
       kind:
@@ -143,6 +143,7 @@ export type ReapplyIntent =
         | "field_required"
         | "field_writing_guide"
         | "field_presentation"
+        | "field_card_title"
         | "field_default";
       field: string;
     };

@@ -677,8 +677,9 @@
   min-height: var(--document-tree-row-height);
   padding-block: 0;
 }
-.document-tree-row .tree-name:first-child {
-  padding-left: 8px;
+.document-tree-row .tree-expand-slot {
+  width: 24px;
+  flex: 0 0 24px;
 }
 .document-tree-svn-overlay {
   width: 20px;

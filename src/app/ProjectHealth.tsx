@@ -94,29 +94,31 @@ export function ProjectHealth({
     (trashedResources?.length ?? 0) +
     templateProblemDocuments.length;
   const status =
-    (!documentsVerified || state.inspectionPendingDocuments.length) &&
-    !inspection
-      ? { color: "warning" as const, label: text("health.badge.partial") }
-      : !inspection
-        ? {
-            color: "informative" as const,
-            label: text("health.badge.unchecked"),
-          }
-        : !inspection.complete ||
-            !documentsVerified ||
-            !!state.inspectionPendingDocuments.length
-          ? { color: "warning" as const, label: text("health.badge.partial") }
-          : problemCount > 0
-            ? {
-                color: "warning" as const,
-                label: text("health.badge.problems", {
-                  count: String(problemCount),
-                }),
-              }
-            : {
-                color: "success" as const,
-                label: text("health.badge.complete"),
-              };
+    dialog.phase === "checking"
+      ? { color: "informative" as const, label: text("health.checking") }
+      : (!documentsVerified || state.inspectionPendingDocuments.length) &&
+          !inspection
+        ? { color: "warning" as const, label: text("health.badge.partial") }
+        : !inspection
+          ? {
+              color: "informative" as const,
+              label: text("health.badge.unchecked"),
+            }
+          : !inspection.complete ||
+              !documentsVerified ||
+              !!state.inspectionPendingDocuments.length
+            ? { color: "warning" as const, label: text("health.badge.partial") }
+            : problemCount > 0
+              ? {
+                  color: "warning" as const,
+                  label: text("health.badge.problems", {
+                    count: String(problemCount),
+                  }),
+                }
+              : {
+                  color: "success" as const,
+                  label: text("health.badge.complete"),
+                };
   const summary = inspection
     ? [
         "Worldbuild project diagnostics v2",
@@ -173,7 +175,7 @@ export function ProjectHealth({
                   {text("health.check")}
                 </Button>
               </div>
-              {!documentsVerified && (
+              {!documentsVerified && dialog.phase !== "checking" && (
                 <InlineNotice kind="warning" className="health-section-help">
                   {documentProblem || documentCheckFailed
                     ? text("health.documentListFailed")
@@ -183,6 +185,10 @@ export function ProjectHealth({
               {dialog.phase === "checking" ? (
                 <InlineNotice kind="info" className="health-section-help">
                   {text("health.checking")}
+                </InlineNotice>
+              ) : inspection?.ownerProtected ? (
+                <InlineNotice kind="info" className="health-section-help">
+                  {text("documents.issue.inspection_waiting")}
                 </InlineNotice>
               ) : !inspection && state.inspectionPendingDocuments.length ? (
                 <InlineNotice kind="warning" className="health-section-help">

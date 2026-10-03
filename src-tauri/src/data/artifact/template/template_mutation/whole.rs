@@ -14,6 +14,7 @@ pub(crate) struct TemplateDraftInput {
 #[derive(Clone)]
 pub(crate) struct FieldDraftInput {
     pub(crate) members: Vec<FieldDraftInput>,
+    pub(crate) card_title_field: crate::data::edit_recovery::model::Intent<FieldId>,
     pub(crate) id: FieldId,
     pub(crate) label: String,
     pub(crate) kind: FieldKind,
@@ -221,7 +222,7 @@ fn assemble(
             }
             value
         };
-        let definition = if let Some(old) = original {
+        let mut definition = if let Some(old) = original {
             let mut field = old.clone();
             field.label = input.label;
             field.writing_guide = input.writing_guide;
@@ -253,6 +254,33 @@ fn assemble(
                 extra: BTreeMap::new(),
             }
         };
+        if !matches!(
+            input.card_title_field,
+            crate::data::edit_recovery::model::Intent::Keep
+        ) && original.is_some_and(|f| {
+            f.presentation.extra.contains_key("cardTitleField")
+                && f.presentation.card_title_field().is_none()
+        }) {
+            return Err(TemplateMutationError::invalid_field_draft(id));
+        }
+        match input.card_title_field {
+            crate::data::edit_recovery::model::Intent::Keep => (),
+            crate::data::edit_recovery::model::Intent::Unset => {
+                definition.presentation.set_card_title_field(None)
+            }
+            crate::data::edit_recovery::model::Intent::Set(title) => {
+                let (_, members) = definition
+                    .configuration
+                    .members()
+                    .ok_or_else(|| TemplateMutationError::invalid_field_draft(id))?;
+                if members.get(&title).is_none_or(|f| {
+                    f.kind != FieldKind::RichText || f.lifecycle != FieldLifecycle::Active
+                }) {
+                    return Err(TemplateMutationError::invalid_field_draft(id));
+                }
+                definition.presentation.set_card_title_field(Some(title));
+            }
+        }
         if validate_new_default && definition.kind == FieldKind::Number {
             definition
                 .validate_fresh_default()

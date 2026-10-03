@@ -244,6 +244,7 @@ export function DocumentWorkspace({
     state.validationIssues,
     state.read,
     app.inspectionPendingDocuments,
+    ["waiting", "checking"].includes(app.inspectionRefreshState ?? ""),
   );
   const active =
     list?.documents.filter(

@@ -723,6 +723,31 @@ export function WholeTemplate({
                     <GroupDefinition
                       key={current.id}
                       members={current.configuration.members}
+                      cardTitleField={
+                        current.configuration.cardTitleField?.intent === "set"
+                          ? current.configuration.cardTitleField.value
+                          : current.configuration.cardTitleField?.intent ===
+                              "unset"
+                            ? null
+                            : original?.cardTitleField
+                      }
+                      changeTitle={(cardTitleField) =>
+                        editField(current.id, (f) => ({
+                          ...f,
+                          configuration:
+                            f.configuration.kind === "group"
+                              ? {
+                                  ...f.configuration,
+                                  cardTitleField: cardTitleField
+                                    ? {
+                                        intent: "set" as const,
+                                        value: cardTitleField,
+                                      }
+                                    : { intent: "unset" as const },
+                                }
+                              : f.configuration,
+                        }))
+                      }
                       original={original}
                       owner={draft.status.owner}
                       generation={draft.generation}
@@ -731,10 +756,38 @@ export function WholeTemplate({
                       canonical={canonical}
                       templates={templates}
                       change={(members) =>
-                        editField(current.id, (f) => ({
-                          ...f,
-                          configuration: { kind: "group", members },
-                        }))
+                        editField(current.id, (f) => {
+                          if (f.configuration.kind !== "group") return f;
+                          const intent = f.configuration.cardTitleField;
+                          const title =
+                            intent?.intent === "set"
+                              ? intent.value
+                              : intent?.intent === "unset"
+                                ? null
+                                : original?.cardTitleField;
+                          const member = members.find((m) => m.id === title);
+                          const previousMember = f.configuration.members.find(
+                            (m) => m.id === title,
+                          );
+                          const changedTarget =
+                            title &&
+                            (intent?.intent === "set" ||
+                              previousMember?.configuration.kind ===
+                                "rich_text") &&
+                            (!member ||
+                              member.configuration.kind !== "rich_text" ||
+                              (member.archived && intent?.intent === "set"));
+                          return {
+                            ...f,
+                            configuration: {
+                              ...f.configuration,
+                              members,
+                              cardTitleField: changedTarget
+                                ? { intent: "unset" as const }
+                                : intent,
+                            },
+                          };
+                        })
                       }
                     />
                   )}

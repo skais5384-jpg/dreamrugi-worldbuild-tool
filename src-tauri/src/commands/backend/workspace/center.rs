@@ -443,6 +443,16 @@ fn offered(body: &TemplateBody, current: &TemplateArtifact) -> Reply<Vec<Reapply
                     field: field.id.clone(),
                 },
             ]);
+            let target = now
+                .fields
+                .iter()
+                .find(|f| f.id == field.id)
+                .ok_or(Code::WrongBinding)?;
+            if title_reapply(&field.configuration, &target.configuration).is_some() {
+                out.push(ReapplyIntent::FieldCardTitle {
+                    field: field.id.clone(),
+                });
+            }
         }
     }
     Ok(out)
@@ -467,6 +477,7 @@ fn apply_selected(
             | ReapplyIntent::FieldRequired { field }
             | ReapplyIntent::FieldWritingGuide { field }
             | ReapplyIntent::FieldPresentation { field }
+            | ReapplyIntent::FieldCardTitle { field }
             | ReapplyIntent::FieldDefault { field } => field,
         };
         let from = body
@@ -486,10 +497,78 @@ fn apply_selected(
                 to.writing_guide = from.writing_guide.clone()
             }
             ReapplyIntent::FieldPresentation { .. } => to.presentation = from.presentation.clone(),
+            ReapplyIntent::FieldCardTitle { .. } => {
+                let intent = title_reapply(&from.configuration, &to.configuration)
+                    .ok_or(Code::WrongBinding)?;
+                if let DraftConfiguration::Group {
+                    card_title_field, ..
+                } = &mut to.configuration
+                {
+                    *card_title_field = intent;
+                }
+            }
             ReapplyIntent::FieldDefault { .. } => to.default = from.default.clone(),
             _ => return Err(Code::InvalidInput.into()),
         }
     }
     // 재적용은 새 초안일 뿐이다. 전체 유효성 검증과 쓰기는 사용자의 다음 저장에 남는다.
     Ok(draft)
+}
+
+fn title_reapply(from: &DraftConfiguration, to: &DraftConfiguration) -> Option<Intent<String>> {
+    match (from, to) {
+        (
+            DraftConfiguration::Group {
+                card_title_field: Intent::Unset,
+                ..
+            },
+            DraftConfiguration::Group { .. },
+        ) => Some(Intent::Unset),
+        (
+            DraftConfiguration::Group {
+                card_title_field: Intent::Set(id),
+                ..
+            },
+            DraftConfiguration::Group { members, .. },
+        ) if members.iter().any(|f| {
+            f.id == *id && !f.archived && matches!(f.configuration, DraftConfiguration::RichText {})
+        }) =>
+        {
+            Some(Intent::Set(id.clone()))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod card_title_tests {
+    use super::*;
+    #[test]
+    fn card_title_reapply_accepts_only_existing_active_rich_member_and_explicit_unset() {
+        let id = "33333333-3333-4333-8333-333333333333";
+        let member: DraftField = serde_json::from_value(serde_json::json!({"id":id,"label":"title","configuration":{"kind":"rich_text"},"required":false,"presentation":{"intent":"keep"},"default":{"intent":"keep"},"archived":false})).unwrap();
+        let from = DraftConfiguration::Group {
+            members: vec![],
+            card_title_field: Intent::Set(id.into()),
+        };
+        let mut to = DraftConfiguration::Group {
+            members: vec![member],
+            card_title_field: Intent::Keep,
+        };
+        assert!(title_reapply(&from, &to) == Some(Intent::Set(id.into())));
+        if let DraftConfiguration::Group { members, .. } = &mut to {
+            members[0].archived = true;
+        }
+        assert!(title_reapply(&from, &to).is_none());
+        assert!(matches!(
+            title_reapply(
+                &DraftConfiguration::Group {
+                    members: vec![],
+                    card_title_field: Intent::Unset
+                },
+                &to
+            ),
+            Some(Intent::Unset)
+        ));
+    }
 }

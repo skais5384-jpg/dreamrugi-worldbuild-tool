@@ -622,6 +622,7 @@ export class WorkspaceController {
     if (control.error)
       throw new BridgeFailure("boundary", undefined, control.error);
     this.publish({ draft: null });
+    this.shell.resumeDocumentInspection(d.project);
     // 실제 release 응답을 받은 뒤에만 원본 view의 추가 소유권을 해제한다.
     this.sourceView = null;
     await this.shell.releaseUnusedViews();

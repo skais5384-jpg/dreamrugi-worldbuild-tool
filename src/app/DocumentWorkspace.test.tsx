@@ -35,6 +35,120 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+it("resumes an owner-protected inspection after confirmed editor release without opening health", async () => {
+  const f = await setup();
+  await f.controller.open("a");
+  await f.controller.beginEdit("a");
+  const shell = f.controller.shell;
+  const run = shell.operations.run.bind(shell.operations);
+  let protectedScan = true;
+  let scans = 0;
+  vi.spyOn(shell.operations, "run").mockImplementation(async (...args) => {
+    const reply = await run(...args);
+    if (
+      args[0].kind === "asset_inspect" &&
+      reply.result.kind === "asset_maintenance"
+    ) {
+      ++scans;
+      reply.result.inspection.complete = !protectedScan;
+    }
+    return reply;
+  });
+  f.controller.edits.update("a", (body) => ({
+    ...body,
+    name: { intent: "set", value: "saved" },
+  }));
+  await f.controller.edits.submit("a");
+  await waitFor(() => expect(scans).toBe(1));
+  expect(shell.snapshot().inspectionPendingDocuments).toEqual(["a"]);
+  protectedScan = false;
+  await f.controller.endEdit("a");
+  await waitFor(() =>
+    expect(shell.snapshot().inspectionPendingDocuments).toEqual([]),
+  );
+  expect(scans).toBe(2);
+  expect(shell.snapshot().health).toBeNull();
+});
+
+it("queues a confirmed release during an in-flight scan and rejects its stale protected result", async () => {
+  const f = await setup();
+  const shell = f.controller.shell;
+  const run = shell.operations.run.bind(shell.operations);
+  const entered = healthGate(),
+    release = healthGate();
+  let scans = 0;
+  vi.spyOn(shell.operations, "run").mockImplementation(async (...args) => {
+    const reply = await run(...args);
+    if (
+      args[0].kind === "asset_inspect" &&
+      reply.result.kind === "asset_maintenance"
+    ) {
+      if (++scans === 1) {
+        reply.result.inspection.complete = false;
+        reply.result.inspection.ownerProtected = true;
+        entered.resolve();
+        await release.promise;
+      }
+    }
+    return reply;
+  });
+  shell.invalidateDocumentInspection(["a"]);
+  await entered.promise;
+  shell.resumeDocumentInspection(shell.snapshot().projectId!);
+  release.resolve();
+  await waitFor(() =>
+    expect(shell.snapshot().inspectionPendingDocuments).toEqual([]),
+  );
+  expect(scans).toBe(2);
+  expect(shell.snapshot().assetInspection?.complete).toBe(true);
+});
+
+it("waits for the last owner and retains actual incomplete or failed scans without polling", async () => {
+  const f = await setup();
+  const shell = f.controller.shell;
+  const run = shell.operations.run.bind(shell.operations);
+  let owners = 2,
+    actualFailure = false,
+    scans = 0;
+  vi.spyOn(shell.operations, "run").mockImplementation(async (...args) => {
+    const reply = await run(...args);
+    if (
+      args[0].kind === "asset_inspect" &&
+      reply.result.kind === "asset_maintenance"
+    ) {
+      ++scans;
+      reply.result.inspection.complete = !owners && !actualFailure;
+      reply.result.inspection.ownerProtected = !!owners && !actualFailure;
+    }
+    return reply;
+  });
+  shell.invalidateDocumentInspection(["a"]);
+  await waitFor(() =>
+    expect(shell.snapshot().inspectionRefreshState).toBe("waiting"),
+  );
+  owners = 1;
+  shell.resumeDocumentInspection(shell.snapshot().projectId!);
+  await waitFor(() => expect(scans).toBe(2));
+  expect(shell.snapshot().inspectionPendingDocuments).toEqual(["a"]);
+  owners = 0;
+  actualFailure = true;
+  shell.resumeDocumentInspection(shell.snapshot().projectId!);
+  await waitFor(() =>
+    expect(shell.snapshot().inspectionRefreshState).toBe("failed"),
+  );
+  await Promise.resolve();
+  expect(scans).toBe(3);
+  expect(shell.snapshot().inspectionPendingDocuments).toEqual(["a"]);
+  actualFailure = false;
+  shell.resumeDocumentInspection("different-project");
+  expect(scans).toBe(3);
+  shell.resumeDocumentInspection(shell.snapshot().projectId!);
+  await waitFor(() =>
+    expect(shell.snapshot().inspectionPendingDocuments).toEqual([]),
+  );
+  expect(scans).toBe(4);
+});
+
 it("saves through the visible document owner before autosave and keeps read-only Ctrl+S inert", async () => {
   const { controller, transport } = await setup();
   await controller.open("a");

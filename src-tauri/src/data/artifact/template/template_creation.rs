@@ -498,7 +498,13 @@ fn duplicate_field(
             variant,
             extra: source.configuration.extra.clone(),
         },
-        presentation: source.presentation.clone(),
+        presentation: {
+            let mut presentation = source.presentation.clone();
+            if let Some(title) = presentation.card_title_field() {
+                presentation.set_card_title_field(Some(mapping.field(title)?));
+            }
+            presentation
+        },
         extra: source.extra.clone(),
     })
 }

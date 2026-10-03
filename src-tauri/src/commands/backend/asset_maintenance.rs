@@ -44,6 +44,17 @@ fn action(result: asset_maintenance::ActionResult) -> ResultDto {
 
 pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
     let owners = ctx.has_project_owners();
+    if let Work::AssetInspect { observation, .. } = &*job.input {
+        crate::diagnostic_log::record_inspection(
+            "asset_maintenance",
+            "inspect_owners",
+            "owner_state",
+            if owners { "held" } else { "released" },
+            Some(String::from(job.operation)),
+            ctx.project_fingerprint().map(str::to_owned),
+            observation.clone(),
+        );
+    }
     if owners
         && matches!(
             &*job.input,

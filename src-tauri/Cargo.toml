@@ -1,6 +1,6 @@
 [package]
 name = "worldbuild-tool"
-version = "1.0.0"
+version = "1.0.1"
 description = "세계관 개발 및 관리 도구"
 license = "GPL-3.0-only"
 edition = "2021"

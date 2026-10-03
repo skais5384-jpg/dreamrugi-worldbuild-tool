@@ -95,6 +95,12 @@ pub(crate) struct DraftField {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum DraftConfiguration {
     Group {
+        #[serde(
+            default,
+            rename = "cardTitleField",
+            skip_serializing_if = "Intent::is_keep"
+        )]
+        card_title_field: Intent<String>,
         members: Vec<DraftField>,
     },
     SingleLineText {},

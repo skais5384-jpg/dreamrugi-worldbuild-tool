@@ -309,6 +309,14 @@ export function GroupEditor({
   );
 }
 
+function hasTitleContent(node: import("../bridge/types").RichNode): boolean {
+  if (node.kind === "taskItem") return true;
+  return node.kind === "text"
+    ? !!node.text.trim()
+    : node.kind === "hardBreak"
+      ? false
+      : node.children.some(hasTitleContent);
+}
 export function GroupRead({
   value,
   field,
@@ -320,49 +328,82 @@ export function GroupRead({
 }) {
   return (
     <div className="repeat-cards">
-      {value.instances.map((card, index) => (
-        <section className="repeat-card" key={card.id}>
-          <h4>
-            {text("group.card")} {index + 1}
-          </h4>
-          {[
-            ...(field?.memberOrder ?? []).map((id) =>
-              card.fields.find((c) => c.field === id),
-            ),
-            ...card.fields.filter(
-              (c) => !field?.memberOrder?.includes(c.field),
-            ),
-          ]
-            .filter((c): c is GroupInstance["fields"][number] => !!c)
-            .map((cell) => {
-              const child = field?.members?.find((f) => f.id === cell.field);
-              return (
-                <PropertyRow
-                  key={cell.field}
-                  label={
-                    child?.lifecycle === "Active"
-                      ? child.label
-                      : (card.labels?.[cell.field] ??
-                        child?.label ??
-                        cell.field)
-                  }
-                  complex
-                  block={blockField(child?.kind)}
-                >
+      {value.instances.map((card, index) => {
+        const titleField = field?.members?.find(
+          (f) =>
+            f.id === field.cardTitleField &&
+            f.lifecycle === "Active" &&
+            f.kind === "RichText",
+        );
+        const title =
+          titleField && card.fields.find((c) => c.field === titleField.id);
+        const titleValue =
+          title?.value.intent === "set" ? title.value.value : null;
+        const promoted =
+          !!titleField &&
+          !card.protected?.includes(titleField.id) &&
+          (titleValue?.kind === "rich_text" ||
+            titleValue?.kind === "unset" ||
+            title?.value.intent === "unset");
+        return (
+          <section
+            className="repeat-card"
+            key={card.id}
+            aria-label={`${text("group.card")} ${index + 1}`}
+          >
+            {promoted &&
+              titleValue?.kind === "rich_text" &&
+              hasTitleContent(titleValue.content) && (
+                <div className="repeat-card-title">
                   <ValueRead
-                    value={
-                      cell.value.intent === "set"
-                        ? cell.value.value
-                        : { kind: "unset" }
-                    }
-                    options={child?.options ?? []}
+                    value={titleValue}
+                    options={[]}
                     reference={reference}
                   />
-                </PropertyRow>
-              );
-            })}
-        </section>
-      ))}
+                </div>
+              )}
+            {[
+              ...(field?.memberOrder ?? []).map((id) =>
+                card.fields.find((c) => c.field === id),
+              ),
+              ...card.fields.filter(
+                (c) => !field?.memberOrder?.includes(c.field),
+              ),
+            ]
+              .filter(
+                (c): c is GroupInstance["fields"][number] =>
+                  !!c && !(promoted && c.field === titleField?.id),
+              )
+              .map((cell) => {
+                const child = field?.members?.find((f) => f.id === cell.field);
+                return (
+                  <PropertyRow
+                    key={cell.field}
+                    label={
+                      child?.lifecycle === "Active"
+                        ? child.label
+                        : (card.labels?.[cell.field] ??
+                          child?.label ??
+                          cell.field)
+                    }
+                    complex
+                    block={blockField(child?.kind)}
+                  >
+                    <ValueRead
+                      value={
+                        cell.value.intent === "set"
+                          ? cell.value.value
+                          : { kind: "unset" }
+                      }
+                      options={child?.options ?? []}
+                      reference={reference}
+                    />
+                  </PropertyRow>
+                );
+              })}
+          </section>
+        );
+      })}
     </div>
   );
 }

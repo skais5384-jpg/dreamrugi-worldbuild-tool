@@ -157,6 +157,21 @@ fn rich(node: &RichNode) -> String {
     }
 }
 
+fn rich_title_content(node: &RichNode) -> bool {
+    match node {
+        RichNode::Text { text, .. } => !text.trim().is_empty(),
+        RichNode::HardBreak {} => false,
+        RichNode::TaskItem { .. } => true,
+        RichNode::Root { children }
+        | RichNode::Paragraph { children }
+        | RichNode::Heading { children, .. }
+        | RichNode::Blockquote { children }
+        | RichNode::BulletList { children }
+        | RichNode::TaskList { children }
+        | RichNode::OrderedList { children }
+        | RichNode::ListItem { children } => children.iter().any(rich_title_content),
+    }
+}
 fn display_value(
     value: &ValueDto,
     definition: Option<&FieldDto>,
@@ -246,11 +261,41 @@ fn display_value(
         ),
         ValueDto::Group { instances } => {
             let mut output = String::from("<div class=\"group\">");
-            for (index, instance) in instances.iter().enumerate() {
-                output.push_str(&format!(
-                    "<section class=\"group-card\"><h3>항목 {}</h3>",
-                    index + 1
-                ));
+            for instance in instances {
+                output.push_str("<section class=\"group-card\">");
+                let title = definition
+                    .and_then(|d| d.card_title_field.as_ref())
+                    .and_then(|id| {
+                        definition?.members.iter().find(|m| {
+                            &m.id == id && m.lifecycle == "Active" && m.kind == "RichText"
+                        })
+                    })
+                    .filter(|m| !instance.protected.iter().any(|id| id.to_string() == m.id))
+                    .and_then(|m| {
+                        instance
+                            .fields
+                            .iter()
+                            .find(|f| f.field == m.id)
+                            .map(|f| (m, f))
+                    })
+                    .filter(|(_, f)| {
+                        matches!(
+                            f.value,
+                            Intent::Set(ValueDto::RichText { .. })
+                                | Intent::Set(ValueDto::Unset {})
+                                | Intent::Unset
+                        )
+                    });
+                if let Some((member, field)) = title {
+                    if let Intent::Set(value @ ValueDto::RichText { content }) = &field.value {
+                        if rich_title_content(content) {
+                            output.push_str(&format!(
+                                "<div class=\"group-title\">{}</div>",
+                                display_value(value, Some(member), assets, links, images)
+                            ));
+                        }
+                    }
+                }
                 let mut fields = instance.fields.iter().collect::<Vec<_>>();
                 if let Some(definition) = definition {
                     fields.sort_by_key(|field| {
@@ -262,6 +307,9 @@ fn display_value(
                     });
                 }
                 for field in fields {
+                    if title.is_some_and(|(_, t)| t.field == field.field) {
+                        continue;
+                    }
                     let member = definition.and_then(|definition| {
                         definition
                             .members
@@ -1272,6 +1320,7 @@ fn probe_snapshots() -> io::Result<Vec<(&'static str, Snapshot)>> {
     use crate::data::{artifact::group::InstanceDraft, edit_recovery::model::DraftValue};
     fn field(id: &str, label: &str, kind: &str) -> FieldDto {
         FieldDto {
+            card_title_field: None,
             members: Vec::new(),
             member_order: Vec::new(),
             minimum: None,
@@ -1492,6 +1541,64 @@ fn probe_snapshots() -> io::Result<Vec<(&'static str, Snapshot)>> {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn card_title_pdf_uses_one_safe_title_and_preserves_blank_and_checkbox_semantics() {
+        for text in ["single-title <script>", " ", "checkbox"] {
+            let mut samples = probe_snapshots().unwrap();
+            let snapshot = &mut samples[1].1;
+            if let Response::Read {
+                template, fields, ..
+            } = &mut snapshot.read
+            {
+                let group = template
+                    .fields
+                    .iter_mut()
+                    .find(|f| f.kind == "Group")
+                    .unwrap();
+                group.card_title_field = Some("row-name".into());
+                group.members[0].kind = "RichText".into();
+                if let Some(ValueDto::Group { instances }) =
+                    &mut fields.iter_mut().find(|f| f.id == group.id).unwrap().value
+                {
+                    instances.truncate(1);
+                    let node = if text == "checkbox" {
+                        RichNode::TaskList {
+                            children: vec![RichNode::TaskItem {
+                                checked: true,
+                                children: vec![],
+                            }],
+                        }
+                    } else {
+                        RichNode::Paragraph {
+                            children: vec![RichNode::Text {
+                                text: text.into(),
+                                marks: vec![Mark::Bold],
+                            }],
+                        }
+                    };
+                    instances[0].fields[0].value = Intent::Set(ValueDto::RichText {
+                        content: RichNode::Root {
+                            children: vec![node],
+                        },
+                    });
+                }
+            }
+            let rendered = html(snapshot, &BTreeMap::new(), "test-nonce").unwrap();
+            assert!(!rendered.contains("<h3>항목"));
+            assert_eq!(
+                rendered.matches("class=\"group-title\"").count(),
+                if text.trim().is_empty() { 0 } else { 1 }
+            );
+            if text == "checkbox" {
+                assert!(rendered.contains("☑"));
+            }
+            if text.starts_with("single-title") {
+                assert_eq!(rendered.matches("single-title &lt;script&gt;").count(), 1);
+            }
+            assert!(rendered.contains("길고 반복되는 설명"));
+        }
+    }
 
     #[test]
     fn saved_content_is_escaped_and_keeps_rich_group_and_media_meaning() {

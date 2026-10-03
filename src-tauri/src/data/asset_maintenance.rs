@@ -152,6 +152,8 @@ struct DocumentReferences {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Inspection {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) owner_protected: bool,
     pub(crate) token: String,
     pub(crate) observed_at_utc: String,
     pub(crate) complete: bool,
@@ -319,6 +321,7 @@ pub(crate) fn inspect(root: &Path) -> Result<Inspection, Error> {
 impl Inspection {
     /// 저장되지 않은 editor/import owner가 있으면 저장본만으로 미사용 권한을 만들지 않는다.
     pub(crate) fn mark_uncommitted_protected(&mut self) {
+        self.owner_protected = self.complete;
         self.complete = false;
         for row in &mut self.rows {
             if row.status == AssetStatus::Unused {
@@ -515,6 +518,7 @@ fn inspect_with_evidence(root: &Path) -> Result<Evidence, Error> {
     source_fingerprints.sort();
     let token = digest(source_fingerprints.join("\n").as_bytes());
     let inspection = Inspection {
+        owner_protected: false,
         token,
         observed_at_utc: crate::data::utc_time::now_utc_milliseconds()
             .map_err(|_| Error::new(Category::Io))?,

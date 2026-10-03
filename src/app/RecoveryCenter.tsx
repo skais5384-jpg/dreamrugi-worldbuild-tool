@@ -384,6 +384,8 @@ function intentLabel(intent: ReapplyIntent) {
     case "presentation":
     case "field_presentation":
       return text("field.presentation");
+    case "field_card_title":
+      return text("group.cardTitleField");
     case "field_label":
       return text("field.label");
     case "field_required":

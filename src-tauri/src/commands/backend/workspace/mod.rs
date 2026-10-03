@@ -296,6 +296,7 @@ fn body_from_source(t: &artifact::TemplateArtifact) -> Reply<TemplateBody> {
             .collect::<Reply<Vec<_>>>()?;
         let configuration = match f.kind.as_str() {
             "Group" => DraftConfiguration::Group {
+                card_title_field: Intent::Keep,
                 members: body_from_source(&t.member_scope(convert::id(&f.id)?))?.fields,
             },
             "SingleLineText" => DraftConfiguration::SingleLineText {},
@@ -481,8 +482,36 @@ fn normalize_parts(
                 _ => value.default_draft()?,
             }),
         };
+        let card_title_field = match &raw.configuration {
+            DraftConfiguration::Group {
+                members,
+                card_title_field: Intent::Set(title),
+            } => {
+                let member = members
+                    .iter()
+                    .find(|m| &m.id == title)
+                    .ok_or(Code::WrongBinding)?;
+                if member.archived
+                    || !matches!(member.configuration, DraftConfiguration::RichText {})
+                {
+                    return Err(Code::WrongBinding.into());
+                }
+                let mapped: FieldId = if title.starts_with("new:") {
+                    convert::id(&allocated_id(draft_id, "field", title)?)?
+                } else {
+                    convert::id(title)?
+                };
+                Intent::Set(mapped)
+            }
+            DraftConfiguration::Group {
+                card_title_field: Intent::Unset,
+                ..
+            } => Intent::Unset,
+            _ => Intent::Keep,
+        };
         fields.push(FieldDraftInput {
-            members: if let DraftConfiguration::Group { members } = &raw.configuration {
+            card_title_field,
+            members: if let DraftConfiguration::Group { members, .. } = &raw.configuration {
                 if members
                     .iter()
                     .any(|m| matches!(m.configuration, DraftConfiguration::Group { .. }))
@@ -553,7 +582,7 @@ fn draft_fields(fields: &[DraftField]) -> Vec<&DraftField> {
     let mut result = Vec::new();
     for field in fields {
         result.push(field);
-        if let DraftConfiguration::Group { members } = &field.configuration {
+        if let DraftConfiguration::Group { members, .. } = &field.configuration {
             result.extend(members);
         }
     }

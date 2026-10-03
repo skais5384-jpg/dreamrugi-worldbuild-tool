@@ -277,6 +277,7 @@ pub(crate) fn warnings(w: &DocumentMaterializationWarnings) -> Vec<WarningDto> {
 
 pub(crate) fn field(id: FieldId, f: &FieldDefinition) -> Reply<FieldDto> {
     Ok(FieldDto {
+        card_title_field: f.presentation().card_title_field().map(|id| id.to_string()),
         members: f
             .configuration()
             .members()

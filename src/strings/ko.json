@@ -1404,5 +1404,9 @@
   "privacy.youtubeTerms": "YouTube 이용약관",
   "privacy.linkFailed": "외부 안내를 열지 못했습니다.",
   "privacy.languageKo": "한국어",
-  "privacy.languageEn": "English"
+  "privacy.languageEn": "English",
+  "group.cardTitleField": "카드 제목 필드",
+  "group.noCardTitle": "없음",
+  "group.archivedTitle": "보관되었거나 사용할 수 없는 제목 필드",
+  "documents.issue.inspection_waiting": "리소스 상태를 확인 중입니다. 편집이 끝나면 자동으로 다시 확인합니다."
 }

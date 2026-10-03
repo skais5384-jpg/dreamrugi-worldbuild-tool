@@ -15,6 +15,7 @@ export type DocumentIssueReason =
   | "template_in_trash"
   | "template_missing"
   | "validation_unknown"
+  | "inspection_waiting"
   | "inspection_pending"
   | "unregistered"
   | "document_validation";
@@ -72,6 +73,8 @@ export function documentIssueMessage(reason: string): string {
       return text("documents.issue.unregistered");
     case "validation_unknown":
       return text("documents.issue.validation_unknown");
+    case "inspection_waiting":
+      return text("documents.issue.inspection_waiting");
     case "inspection_pending":
       return text("documents.issue.inspection_pending");
     default:
@@ -98,6 +101,7 @@ function normalizeReason(reason: string): DocumentIssueReason | null {
     case "resource_uncertain":
     case "unregistered":
     case "validation_unknown":
+    case "inspection_waiting":
     case "inspection_pending":
       return reason;
     case "deleted_template":
@@ -118,6 +122,7 @@ export function collectDocumentIssues(
   validationIssues: DocumentValidationIssues = [],
   currentRead: DocumentRead | null = null,
   inspectionPendingDocuments: readonly string[] = [],
+  inspectionWaiting = false,
 ): ReadonlyMap<string, DocumentIssue[]> {
   const result = new Map<string, DocumentIssue[]>();
   const add = (
@@ -177,7 +182,10 @@ export function collectDocumentIssues(
     }
   }
   for (const document of inspectionPendingDocuments)
-    add(document, "inspection_pending");
+    add(
+      document,
+      inspectionWaiting ? "inspection_waiting" : "inspection_pending",
+    );
 
   const templateLifecycle = new Map(
     templates.map((template) => [template.id, template.lifecycle] as const),
@@ -228,7 +236,10 @@ export function DocumentIssueNotices({
   return issues
     .filter((issue) => issue.showInBody !== false)
     .map((issue) => (
-      <InlineNotice key={`${issue.reason}:${issue.code ?? ""}`} kind="warning">
+      <InlineNotice
+        key={`${issue.reason}:${issue.code ?? ""}`}
+        kind={issue.reason === "inspection_waiting" ? "info" : "warning"}
+      >
         {issue.message}
       </InlineNotice>
     ));

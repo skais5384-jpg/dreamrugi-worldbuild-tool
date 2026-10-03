@@ -29,6 +29,7 @@ import {
   DocumentPdf20Regular,
   MoreHorizontal16Regular,
   Warning16Filled,
+  Info16Regular,
 } from "@fluentui/react-icons";
 import { Button, Select } from "../ui/Controls";
 import type { DocumentController } from "./documentController";
@@ -318,6 +319,7 @@ export function DocumentTree({
                   (pinned ? " drag-source-pinned" : "") +
                   (dragging === id ? " drag-source-active" : "")
                 }
+                style={{ paddingInlineStart: depth * 12 }}
                 aria-posinset={absoluteIndex + 1}
                 aria-setsize={rows.length}
               >
@@ -462,7 +464,7 @@ export function DocumentTree({
                         }
                       }}
                     >
-                      {!!node.childOrder.length && (
+                      {node.childOrder.length ? (
                         <Button
                           type="button"
                           appearance="subtle"
@@ -483,6 +485,8 @@ export function DocumentTree({
                             ) : undefined
                           }
                         />
+                      ) : (
+                        <span className="tree-expand-slot" aria-hidden="true" />
                       )}
                       <Tooltip
                         content={
@@ -531,7 +535,13 @@ export function DocumentTree({
                             role="img"
                             aria-label={problemDescriptions.join(" ")}
                           >
-                            <Warning16Filled aria-hidden="true" />
+                            {(issues.get(id) ?? []).every(
+                              (issue) => issue.reason === "inspection_waiting",
+                            ) ? (
+                              <Info16Regular aria-hidden="true" />
+                            ) : (
+                              <Warning16Filled aria-hidden="true" />
+                            )}
                           </span>
                         </Tooltip>
                       )}

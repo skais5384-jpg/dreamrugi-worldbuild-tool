@@ -1,3 +1,7 @@
+# Windows 1.0.1 패치 배포와 이전 이력
+
+현행 V1-UX-PATCH-001은 세 UX 수정의 1.0.1 정상 소스 반영·CI·서명 draft·실물 검증·GitHub 정식/latest·stable feed를 승인한다. 원격 환경 reviewer와 필수 기술·설치/업데이트 검증을 유지한다. 새 피드는 익명 공개 자산 검증 뒤 반영하고 기존 1.0.0 자산은 변경하지 않는다. 이 문서 갱신만으로 배포 완료를 뜻하지 않는다. Store·블로그·MSIX는 이번 범위 밖이다. 아래 공개 전/별도 승인 표현은 당시 준비 이력이다. 현재 실행 상태는 V1-UX-PATCH-001 보고를 따른다.
+
 # Windows 1.0.0 정식 배포와0.x 시험판 이력 안내
 
 현행: M9/MVP 개발 마감과 V1-RELEASE-PREP-AUDIT-001의 배포 준비 핵심 수용을 바탕으로1.0.0 게시 문구와 실행 대상을 마감한다. GitHub 공개와 Store 제출은 별도 지시로 실행하며, 이 안내 자체는 실행 완료를 뜻하지 않는다. 실제 public SHA/CI/draft/asset/download/feed와 Store 설치·제출 상태는 해당 작업 receipt를 따른다. [v0.1.0 수동 설치 시험판](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/tag/v0.1.0)은 source307에 고정한 과거 배포다. 공개0.1.0은 updater/팀 버전 정책이 없어 첫1.0.0 전환은 수동 설치한다. 개발0.2.0은 공개 다운로드가 아닌 과거 개발 기준이며 자세한 이력은 [M8 배포 준비](m8-release-readiness.md)에 남긴다.
@@ -15,9 +19,9 @@ Store/release에는 실제 Partner Center identity/history JSON을 StoreIdentity
 PowerShell 7, Python 3.10 이상, Node.js 24.20.0, Rust 1.98.0과 Windows Tauri 사전 요구 사항을 준비한다. GitHub actions는 검토된 commit에 고정한다. npm/Cargo 잠금 파일과 제품 버전·GPLv3·리소스 목록을 대조한다.
 
 ```powershell
-python scripts/release-candidate.py snapshot --ref <40자리 수용 commit> --version 1.0.0 --output <새 소스 폴더>
+python scripts/release-candidate.py snapshot --ref <40자리 수용 commit> --version 1.0.1 --output <새 소스 폴더>
 pwsh -File scripts/manage-release-key.ps1 -Action Build -Directory <배포 키 폴더> -Snapshot <새 소스 폴더> -OutputDirectory <새 asset 폴더>
-python scripts/release-candidate.py draft --folder <asset 폴더> --repo <확정 owner/repo> --target <같은 commit> --tag v1.0.0
+python scripts/release-candidate.py draft --folder <asset 폴더> --repo <확정 owner/repo> --target <같은 commit> --tag v1.0.1
 ```
 
 마지막 명령은 요청/asset 미리보기만 만든다. 원격 실행은 별도 승인된 단계에서 `--execute --expected-public-key-sha256 <신뢰한 공개키 지문>`을 붙인다. 기술 후보·미커밋 overlay 후보는 원격 생성에서 거절한다. 다른 후보 draft·기존 tag·변경 asset은 덮어쓰지 않으며, 같은 후보 draft의 동일 hash asset만 재사용한다. 항상 draft이며0.x만 prerelease다. 최신판 승격과 publish 코드는 없다.

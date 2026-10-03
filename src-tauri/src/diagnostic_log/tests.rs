@@ -186,6 +186,7 @@ fn logger_write_rotation_and_marker_faults_only_degrade_diagnostics() {
         outcome: "partial",
         correlation: Some("safe-correlation".into()),
         project_fingerprint: Some("a".repeat(64)),
+        inspection_observation: None,
     };
 
     let mut write_state = make(base.0.join("write"));
@@ -364,4 +365,18 @@ fn killed_session_is_unconfirmed_but_explicit_clean_shutdown_is_not() {
         native::cleanup(&marker).unwrap();
     }
     after_clean.guard.take();
+}
+
+#[test]
+fn inspection_observation_refuses_content_and_preserves_numeric_context() {
+    let value = serde_json::json!({"epoch":4,"generation":2,"pendingCount":1,"reRequested":true});
+    let context: InspectionObservation = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(context).unwrap(), value);
+    let mut unsafe_value = value;
+    unsafe_value["documentName"] = serde_json::json!("private content");
+    assert!(serde_json::from_value::<InspectionObservation>(unsafe_value).is_err());
+    assert!(serde_json::from_str::<InspectionObservation>(
+        r#"{"epoch":-1,"generation":0,"pendingCount":0,"reRequested":false}"#
+    )
+    .is_err());
 }

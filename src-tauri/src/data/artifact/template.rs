@@ -201,6 +201,36 @@ impl fmt::Debug for Presentation {
 }
 
 impl Presentation {
+    fn preserved_extra_matches(&self, other: &Self, allow_card_title: bool) -> bool {
+        if !allow_card_title
+            || (self.extra.contains_key("cardTitleField") && self.card_title_field().is_none())
+        {
+            return self.extra == other.extra;
+        }
+        self.extra
+            .iter()
+            .filter(|(k, _)| k.as_str() != "cardTitleField")
+            .eq(other
+                .extra
+                .iter()
+                .filter(|(k, _)| k.as_str() != "cardTitleField"))
+    }
+    pub(crate) fn card_title_field(&self) -> Option<FieldId> {
+        self.extra
+            .get("cardTitleField")
+            .and_then(|v| v.as_str())
+            .and_then(|v| v.parse().ok())
+    }
+    pub(crate) fn set_card_title_field(&mut self, id: Option<FieldId>) {
+        if let Some(id) = id {
+            self.extra.insert(
+                "cardTitleField".into(),
+                serde_json::Value::String(id.to_string()),
+            );
+        } else {
+            self.extra.remove("cardTitleField");
+        }
+    }
     pub(crate) fn token(&self) -> Option<&str> {
         self.token.as_deref()
     }

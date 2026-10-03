@@ -2148,7 +2148,10 @@ fn validate_historical_invariants(
             ));
         }
         if source_field.extra != candidate_field.extra
-            || source_field.presentation.extra != candidate_field.presentation.extra
+            || !source_field.presentation.preserved_extra_matches(
+                &candidate_field.presentation,
+                source_field.kind == FieldKind::Group,
+            )
             || source_field.configuration.extra != candidate_field.configuration.extra
             || !source_field
                 .default_value

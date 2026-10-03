@@ -229,6 +229,7 @@ export interface ScreenState {
   health: HealthDialog | null;
   assetInspection: AssetInspection | null;
   inspectionPendingDocuments: string[];
+  inspectionRefreshState?: "waiting" | "checking" | "failed" | "idle";
   fileManagerTarget: {
     surface: "resources" | "trash";
     keys: string[];
@@ -416,6 +417,10 @@ export class TemplateController {
   private inspectionEpoch = 0;
   private healthRequest = 0;
   private inspectionRefreshing = false;
+  private inspectionRefreshRequested = false;
+  private inspectionReleaseRetryProject: string | null = null;
+  private healthInspectionRequested = false;
+  private healthInspectionProject: string | null = null;
   private readonly inspectionPending = new Set<string>();
   projectGeneration() {
     return this.projectRequestGeneration;
@@ -487,7 +492,23 @@ export class TemplateController {
     )
       patch = { ...patch, feedback: null };
     this.state = { ...this.state, ...patch };
+    if (
+      this.healthInspectionRequested &&
+      (this.healthInspectionProject !== this.state.projectId ||
+        this.state.health?.surface !== "health")
+    ) {
+      this.healthInspectionRequested = false;
+      this.healthInspectionProject = null;
+    }
     for (const listener of this.listeners) listener();
+    if (
+      this.healthInspectionRequested &&
+      !this.state.busy &&
+      this.state.health?.surface === "health"
+    ) {
+      this.healthInspectionRequested = false;
+      void this.inspectProjectHealth();
+    }
   }
   dismissFeedback(id: number) {
     if (this.state.feedback?.id === id) this.publish({ feedback: null });
@@ -981,7 +1002,11 @@ export class TemplateController {
     const [documents, resources] = await Promise.allSettled([
       this.workspaceInspectDocuments?.(current) ?? Promise.resolve(false),
       this.operations.run(
-        { kind: "asset_inspect", project },
+        {
+          kind: "asset_inspect",
+          project,
+          observation: this.inspectionObservation(),
+        },
         text("health.checking"),
       ),
     ]);
@@ -999,6 +1024,11 @@ export class TemplateController {
       if (data.inspection.complete) this.inspectionPending.clear();
       this.publish({
         assetInspection: data.inspection,
+        inspectionRefreshState: data.inspection.complete
+          ? "idle"
+          : data.inspection.ownerProtected
+            ? "waiting"
+            : "failed",
         inspectionPendingDocuments: [...this.inspectionPending],
         health: {
           ...latest,
@@ -1015,6 +1045,7 @@ export class TemplateController {
       });
     } catch (error) {
       this.publish({
+        inspectionRefreshState: "failed",
         health: {
           ...latest,
           check,
@@ -1108,17 +1139,62 @@ export class TemplateController {
     });
     void this.refreshDocumentInspection();
   }
+  /** Only confirmed native owner/custody releases trigger a retry. */
+  resumeDocumentInspection(project: string) {
+    if (project !== this.state.projectId || !this.inspectionPending.size)
+      return;
+    ++this.inspectionEpoch;
+    this.inspectionReleaseRetryProject = project;
+    if (this.state.health?.surface === "health") {
+      this.healthInspectionRequested = true;
+      this.healthInspectionProject = project;
+      this.publish({
+        health: {
+          ...this.state.health,
+          phase: "idle",
+          check: undefined,
+          inspection: null,
+          message: null,
+        },
+      });
+      return;
+    }
+    void this.refreshDocumentInspection();
+  }
+  private inspectionObservation(reRequested = false) {
+    const released =
+      this.inspectionReleaseRetryProject === this.state.projectId;
+    this.inspectionReleaseRetryProject = null;
+    return {
+      epoch: this.inspectionEpoch,
+      generation: this.projectRequestGeneration,
+      pendingCount: this.inspectionPending.size,
+      reRequested: reRequested || released,
+    };
+  }
   private async refreshDocumentInspection() {
-    if (this.inspectionRefreshing) return;
+    if (this.inspectionRefreshing) {
+      this.inspectionRefreshRequested = true;
+      return;
+    }
     this.inspectionRefreshing = true;
     try {
       while (this.inspectionPending.size && this.state.projectId) {
+        const observation = this.inspectionObservation(
+          this.inspectionRefreshRequested,
+        );
+        this.inspectionRefreshRequested = false;
+        this.publish({ inspectionRefreshState: "checking" });
         const project = this.state.projectId;
         const generation = this.projectRequestGeneration;
         const epoch = this.inspectionEpoch;
         try {
           const { result } = await this.operations.run(
-            { kind: "asset_inspect", project },
+            {
+              kind: "asset_inspect",
+              project,
+              observation,
+            },
             text("health.checking"),
           );
           const data = requireKind(result, "asset_maintenance");
@@ -1133,6 +1209,11 @@ export class TemplateController {
           const dialog = this.state.health;
           this.publish({
             assetInspection: data.inspection,
+            inspectionRefreshState: data.inspection.complete
+              ? "idle"
+              : data.inspection.ownerProtected
+                ? "waiting"
+                : "failed",
             inspectionPendingDocuments: [...this.inspectionPending],
             ...(dialog && dialog.surface !== "health"
               ? {
@@ -1144,7 +1225,8 @@ export class TemplateController {
                 }
               : {}),
           });
-          // An incomplete scan needs an explicit retry, not a busy loop.
+          // A release observed during publication must not lose its retry.
+          if (this.inspectionRefreshRequested) continue;
           break;
         } catch {
           if (
@@ -1153,11 +1235,14 @@ export class TemplateController {
           )
             return;
           if (this.inspectionEpoch !== epoch) continue;
+          this.publish({ inspectionRefreshState: "failed" });
           break;
         }
       }
     } finally {
       this.inspectionRefreshing = false;
+      if (this.inspectionRefreshRequested && this.inspectionPending.size)
+        void this.refreshDocumentInspection();
     }
   }
   async exportDiagnostics() {
@@ -1249,7 +1334,11 @@ export class TemplateController {
       });
       try {
         const { result } = await this.operations.run(
-          { kind: "asset_inspect", project },
+          {
+            kind: "asset_inspect",
+            project,
+            observation: this.inspectionObservation(),
+          },
           text("health.checking"),
         );
         const data = requireKind(result, "asset_maintenance");
@@ -3703,11 +3792,12 @@ export class TemplateController {
         throw error;
       });
     const error = resultError(result);
-    if (result.kind === "control" && !error)
+    if (result.kind === "control" && !error) {
       this.publish({
         sessions: this.state.sessions.filter((s) => s.id !== session),
       });
-    else
+      this.resumeDocumentInspection(project);
+    } else
       this.publish({
         sessions: this.state.sessions.map((s) =>
           s.id === session ? { ...s, problem: error ?? "session_rejected" } : s,

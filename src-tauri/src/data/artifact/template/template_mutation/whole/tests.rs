@@ -9,6 +9,196 @@ const F: &str = "22222222-2222-4222-8222-222222222222";
 const G: &str = "33333333-3333-4333-8333-333333333333";
 const A: &str = "44444444-4444-4444-8444-444444444444";
 const B: &str = "55555555-5555-4555-8555-555555555555";
+
+fn card_title_source(title: Option<&str>) -> TemplateArtifact {
+    let mut wire: serde_json::Value =
+        serde_json::from_slice(&encode_template(&fixture()).unwrap()).unwrap();
+    let child = json!({"label":"explicit title","kind":"richText","required":false,"lifecycle":"active","introducedRevision":1,"defaultValue":{"kind":"unset"},"initialDefaultValue":{"kind":"unset"},"presentation":{},"configuration":{"kind":"richText"}});
+    wire["fields"] = json!({(F):{"label":"cards","kind":"group","required":false,"lifecycle":"active","introducedRevision":1,"defaultValue":{"kind":"unset"},"initialDefaultValue":{"kind":"unset"},"presentation":{},"configuration":{"kind":"group","memberOrder":[G],"members":{(G):child}}}});
+    wire["fieldOrder"] = json!([F]);
+    wire["schemaVersion"] = json!(5);
+    if let Some(title) = title {
+        wire["fields"][F]["presentation"]["cardTitleField"] = json!(title);
+    }
+    decode_template(&serde_json::to_vec(&wire).unwrap()).unwrap()
+}
+
+fn card_title_draft(source: &TemplateArtifact, title: Option<FieldId>) -> TemplateDraftInput {
+    let child = FieldDraftInput {
+        card_title_field: crate::data::edit_recovery::model::Intent::Keep,
+        members: vec![],
+        id: G.parse().unwrap(),
+        label: "renamed title".into(),
+        kind: FieldKind::RichText,
+        configuration: NewFieldConfiguration::rich_text(),
+        required: false,
+        writing_guide: None,
+        presentation_token: None,
+        default: None,
+        archived: false,
+        archived_options: BTreeSet::new(),
+    };
+    TemplateDraftInput {
+        sections: vec![],
+        name: source.name.clone(),
+        glossary_excluded: false,
+        presentation_token: None,
+        fields: vec![FieldDraftInput {
+            card_title_field: title
+                .map(crate::data::edit_recovery::model::Intent::Set)
+                .unwrap_or(crate::data::edit_recovery::model::Intent::Keep),
+            members: vec![child],
+            id: F.parse().unwrap(),
+            label: "cards".into(),
+            kind: FieldKind::Group,
+            configuration: NewFieldConfiguration::group(),
+            required: false,
+            writing_guide: None,
+            presentation_token: None,
+            default: None,
+            archived: false,
+            archived_options: BTreeSet::new(),
+        }],
+    }
+}
+
+#[test]
+fn card_title_setting_saves_reopens_renames_and_template_clone_remaps_only_its_id() {
+    let source = card_title_source(None);
+    let draft = card_title_draft(&source, Some(G.parse().unwrap()));
+    let saved = prepare_template_draft(&source, source.revision, LATER, draft)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    let opened = decode_template(&encode_template(&saved).unwrap()).unwrap();
+    assert_eq!(
+        opened.fields[&F.parse().unwrap()]
+            .presentation
+            .card_title_field(),
+        Some(G.parse().unwrap())
+    );
+    let copied = crate::data::artifact::duplicate_template(&opened, LATER.into()).unwrap();
+    let group = copied.fields.values().next().unwrap();
+    let (_, children) = group.configuration.members().unwrap();
+    let title = group.presentation.card_title_field().unwrap();
+    assert!(children.contains_key(&title));
+    assert_ne!(title.to_string(), G);
+    assert_eq!(children[&title].label, "renamed title");
+    assert_eq!(
+        source.fields[&F.parse().unwrap()]
+            .presentation
+            .card_title_field(),
+        None
+    );
+}
+
+#[test]
+fn card_title_invalid_cross_group_id_rejects_and_archived_target_retains_definition() {
+    let source = card_title_source(Some(G));
+    let mut draft = card_title_draft(&source, Some(A.parse().unwrap()));
+    assert!(prepare_template_draft(&source, source.revision, LATER, draft.clone()).is_err());
+    draft.fields[0].card_title_field = crate::data::edit_recovery::model::Intent::Keep;
+    draft.fields[0].members[0].archived = true;
+    let archived = prepare_template_draft(&source, source.revision, LATER, draft)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    let group = &archived.fields[&F.parse().unwrap()];
+    assert_eq!(
+        group.presentation.card_title_field(),
+        Some(G.parse().unwrap())
+    );
+    assert_eq!(
+        group.configuration.members().unwrap().1[&G.parse().unwrap()].lifecycle,
+        FieldLifecycle::Archived
+    );
+    assert!(decode_template(&encode_template(&archived).unwrap()).is_ok());
+}
+
+#[test]
+fn card_title_legacy_unknown_and_old_clone_inactive_ids_survive_unrelated_saves() {
+    for metadata in [json!({"legacy":"opaque"}), json!("vendor-title"), json!(A)] {
+        let original = card_title_source(None);
+        let mut wire: serde_json::Value =
+            serde_json::from_slice(&encode_template(&original).unwrap()).unwrap();
+        wire["fields"][F]["presentation"]["cardTitleField"] = metadata.clone();
+        let source = decode_template(&serde_json::to_vec(&wire).unwrap()).unwrap();
+        let draft = card_title_draft(&source, None);
+        let saved = prepare_template_draft(&source, source.revision, LATER, draft)
+            .unwrap()
+            .into_changed()
+            .unwrap();
+        let reopened: serde_json::Value =
+            serde_json::from_slice(&encode_template(&saved).unwrap()).unwrap();
+        assert_eq!(
+            reopened["fields"][F]["presentation"]["cardTitleField"],
+            metadata
+        );
+        assert_eq!(
+            reopened["fields"][F]["configuration"]["members"][G]["label"],
+            "renamed title"
+        );
+        if !metadata
+            .as_str()
+            .is_some_and(|v| v.parse::<FieldId>().is_ok())
+        {
+            assert!(prepare_template_draft(
+                &source,
+                source.revision,
+                LATER,
+                card_title_draft(&source, Some(G.parse().unwrap()))
+            )
+            .is_err());
+        }
+    }
+}
+
+#[test]
+fn card_title_draft_recovery_roundtrip_keeps_explicit_selection_and_rejects_invalid_set() {
+    use crate::data::edit_recovery::model::{DraftConfiguration, Intent};
+    let raw = json!({"kind":"group","cardTitleField":{"intent":"set","value":G},"members":[]});
+    let draft: DraftConfiguration = serde_json::from_value(raw.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&draft).unwrap(), raw);
+    let old: DraftConfiguration =
+        serde_json::from_value(json!({"kind":"group","members":[]})).unwrap();
+    assert!(matches!(
+        old,
+        DraftConfiguration::Group {
+            card_title_field: Intent::Keep,
+            ..
+        }
+    ));
+    let source = card_title_source(None);
+    let mut input = card_title_draft(&source, Some(G.parse().unwrap()));
+    input.fields[0].members[0].archived = true;
+    assert!(prepare_template_draft(&source, source.revision, LATER, input).is_err());
+}
+
+#[test]
+fn card_title_opaque_raw_number_is_preserved_and_explicit_unset_does_not_erase_it() {
+    let mut wire: serde_json::Value =
+        serde_json::from_slice(&encode_template(&card_title_source(None)).unwrap()).unwrap();
+    wire["fields"][F]["presentation"]["cardTitleField"] = json!({"legacy":"EXP"});
+    let raw = serde_json::to_string(&wire)
+        .unwrap()
+        .replace("\"EXP\"", "1E100");
+    let source = decode_template(raw.as_bytes()).unwrap();
+    let saved = prepare_template_draft(
+        &source,
+        source.revision,
+        LATER,
+        card_title_draft(&source, None),
+    )
+    .unwrap()
+    .into_changed()
+    .unwrap();
+    assert!(String::from_utf8(encode_template(&saved).unwrap())
+        .unwrap()
+        .contains("1E100"));
+    let mut input = card_title_draft(&source, None);
+    input.fields[0].card_title_field = crate::data::edit_recovery::model::Intent::Unset;
+    assert!(prepare_template_draft(&source, source.revision, LATER, input).is_err());
+}
 fn fixture() -> TemplateArtifact {
     let wire = json!({"schemaVersion":1,"artifactType":"template","templateId":T,"revision":12,"name":"region","lifecycle":"active","createdAtUtc":TIME,"updatedAtUtc":TIME,"presentation":{"future":"root-token"},"fieldOrder":[F,G],"fields":{
         (F):{"label":"choice","kind":"singleChoice","required":false,"lifecycle":"active","introducedRevision":1,"presentation":{},"configuration":{"kind":"singleChoice","optionOrder":[A,B],"options":{(A):{"label":"A","lifecycle":"active","future":"option-token"},(B):{"label":"B","lifecycle":"active"}}},"defaultValue":{"kind":"singleChoice","optionId":A,"future":"envelope-token"},"initialDefaultValue":{"kind":"singleChoice","optionId":A}},
@@ -43,6 +233,7 @@ fn unchanged(source: &TemplateArtifact) -> TemplateDraftInput {
                     _ => panic!("fixture kind"),
                 };
                 FieldDraftInput {
+                    card_title_field: crate::data::edit_recovery::model::Intent::Keep,
                     members: vec![],
                     writing_guide: None,
                     id: *id,
@@ -115,6 +306,7 @@ fn whole_new_field_first_default_is_final_value_and_net_noop_stays_noop() {
     let mut draft = input;
     let id = FieldId::new();
     draft.fields.push(FieldDraftInput {
+        card_title_field: crate::data::edit_recovery::model::Intent::Keep,
         members: vec![],
         writing_guide: None,
         id,
@@ -199,6 +391,7 @@ fn whole_create_is_one_unpublished_candidate_revision_one() {
         glossary_excluded: false,
         presentation_token: None,
         fields: vec![FieldDraftInput {
+            card_title_field: crate::data::edit_recovery::model::Intent::Keep,
             members: vec![],
             writing_guide: None,
             id,

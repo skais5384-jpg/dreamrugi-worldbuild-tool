@@ -76,6 +76,7 @@ export interface DocumentIssueRow {
   }[];
 }
 export interface AssetInspection {
+  ownerProtected?: boolean;
   token: string;
   observedAtUtc: string;
   complete: boolean;
@@ -271,7 +272,16 @@ export type Work =
       locator: string;
       safety_storage: string;
     }
-  | { kind: "asset_inspect"; project: Id }
+  | {
+      kind: "asset_inspect";
+      project: Id;
+      observation?: {
+        epoch: number;
+        generation: number;
+        pendingCount: number;
+        reRequested: boolean;
+      };
+    }
   | {
       kind: "asset_trash_move";
       project: Id;
@@ -384,6 +394,7 @@ export interface TemplateSummary {
   glossaryExcluded?: boolean;
 }
 export interface Field {
+  cardTitleField?: string | null;
   members?: Field[];
   memberOrder?: string[];
   minimum?: string | null;

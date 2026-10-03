@@ -730,7 +730,11 @@ export class DocumentController {
       this.operation = null;
     if (result.kind === "rejected")
       throw new BridgeFailure("boundary", undefined, result.error);
-    return result.kind === "document_workspace" ? result.value : result;
+    const response =
+      result.kind === "document_workspace" ? result.value : result;
+    if (response.kind === "released" || response.kind === "asset")
+      this.shell.resumeDocumentInspection(project);
+    return response;
   }
   private async action(
     run: () => Promise<void>,
