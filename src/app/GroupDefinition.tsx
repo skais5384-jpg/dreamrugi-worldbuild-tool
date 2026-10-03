@@ -16,6 +16,7 @@ export function GroupDefinition({
   original,
   owner,
   generation,
+  savedGeneration = null,
   composing,
   disabled,
   change,
@@ -28,6 +29,7 @@ export function GroupDefinition({
   original?: Field;
   owner: string;
   generation: string;
+  savedGeneration?: string | null;
   composing: boolean;
   disabled: boolean;
   change: (fields: DraftField[]) => void;
@@ -35,7 +37,20 @@ export function GroupDefinition({
   templates?: TemplateSummary[];
 }) {
   const [selected, setSelected] = useState<string | null>(null);
-  const [notice, setNotice] = useState("");
+  const [announcement, setAnnouncement] = useState({
+    message: "",
+    generation: "0",
+  });
+  const notice =
+    announcement.message === text("archive.restoredDraft") &&
+    announcement.generation !== generation
+      ? ""
+      : announcement.message;
+  const setNotice = (message: string) =>
+    setAnnouncement({
+      message,
+      generation: (BigInt(generation) + 1n).toString(),
+    });
   const active = members.filter((f) => !f.archived);
   const current = members.find((f) => f.id === selected);
   const old = original?.members?.find(
@@ -385,6 +400,7 @@ export function GroupDefinition({
                     : members.filter((f) => f.id !== current.id),
                 );
                 setSelected(null);
+                setNotice("");
               }}
             >
               {text(old ? "whole.archive" : "whole.removeNew")}
@@ -393,12 +409,16 @@ export function GroupDefinition({
         )}
       </div>
       {!!members.filter((f) => f.archived).length && (
-        <details>
-          <summary>{text("whole.archived")}</summary>
+        <details className="archive-definitions">
+          <summary>
+            {text("archive.members")} (
+            {members.filter((f) => f.archived).length})
+          </summary>
+          <HelpText>{text("archive.restoreHelp")}</HelpText>
           {members
             .filter((f) => f.archived)
             .map((f) => (
-              <div key={f.id}>
+              <div key={f.id} className="archive-definition-row">
                 <p>{f.label}</p>
                 <Button
                   type="button"
@@ -428,7 +448,13 @@ export function GroupDefinition({
         </details>
       )}
       <HelpText>{text("whole.fieldReorderHelp")}</HelpText>
-      <span role="status">{notice}</span>
+      <span role="status">
+        {notice === text("archive.restoredDraft") &&
+        savedGeneration !== null &&
+        BigInt(savedGeneration) >= BigInt(announcement.generation)
+          ? text("archive.restoredSaved")
+          : notice}
+      </span>
     </section>
   );
 }

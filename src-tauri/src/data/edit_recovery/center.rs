@@ -201,6 +201,26 @@ impl Store {
                         name: model::Intent::Set(name),
                         ..
                     } => Some(name.clone()),
+                    model::Draft::Document {
+                        document: Some(id),
+                        name: model::Intent::Keep,
+                        ..
+                    } => original_document_name(deposit.envelope(), id),
+                    model::Draft::AdmittedDocument {
+                        document, edits, ..
+                    }
+                    | model::Draft::AdmittedComposite {
+                        document, edits, ..
+                    } => edits
+                        .iter()
+                        .rev()
+                        .find_map(|edit| match edit {
+                            crate::data::edit_input::DocumentEdit::Rename { name } => {
+                                Some(name.clone())
+                            }
+                            _ => None,
+                        })
+                        .or_else(|| original_document_name(deposit.envelope(), document)),
                     _ => None,
                 };
                 row.artifact = deposit
@@ -242,6 +262,21 @@ impl Store {
         self.checkpoint(Stage::Discard)?;
         native::cleanup(&file).map_err(|e| RecoveryError::io(Stage::Discard, e))
     }
+}
+
+// The admitted snapshot supplies a label even when the draft did not rename the
+// document. Do not read the user's current project or change recovery admission.
+fn original_document_name(envelope: &model::Envelope, id: &str) -> Option<String> {
+    envelope
+        .originals
+        .iter()
+        .find(|original| {
+            original.kind == model::OriginalKind::Document && original.artifact_id == id
+        })
+        .and_then(|original| {
+            crate::data::artifact::decode_document(original.snapshot.as_bytes()).ok()
+        })
+        .map(|document| document.name().to_owned())
 }
 fn bounded_bytes(file: &File) -> Result<Vec<u8>, RecoveryError> {
     let mut bytes = Vec::new();

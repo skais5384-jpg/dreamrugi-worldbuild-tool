@@ -116,13 +116,27 @@ export function WholeTemplate({
   locked: boolean;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
-  const [notice, setNotice] = useState("");
+  const [announcement, setAnnouncement] = useState({
+    message: "",
+    generation: "0",
+  });
+  const notice =
+    announcement.message === text("archive.restoredDraft") &&
+    announcement.generation !== draft.generation
+      ? ""
+      : announcement.message;
+  const setNotice = (message: string) =>
+    setAnnouncement({
+      message,
+      generation: controller.snapshot().draft?.generation ?? "0",
+    });
   const state = controller.snapshot();
   const templates = controller.shell
     .snapshot()
     .rows.filter((row) => row.lifecycle === "Active");
   const errors = useRef<HTMLElement>(null);
   const shortcutRoot = useRef<HTMLElement>(null);
+  const archiveRoot = useRef<HTMLDetailsElement>(null);
   const revealed = useRef<string | null>(null);
   const problems =
     draft.status.generation === draft.generation ? draft.status.problems : [];
@@ -405,6 +419,20 @@ export function WholeTemplate({
         <section aria-labelledby="whole-fields-title">
           <div className="panel-heading">
             <h3 id="whole-fields-title">{text("whole.fields")}</h3>
+            {!!archived.length && (
+              <Button
+                type="button"
+                onClick={() => {
+                  const section = archiveRoot.current;
+                  if (!section) return;
+                  section.open = true;
+                  section.scrollIntoView({ block: "nearest" });
+                  section.querySelector("summary")?.focus();
+                }}
+              >
+                {text("archive.fields")} ({archived.length})
+              </Button>
+            )}
           </div>
           <div className="whole-field-layout">
             <ul className="whole-field-list">
@@ -758,6 +786,7 @@ export function WholeTemplate({
                       original={original}
                       owner={draft.status.owner}
                       generation={draft.generation}
+                      savedGeneration={draft.status.savedGeneration}
                       composing={draft.body.composing}
                       disabled={blocked}
                       canonical={canonical}
@@ -1059,7 +1088,8 @@ export function WholeTemplate({
                                 <Button
                                   type="button"
                                   danger
-                                  onClick={() =>
+                                  onClick={() => {
+                                    setNotice("");
                                     editField(current.id, (f) =>
                                       "options" in f.configuration
                                         ? {
@@ -1077,8 +1107,8 @@ export function WholeTemplate({
                                             },
                                           }
                                         : f,
-                                    )
-                                  }
+                                    );
+                                  }}
                                 >
                                   {text(
                                     newOption(option.id)
@@ -1189,6 +1219,7 @@ export function WholeTemplate({
                             fields: archiveDefinition(b.fields, current.id),
                           }));
                         setSelected(null);
+                        setNotice("");
                       }}
                     >
                       {text(
@@ -1206,90 +1237,100 @@ export function WholeTemplate({
           </div>
         </section>
         {!!archived.length && (
-          <details open>
+          <details open ref={archiveRoot} className="archive-definitions">
             <summary>
               {text("whole.archived")} ({archived.length})
             </summary>
             <HelpText>{text("archive.restoreHelp")}</HelpText>
             {archived.map((f) => (
-              <div key={f.id}>
-                <h4>
-                  {f.label || text("field.emptyLabel")} ·{" "}
-                  {text("whole.archived")}
-                </h4>
-                <p>{text(`whole.kind.${f.configuration.kind}`)}</p>
-                <ArchivedDefinitionActions
-                  canonical={canonical}
-                  field={f}
-                  original={draft.base.fields.find(
-                    (s) => s.id === canonical(f.id),
-                  )}
-                  disabled={actionBlocked || draft.body.composing}
-                  change={(value) => {
-                    changed((b) => ({
-                      ...b,
-                      fields: restoreDefinition(
-                        b.fields,
-                        f.id,
-                        draft.base.fields.find((s) => s.id === canonical(f.id))
-                          ?.lifecycle === "Archived",
-                      ).map((item) =>
-                        item.id === f.id
-                          ? {
-                              ...value,
-                              archiveIndex: item.archiveIndex,
-                              archiveOrder: item.archiveOrder,
-                            }
-                          : item,
-                      ),
-                    }));
-                    setSelected(f.id);
-                    setNotice(text("archive.restoredDraft"));
-                  }}
-                />
-                <Button
-                  type="button"
-                  disabled={actionBlocked || draft.body.composing}
-                  onClick={() => {
-                    changed((b) => ({
-                      ...b,
-                      fields: restoreDefinition(
-                        b.fields,
-                        f.id,
-                        draft.base.fields.find((s) => s.id === canonical(f.id))
-                          ?.lifecycle === "Archived",
-                      ),
-                    }));
-                    setSelected(f.id);
-                    setNotice(text("archive.restoredDraft"));
-                  }}
-                >
-                  {text(
-                    draft.base.fields.find((s) => s.id === canonical(f.id))
-                      ?.lifecycle === "Archived"
-                      ? "archive.restore"
-                      : "archive.undo",
-                  )}
-                </Button>
-                {draft.base.fields.find((s) => s.id === canonical(f.id)) && (
-                  <ValueRead
-                    value={
-                      draft.base.fields.find((s) => s.id === canonical(f.id))!
-                        .initialDefault
-                    }
-                    options={
-                      draft.base.fields.find((s) => s.id === canonical(f.id))!
-                        .options
-                    }
+              <section key={f.id} className="archive-definition-row">
+                <div className="archive-definition-heading">
+                  <h4>{f.label || text("field.emptyLabel")}</h4>
+                  <p>{text(`whole.kind.${f.configuration.kind}`)}</p>
+                </div>
+                <div className="actions">
+                  <ArchivedDefinitionActions
+                    canonical={canonical}
+                    field={f}
+                    original={draft.base.fields.find(
+                      (s) => s.id === canonical(f.id),
+                    )}
+                    disabled={actionBlocked || draft.body.composing}
+                    change={(value) => {
+                      changed((b) => ({
+                        ...b,
+                        fields: restoreDefinition(
+                          b.fields,
+                          f.id,
+                          draft.base.fields.find(
+                            (s) => s.id === canonical(f.id),
+                          )?.lifecycle === "Archived",
+                        ).map((item) =>
+                          item.id === f.id
+                            ? {
+                                ...value,
+                                archiveIndex: item.archiveIndex,
+                                archiveOrder: item.archiveOrder,
+                              }
+                            : item,
+                        ),
+                      }));
+                      setSelected(f.id);
+                      setNotice(text("archive.restoredDraft"));
+                    }}
                   />
+                  <Button
+                    type="button"
+                    disabled={actionBlocked || draft.body.composing}
+                    onClick={() => {
+                      changed((b) => ({
+                        ...b,
+                        fields: restoreDefinition(
+                          b.fields,
+                          f.id,
+                          draft.base.fields.find(
+                            (s) => s.id === canonical(f.id),
+                          )?.lifecycle === "Archived",
+                        ),
+                      }));
+                      setSelected(f.id);
+                      setNotice(text("archive.restoredDraft"));
+                    }}
+                  >
+                    {text(
+                      draft.base.fields.find((s) => s.id === canonical(f.id))
+                        ?.lifecycle === "Archived"
+                        ? "archive.restore"
+                        : "archive.undo",
+                    )}
+                  </Button>
+                </div>
+                {draft.base.fields.find((s) => s.id === canonical(f.id)) && (
+                  <details className="archive-definition-history">
+                    <summary>{text("archive.initialValue")}</summary>
+                    <ValueRead
+                      value={
+                        draft.base.fields.find((s) => s.id === canonical(f.id))!
+                          .initialDefault
+                      }
+                      options={
+                        draft.base.fields.find((s) => s.id === canonical(f.id))!
+                          .options
+                      }
+                    />
+                  </details>
                 )}
-              </div>
+              </section>
             ))}
           </details>
         )}
       </Fieldset>
       <p role="status" aria-live="polite">
-        {notice}
+        {notice === text("archive.restoredDraft") &&
+        draft.status.savedGeneration !== null &&
+        BigInt(draft.status.savedGeneration) >= BigInt(announcement.generation)
+          ? text("archive.restoredSaved")
+          : notice}
       </p>
     </section>
   );

@@ -13,6 +13,7 @@ import { TemplateController } from "./controller";
 import { GuardedClient } from "../bridge/client";
 import { text } from "../strings";
 import { transportFixture } from "./WorkspaceApp.testHarness";
+import type { Creation } from "../bridge/documents";
 
 beforeEach(() => {
   // jsdom에는 스크롤 배치가 없다. 이동 요청만 검사하며 실제 가시성은 native에서 확인한다.
@@ -23,6 +24,79 @@ beforeEach(() => {
 });
 
 describe("whole template workspace", () => {
+  it("shows one creation failure notice while retaining the field error and draft", async () => {
+    const fixture = transportFixture();
+    fixture.base.fields[0].required = true;
+    const originalWork = fixture.transport.workspaceResult;
+    let draft: Creation = {
+      kind: "draft",
+      owner: "creation-owner",
+      generation: "1",
+      body: {
+        name: "recovered draft",
+        parent: null,
+        fields: [],
+        composing: false,
+      },
+      template: fixture.base,
+      deposited: false,
+      outcome: null,
+      problem: null,
+      field: null,
+    };
+    fixture.transport.workspaceResult = (input) => {
+      if (input.kind === "document_workspace") {
+        const request = input.request;
+        if (request.action === "begin")
+          return { kind: "document_workspace", value: draft };
+        if (request.action === "draft") {
+          draft = {
+            ...draft,
+            body: request.body,
+            generation: request.generation,
+            problem: "Required",
+            field: "number-field",
+          };
+          return { kind: "document_workspace", value: draft };
+        }
+      }
+      return originalWork?.(input);
+    };
+    const shell = new TemplateController(
+      new GuardedClient(fixture.transport),
+      vi.fn().mockResolvedValue("C:\\fixture"),
+    );
+    const controller = new WorkspaceController(shell);
+    render(<WorkspaceApp controller={controller} />);
+    const open = await screen.findByRole("button", {
+      name: text("app.message07"),
+    });
+    await waitFor(() => expect(open).toBeEnabled());
+    fireEvent.click(open);
+    const start = await screen.findByRole("button", {
+      name: text("documents.new"),
+    });
+    await waitFor(() => expect(start).toBeEnabled());
+    fireEvent.click(start);
+    await act(() => controller.documents.begin(fixture.base.id));
+    const create = await screen.findByRole("button", {
+      name: text("documents.create"),
+    });
+    await waitFor(() => expect(create).toBeEnabled());
+    fireEvent.click(create);
+    await waitFor(() =>
+      expect(controller.documents.snapshot().error).toBe(
+        text("documents.invalid"),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getAllByText(text("documents.invalid"))).toHaveLength(1),
+    );
+    expect(screen.getByText(text("documents.requiredValue"))).toBeVisible();
+    expect(controller.documents.snapshot().draft?.body.name).toBe(
+      "recovered draft",
+    );
+  });
   it("keeps local work available without YouTube consent and exposes privacy settings in Help", async () => {
     const fixture = transportFixture();
     const shell = new TemplateController(

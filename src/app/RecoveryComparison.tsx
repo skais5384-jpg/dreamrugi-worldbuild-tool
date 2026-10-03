@@ -3,6 +3,7 @@ import type { Value } from "../bridge/types";
 import { ValueRead } from "./FieldValue";
 import { Checkbox } from "../ui/Controls";
 import { text } from "../strings";
+import { InlineNotice } from "../ui/InlineNotice";
 
 function readable(value: unknown): unknown {
   if (value && typeof value === "object" && "intent" in value) {
@@ -19,9 +20,11 @@ function readable(value: unknown): unknown {
 function Preview({
   value,
   names,
+  property,
 }: {
   value: unknown;
   names: Map<string, string>;
+  property?: string;
 }) {
   value = readable(value);
   if (value === null || value === undefined)
@@ -30,7 +33,8 @@ function Preview({
     return (
       <p className="recovery-compare-text">
         {typeof value === "string"
-          ? (names.get(value) ?? value)
+          ? (names.get(value) ??
+            (property === "kind" ? kindLabel(value) : value))
           : String(value)}
       </p>
     );
@@ -86,13 +90,33 @@ function Preview({
             <div key={key}>
               <dt>{names.get(key) ?? propertyLabel(key)}</dt>
               <dd>
-                <Preview value={item} names={names} />
+                <Preview value={item} names={names} property={key} />
               </dd>
             </div>
           ))}
       </dl>
     );
   return null;
+}
+
+function kindLabel(kind: string): string {
+  const kinds: Record<string, string> = {
+    single_line_text: "한 줄 텍스트",
+    rich_text: "서식 텍스트",
+    number: "숫자",
+    date: "날짜",
+    time: "시각",
+    duration: "시간 길이",
+    image: "이미지",
+    file: "파일 첨부",
+    url: "URL 미디어",
+    single_choice: "단일 선택",
+    multi_choice: "다중 선택",
+    relation: "관계",
+    document_link: "문서 링크",
+    group: "반복 그룹",
+  };
+  return kinds[kind] ?? kind;
 }
 
 function propertyLabel(key: string): string {
@@ -131,9 +155,10 @@ function changeLabel(
   );
   const labels = identities.map((id) => names.get(id)).filter(Boolean);
   const property = change.path[change.path.length - 1] ?? "";
-  return [...labels, names.get(property) ?? propertyLabel(property)].join(
-    " · ",
-  );
+  const suffix =
+    names.get(property) ??
+    (identities.includes(property) ? "필드" : propertyLabel(property));
+  return [...new Set([...labels, suffix])].join(" · ");
 }
 
 export function RecoveryComparison({
@@ -164,6 +189,15 @@ export function RecoveryComparison({
   return (
     <section aria-label={text("recoveryCompare.title")}>
       <p>{text("recoveryCompare.help")}</p>
+      <p className="recovery-selection-summary" role="status">
+        {text("recoveryCompare.selectedCount")}{" "}
+        {content.comparison?.filter(
+          (item) => item.status !== "blocked" && selected.includes(item.id),
+        ).length ?? 0}{" "}
+        /{" "}
+        {content.comparison?.filter((item) => item.status !== "blocked")
+          .length ?? 0}
+      </p>
       {content.comparison?.map((item) => {
         const chosen = selected.includes(item.id);
         return (
@@ -185,7 +219,9 @@ export function RecoveryComparison({
                 )
               }
             />
-            {item.reason && <p role="alert">{item.reason}</p>}
+            {item.reason && (
+              <InlineNotice kind="error">{item.reason}</InlineNotice>
+            )}
             <div className="recovery-comparison">
               <section>
                 <h4>{text("whole.current")}</h4>
@@ -196,11 +232,17 @@ export function RecoveryComparison({
                 <Preview value={item.preserved} names={names} />
               </section>
             </div>
-            <p>
+            <details className="recovery-original">
+              <summary>{text("recoveryCompare.original")}</summary>
+              <Preview value={item.original} names={names} />
+            </details>
+            <p className="recovery-choice-result">
               {text(
-                chosen
-                  ? "recoveryCompare.applyPreserved"
-                  : "recoveryCompare.keepCurrent",
+                item.status === "blocked"
+                  ? "recoveryCompare.blocked"
+                  : chosen
+                    ? "recoveryCompare.applyPreserved"
+                    : "recoveryCompare.keepCurrent",
               )}
             </p>
           </section>

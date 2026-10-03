@@ -706,6 +706,11 @@ fn read_response(
         });
     }
     for field in reconciled.orphan_fields() {
+        // Compatible restored definitions already expose the same stored value above.
+        // Keep the snapshot on disk until a normal save; do not show a false orphan row.
+        if field.disposition() == artifact::OrphanFieldDisposition::ReattachableOrphan {
+            continue;
+        }
         fields.push(ReadField {
             id: field.field_id().to_string(),
             label: field

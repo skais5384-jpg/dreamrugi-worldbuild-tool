@@ -1209,11 +1209,15 @@ export default function WorkspaceApp({
               </FloatingNoticeContent>
             </FloatingNotice>
           )}
-          {documentState.error && (
-            <FloatingNotice intent="error">
-              {documentState.error}
-            </FloatingNotice>
-          )}
+          {documentState.error &&
+            !(
+              documentState.draft?.problem &&
+              documentState.error === text("documents.invalid")
+            ) && (
+              <FloatingNotice intent="error">
+                {documentState.error}
+              </FloatingNotice>
+            )}
           {app.settingsNotice && (
             <FloatingNotice
               eventId={app.settingsNotice}

@@ -260,7 +260,7 @@ export function RecoveryCenter({
                         <summary>{text("recovery.raw")}</summary>
                         <DraftRead content={content} />
                       </details>
-                      <details open>
+                      <details>
                         <summary>{text("recoveryCompare.copy")}</summary>
                         <HelpText>{text("recoveryCompare.copyHelp")}</HelpText>
                         <pre className="recovery-raw">
@@ -382,16 +382,21 @@ export function RecoveryCenter({
                         <section>
                           <h3>{text("whole.selectIntents")}</h3>
                           <HelpText>{text("whole.reapplyHelp")}</HelpText>
-                          <div className="recovery-comparison">
-                            <TemplateRead
-                              title={text("whole.original")}
-                              template={content.original}
-                            />
-                            <TemplateRead
-                              title={text("whole.current")}
-                              template={content.current}
-                            />
-                          </div>
+                          <details className="recovery-source-details">
+                            <summary>
+                              {text("recoveryCompare.sourceDetails")}
+                            </summary>
+                            <div className="recovery-comparison">
+                              <TemplateRead
+                                title={text("whole.original")}
+                                template={content.original}
+                              />
+                              <TemplateRead
+                                title={text("whole.current")}
+                                template={content.current}
+                              />
+                            </div>
+                          </details>
                           {content.comparison && (
                             <RecoveryComparison
                               content={content}
@@ -441,14 +446,6 @@ export function RecoveryCenter({
                                 );
                               })}
                           </div>
-                          <Button
-                            type="button"
-                            appearance="primary"
-                            disabled={state.busy || !ready}
-                            onClick={() => void controller.restore(choices)}
-                          >
-                            {text("whole.reapply")}
-                          </Button>
                         </section>
                       )}
                     </section>
@@ -458,6 +455,16 @@ export function RecoveryCenter({
             </section>
           </DialogContent>
           <DialogActions>
+            {selected?.phase === "conflict" && content && (
+              <Button
+                type="button"
+                appearance="primary"
+                disabled={state.busy || !ready || documents.busy}
+                onClick={() => void controller.restore(choices)}
+              >
+                {text("whole.reapply")}
+              </Button>
+            )}
             <Button
               type="button"
               disabled={state.busy}

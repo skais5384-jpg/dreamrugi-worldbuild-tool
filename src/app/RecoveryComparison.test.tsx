@@ -39,6 +39,35 @@ const content = {
   ],
 } as RecoveryContent;
 describe("recovery comparison choices", () => {
+  it("names a new definition once and translates its type without changing entered text", () => {
+    render(
+      <RecoveryComparison
+        content={{
+          ...content,
+          comparison: [
+            {
+              id: "new-child",
+              path: ["fields", "$items", id],
+              status: "proposed",
+              original: null,
+              current: null,
+              preserved: {
+                id,
+                label: "새 필드",
+                configuration: { kind: "single_line_text" },
+                writingGuide: { intent: "set", value: "single_line_text" },
+              },
+            },
+          ],
+        }}
+        selected={[]}
+        change={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("checkbox")).toHaveAccessibleName("새 필드");
+    expect(screen.getByText("한 줄 텍스트")).toBeVisible();
+    expect(screen.getByText("single_line_text")).toBeVisible();
+  });
   it("keeps current by default, displays both texts, and forwards only an explicit supported choice", () => {
     const change = vi.fn();
     render(
@@ -47,6 +76,14 @@ describe("recovery comparison choices", () => {
     const boxes = screen.getAllByRole("checkbox");
     expect(boxes[0]).not.toBeChecked();
     expect(boxes[1]).toBeDisabled();
+    expect(screen.getByText("보관 내용을 적용할 항목 0 / 1")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "정의를 먼저 복원하세요",
+    );
+    expect(screen.getByRole("alert").querySelector("svg")).not.toBeNull();
+    expect(
+      document.querySelectorAll(".recovery-original")[0],
+    ).not.toHaveAttribute("open");
     expect(screen.getByText("current text")).toBeVisible();
     expect(screen.getByText("preserved text")).toBeVisible();
     expect(screen.getByText("https://example.com/media.mp4")).toBeVisible();

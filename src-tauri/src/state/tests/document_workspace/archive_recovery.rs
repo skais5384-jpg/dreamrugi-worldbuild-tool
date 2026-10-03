@@ -2,6 +2,29 @@ use super::*;
 
 const LEFT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const RIGHT: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+
+#[test]
+#[ignore = "explicit synthetic record staging directory required; never alters an app store"]
+fn archive_recovery_freeze_corrected_manual_records() {
+    use crate::data::edit_recovery::model::{Deposit, Envelope};
+    let root = std::path::PathBuf::from(
+        std::env::var("WORLDBUILD_RECOVERY_CORRECTION_DIR").expect("explicit staging directory"),
+    );
+    for name in ["M11", "M07"] {
+        let input = root.join(name).join("input.json");
+        let output = root.join(name).join("frozen.json");
+        assert!(!output.exists(), "preserve prior frozen fixture");
+        let raw: Value = serde_json::from_slice(&fs::read(input).unwrap()).unwrap();
+        let envelope: Envelope = serde_json::from_value(raw["envelope"].clone()).unwrap();
+        let deposit = Deposit::freeze(envelope).unwrap();
+        let mut frozen: Value = serde_json::from_slice(deposit.bytes()).unwrap();
+        frozen["recoverySchemaVersion"] = raw["recoverySchemaVersion"].clone();
+        let bytes = serde_json::to_vec(&frozen).unwrap();
+        let admitted = Deposit::decode(&bytes).unwrap();
+        assert_eq!(admitted.payload_digest(), deposit.payload_digest());
+        fs::write(output, bytes).unwrap();
+    }
+}
 fn seed(h: &Harness, p: &str) -> String {
     let (id, _) = h.template(p);
     let path = h.root.join(format!("templates/{id}.json"));
@@ -99,6 +122,14 @@ fn archive_recovery_existing_document_merges_independent_fields_and_rejects_stal
     )["value"]
         .clone();
     edit_release(&h, &p, &d);
+    let listing = h.work(json!({"kind":"recovery_page","cursor":null}));
+    let listed = listing["page"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["row"]["key"]["draftId"] == d["owner"])
+        .unwrap();
+    assert_eq!(listed["name"], "base document");
     let r = row(&h, &d["owner"]);
     let bytes = stored(&h, &r);
     let path = h.root.join(format!("documents/{id}.json"));
@@ -342,6 +373,14 @@ fn archive_recovery_composite_stages_new_definition_then_document_same_record() 
     )["error"]
         .is_null());
     assert!(h.control(json!({"kind":"session_control","project":p,"session":session,"control":"acknowledge_recovery"}))["error"].is_null());
+    let listing = h.work(json!({"kind":"recovery_page","cursor":null}));
+    let composite = listing["page"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["row"]["payloadKind"] == "admitted_composite")
+        .unwrap();
+    assert_eq!(composite["name"], "composite stage");
     provider
         .lose
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -478,6 +517,120 @@ fn archive_recovery_partial_missing_definition_keeps_original_and_restores_suppo
         raw["fieldValues"][RIGHT]["value"],
         "supported recovered input"
     );
+    assert_eq!(stored(&h, &r), bytes);
+    h.close_clean();
+}
+
+#[test]
+fn archive_recovery_m11_seven_template_changes_save_reopen_and_preserve_current_label() {
+    let h = Harness::new();
+    let p = h.open();
+    let t = super::groups::template(&h, &p);
+    const G: &str = "aaaaaaaa-aaaa-4aaa-8aaa-000000000001";
+    const N: &str = "aaaaaaaa-aaaa-4aaa-8aaa-000000000002";
+    const R: &str = "aaaaaaaa-aaaa-4aaa-8aaa-000000000003";
+    const SC: &str = "aaaaaaaa-aaaa-4aaa-8aaa-000000000011";
+    const O: &str = "cccccccc-cccc-4ccc-8ccc-000000000001";
+    let tp = h.root.join(format!("templates/{t}.json"));
+    let mut raw: Value = serde_json::from_slice(&fs::read(&tp).unwrap()).unwrap();
+    let scalar = json!({"label":"current label","kind":"singleLineText","lifecycle":"active","required":false,"introducedRevision":1,"defaultValue":{"kind":"unset"},"initialDefaultValue":{"kind":"unset"},"configuration":{"kind":"singleLineText"},"presentation":{},"futureSynthetic":"retained"});
+    raw["fields"][LEFT] = scalar;
+    raw["fields"][SC] = json!({"label":"choice","kind":"singleChoice","lifecycle":"active","required":false,"introducedRevision":1,"defaultValue":{"kind":"unset"},"initialDefaultValue":{"kind":"unset"},"configuration":{"kind":"singleChoice","optionOrder":[O],"options":{(O):{"label":"original option","lifecycle":"active"}}},"presentation":{}});
+    raw["fields"][G]["configuration"]["members"][R] = json!({"label":"title","kind":"richText","lifecycle":"active","required":false,"introducedRevision":1,"defaultValue":{"kind":"unset"},"initialDefaultValue":{"kind":"unset"},"configuration":{"kind":"richText"},"presentation":{}});
+    raw["fields"][G]["configuration"]["memberOrder"] = json!([N, R]);
+    raw["fields"][G]["configuration"]["members"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|id, _| id == N || id == R);
+    raw["fields"][G]["presentation"]["cardTitleField"] = R.into();
+    raw["fieldOrder"] = json!([LEFT, G, SC]);
+    fs::write(&tp, serde_json::to_vec(&raw).unwrap()).unwrap();
+    let tv = h.read_template(&p, &t);
+    assert!(tv["error"].is_null(), "{tv}");
+    let status = h.work(json!({"kind":"begin_template_draft","project":p,"view":tv["view"]}))
+        ["status"]
+        .clone();
+    let read_body = |status: &Value| {
+        let mut offset = json!("0");
+        let mut text = String::new();
+        loop {
+            let c = h.work(json!({"kind":"template_draft_content","project":p,"session":status["owner"],"snapshot":status["snapshot"],"offset":offset}));
+            text.push_str(c["content"]["text"].as_str().unwrap());
+            offset = c["content"]["next"].clone();
+            if offset.is_null() {
+                break;
+            }
+        }
+        serde_json::from_str::<Value>(&text).unwrap()["body"].clone()
+    };
+    let mut body = read_body(&status);
+    body["name"] = "M11 recovered".into();
+    let members = body["fields"][1]["configuration"]["members"]
+        .as_array_mut()
+        .unwrap();
+    members.swap(0, 1);
+    members.push(json!({"id":format!("new:{}",uuid::Uuid::new_v4()),"label":"M11 new child","configuration":{"kind":"rich_text"},"required":false,"presentation":{"intent":"keep"},"default":{"intent":"unset"},"archived":false}));
+    body["fields"][1]["configuration"]["cardTitleField"] = json!({"intent":"unset"});
+    body["fields"][2]["configuration"]["options"].as_array_mut().unwrap().push(json!({"id":format!("new:{}",uuid::Uuid::new_v4()),"label":"M11 new option","archived":false}));
+    body["fields"].as_array_mut().unwrap().swap(0, 2);
+    let deposited = h.control(json!({"kind":"template_draft","project":p,"session":status["owner"],"generation":"2","body":body,"action":"deposit"}));
+    let d = &deposited["status"];
+    assert!(h.control(json!({"kind":"release_template_draft","project":p,"session":d["owner"],"generation":d["generation"],"body":null,"discard":false}))["error"].is_null());
+    let r = row(&h, &d["draftId"]);
+    let bytes = stored(&h, &r);
+    raw["fields"][LEFT]["label"] = "independent current label".into();
+    raw["revision"] = 2.into();
+    fs::write(&tp, serde_json::to_vec(&raw).unwrap()).unwrap();
+    let before = fs::read(&tp).unwrap();
+    let (snapshot, c) = compare(&h, &p, &inspect(&h, &r));
+    assert_eq!(c["comparison"].as_array().unwrap().len(), 7, "{c}");
+    assert!(c["comparison"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|v| v["status"] != "blocked"));
+    assert_eq!(fs::read(&tp).unwrap(), before);
+    let choices: Value = c["comparison"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| json!({"kind":"change","change":c["id"]}))
+        .collect();
+    let resumed = h
+        .work(json!({"kind":"recovery_restore","project":p,"snapshot":snapshot,"reapply":choices}));
+    assert_eq!(resumed["kind"], "template_draft", "{resumed}");
+    let status = &resumed["status"];
+    let recovered_body = read_body(status);
+    let saved = h.work(json!({"kind":"template_draft","project":p,"session":status["owner"],"generation":"3","body":recovered_body,"action":"save"}));
+    assert!(saved["status"]["error"].is_null(), "{saved}");
+    assert_eq!(saved["status"]["outcome"]["disk"], "committed", "{saved}");
+    let s = &saved["status"];
+    assert!(h.control(json!({"kind":"release_template_draft","project":p,"session":s["owner"],"generation":s["generation"],"body":null,"discard":false}))["error"].is_null());
+    let opened = h.read_template(&p, &t);
+    assert!(opened["error"].is_null(), "{opened}");
+    let after: Value = serde_json::from_slice(&fs::read(&tp).unwrap()).unwrap();
+    assert_eq!(after["name"], "M11 recovered");
+    assert_eq!(after["fields"][LEFT]["label"], "independent current label");
+    assert_eq!(after["fields"][LEFT]["futureSynthetic"], "retained");
+    assert!(after["fields"][G]["presentation"]
+        .get("cardTitleField")
+        .is_none());
+    assert_eq!(after["fields"][G]["configuration"]["memberOrder"][0], R);
+    assert_eq!(
+        after["fields"][G]["configuration"]["members"]
+            .as_object()
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        after["fields"][SC]["configuration"]["options"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(after["fieldOrder"], json!([SC, G, LEFT]));
     assert_eq!(stored(&h, &r), bytes);
     h.close_clean();
 }
@@ -824,7 +977,7 @@ fn archive_recovery_prepare_manual_fixtures() {
         let mut body: Value = serde_json::from_str::<Value>(&text).unwrap()["body"].clone();
         body["name"] = "M11 회수한 구조".into();
         body["fields"][2]["configuration"]["cardTitleField"] = json!({"intent":"unset"});
-        body["fields"][2]["configuration"]["members"].as_array_mut().unwrap().push(json!({"id":format!("new:{}",uuid::Uuid::new_v4()),"label":"M11 새 하위 텍스트","configuration":{"kind":"single_line_text"},"required":false,"presentation":{"intent":"keep"},"default":{"intent":"unset"},"archived":false}));
+        body["fields"][2]["configuration"]["members"].as_array_mut().unwrap().push(json!({"id":format!("new:{}",uuid::Uuid::new_v4()),"label":"M11 새 하위 텍스트","configuration":{"kind":"rich_text"},"required":false,"presentation":{"intent":"keep"},"default":{"intent":"unset"},"archived":false}));
         body["fields"][3]["configuration"]["options"].as_array_mut().unwrap().push(json!({"id":format!("new:{}",uuid::Uuid::new_v4()),"label":"M11 새 선택지","archived":false}));
         body["fields"].as_array_mut().unwrap().swap(0, 1);
         let deposited=h.control(json!({"kind":"template_draft","project":p,"session":status["owner"],"generation":"2","body":body,"action":"deposit"}));
@@ -944,6 +1097,22 @@ fn archive_recovery_document_snapshot_reattaches_after_field_and_group_restore()
         assert!(saved["status"]["error"].is_null(), "{saved}");
         let status = &saved["status"];
         assert!(h.control(json!({"kind":"release_template_draft","project":p,"session":status["owner"],"generation":status["generation"],"body":null,"discard":false}))["error"].is_null());
+        if restoring {
+            let path = h.root.join(format!("documents/{id}.json"));
+            let before = fs::read(&path).unwrap();
+            let read = request(&h, &p, json!({"action":"read","document":id}));
+            let fields = read["value"]["fields"].as_array().unwrap();
+            for field in [LEFT, G, SC] {
+                let rows: Vec<_> = fields.iter().filter(|row| row["id"] == field).collect();
+                assert_eq!(rows.len(), 1, "restored field duplicated: {read}");
+                assert_eq!(rows[0]["state"], "Active", "{read}");
+            }
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                before,
+                "reading must not remove snapshots"
+            );
+        }
         let e = edit_begin(&h, &p, &id);
         let mut b = e["body"].clone();
         b["fields"] = if restoring {
