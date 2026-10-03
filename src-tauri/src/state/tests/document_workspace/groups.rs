@@ -14,7 +14,7 @@ const C: &str = "bbbbbbbb-bbbb-4bbb-8bbb-000000000003";
 fn definition(kind: &str) -> Value {
     json!({"label":"동일 이름","kind":kind,"required":false,"lifecycle":"active","introducedRevision":1,"defaultValue":{"kind":"unset"},"initialDefaultValue":{"kind":"unset"},"configuration":{"kind":kind},"presentation":{}})
 }
-fn template(h: &Harness, p: &str) -> String {
+pub(super) fn template(h: &Harness, p: &str) -> String {
     let (id, _) = h.template(p);
     let path = h.root.join(format!("templates/{id}.json"));
     let mut t: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();

@@ -67,6 +67,8 @@ pub(crate) enum Request {
         body: EditBody,
     },
     EditRestore {
+        #[serde(default)]
+        reapply: Option<super::backend::recovery_merge::Apply>,
         key: Key,
         deposit_id: String,
         digest: String,
@@ -148,6 +150,8 @@ pub(crate) enum Request {
         discard: bool,
     },
     Restore {
+        #[serde(default)]
+        reapply: Option<super::backend::recovery_merge::Apply>,
         key: Key,
         deposit_id: String,
         digest: String,

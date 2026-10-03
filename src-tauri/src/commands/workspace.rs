@@ -64,6 +64,8 @@ pub(crate) enum DraftAction {
 #[derive(Clone, PartialEq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ReapplyIntent {
+    ComponentTemplate,
+    Change { change: String },
     Name,
     Presentation,
     FieldLabel { field: String },

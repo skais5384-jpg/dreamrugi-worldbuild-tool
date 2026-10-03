@@ -81,6 +81,7 @@ impl Registry {
     }
 }
 struct Entry {
+    preserved_input: bool,
     project: Id,
     fingerprint: String,
     draft: String,
@@ -320,6 +321,7 @@ fn begin_entry(
     job: &Job,
     project_id: Id,
     id: artifact::DocumentId,
+    repair_optional: bool,
 ) -> Reply<Entry> {
     // The app-owned recovery store must be held before asking the SVN server for a lock.
     // Store::open's exclusive handle stays in Owner for this process's lifetime.
@@ -361,7 +363,7 @@ fn begin_entry(
         }
         _ => return Err(Code::WrongBinding.into()),
     };
-    if problem.is_none() && current_revision {
+    if repair_optional && problem.is_none() && current_revision {
         let input = persistence::MaterializeDocumentInput {
             document: document.document()?,
             template: template.template()?,
@@ -407,6 +409,7 @@ fn begin_entry(
     }
     let (read, editable) = project(&document, &template)?;
     Ok(Entry {
+        preserved_input: false,
         project: project_id,
         fingerprint: ctx.project_fingerprint().ok_or(Code::Unavailable)?.into(),
         draft: job.allocated.into(),
@@ -516,7 +519,7 @@ fn edits(e: &mut Entry) -> Reply<Vec<DocumentEdit>> {
                 };
                 let id = convert::id(&f.field)?;
                 let definition = t.artifact().fields().get(&id).ok_or(Code::InvalidInput)?;
-                let inputs = convert::group_inputs(instances)?;
+                let inputs = convert::group_inputs_with_policy(instances, e.preserved_input)?;
                 if let Err(error) = artifact::group::assemble(
                     definition,
                     t.artifact().revision(),
@@ -535,7 +538,12 @@ fn edits(e: &mut Entry) -> Reply<Vec<DocumentEdit>> {
                 }
             }
             Intent::Set(v) => {
-                let value = v.creation_value().map_err(|_| {
+                let value = (if e.preserved_input {
+                    v.preserved_creation_value()
+                } else {
+                    v.creation_value()
+                })
+                .map_err(|_| {
                     e.field = Some(f.field.clone());
                     e.problem = Some("InvalidValue".into());
                     Code::InvalidInput
@@ -722,7 +730,7 @@ fn save(ctx: &mut Context, job: &Job, e: &mut Entry) -> Reply<()> {
             return Ok(());
         }
     };
-    let converted = match convert::edits(&raw) {
+    let converted = match convert::edits_with_policy(&raw, e.preserved_input) {
         Ok(v) => v,
         Err(error) => {
             e.problem = Some("InvalidValue".into());
@@ -972,7 +980,7 @@ pub(super) fn execute(
             if registry.len() >= 16 {
                 return Err(Code::Full.into());
             }
-            let mut e = begin_entry(ctx, job, project_id, id)?;
+            let mut e = begin_entry(ctx, job, project_id, id, true)?;
             // An existing document has no unsaved input to retain when its
             // first lock acquisition fails. Close that read-only registration
             // and keep the document in read mode so the UI can explain the
@@ -1018,6 +1026,7 @@ pub(super) fn execute(
             Ok(r)
         }
         Request::EditRestore {
+            reapply,
             key,
             deposit_id,
             digest,
@@ -1124,18 +1133,43 @@ pub(super) fn execute(
             {
                 return Err(Code::DuplicateConflict.into());
             }
-            let restoration =
-                ctx.read(|ready| store.restore_assets(&d, ready.locked_project().canonical_root()));
-            if !matches!(restoration, Ok(Ok(()))) {
-                return Ok(Completed::reject(
-                    restoration,
-                    Code::RecoveryRejected.into(),
-                ));
-            }
             let mut notes = vec![];
             let (current, tmpl) = load(ctx, id, &mut notes)?;
             if tmpl.template()?.id.to_string() != *template {
                 return Err(Code::WrongBinding.into());
+            }
+            if envelope.attempt.as_ref().is_some_and(|a| {
+                matches!(
+                    a.result,
+                    crate::data::edit_recovery::model::SaveState::Unknown
+                        | crate::data::edit_recovery::model::SaveState::Uncertain
+                )
+            }) {
+                return Err(Code::RecoveryRejected.into());
+            }
+            if let Some(choices) = reapply {
+                if choices.template_digest != source_digest(&tmpl)?
+                    || choices.document_digest.as_ref() != Some(&source_digest(&current)?)
+                {
+                    return Err(Code::WrongBinding.into());
+                }
+                let View::Template(template) = &*tmpl else {
+                    return Err(Code::WrongBinding.into());
+                };
+                let View::Document(document) = &*current else {
+                    return Err(Code::WrongBinding.into());
+                };
+                let plan = super::recovery_document::plan(
+                    envelope,
+                    template.artifact(),
+                    Some(document.artifact()),
+                )?;
+                body = super::recovery_document::apply(&plan, &choices.selected)?;
+                super::recovery_document::bind_groups(
+                    &mut body,
+                    document.artifact(),
+                    template.artifact(),
+                )?;
             }
             let mut recovered_scan_change = None;
             for (kind, view) in [
@@ -1153,10 +1187,10 @@ pub(super) fn execute(
                         a.result == crate::data::edit_recovery::model::SaveState::Committed
                             && a.candidate_digest.as_ref() == source_digest(view).ok().as_ref()
                     });
-                if old.source_digest != source_digest(view)? && !own_commit {
+                if old.source_digest != source_digest(view)? && !own_commit && reapply.is_none() {
                     return Err(Code::WrongBinding.into());
                 }
-                if own_commit && old.source_digest != source_digest(view)? {
+                if own_commit && old.source_digest != source_digest(view)? && reapply.is_none() {
                     let previous = artifact::decode_document(old.snapshot.as_bytes())
                         .map_err(|_| Code::RecoveryRejected)?;
                     if let (View::Document(current), View::Template(template)) = (&**view, &*tmpl) {
@@ -1194,23 +1228,66 @@ pub(super) fn execute(
                     }
                 }
             }
-            if let Draft::AdmittedComposite { edit, .. } = &envelope.draft {
-                let View::Template(t) = &*tmpl else {
-                    return Err(Code::WrongBinding.into());
-                };
-                if !convert::intent(edit)?
-                    .is_unchanged(t.artifact(), &timestamp()?)
-                    .map_err(|_| Code::CompositeIntentPending)?
-                {
-                    return Err(Code::CompositeIntentPending.into());
+            if reapply.is_none() {
+                if let Draft::AdmittedComposite { edit, .. } = &envelope.draft {
+                    let View::Template(t) = &*tmpl else {
+                        return Err(Code::WrongBinding.into());
+                    };
+                    if !convert::intent(edit)?
+                        .is_unchanged(t.artifact(), &timestamp()?)
+                        .map_err(|_| Code::CompositeIntentPending)?
+                    {
+                        return Err(Code::CompositeIntentPending.into());
+                    }
                 }
             }
-            let mut e = begin_entry(ctx, job, project_id, id)?;
+            let mut e = begin_entry(ctx, job, project_id, id, false)?;
+            e.preserved_input = true;
             // 다시 읽는 사이 외부 변경도 거부하며 실패 owner는 정상 해제 경로에 남긴다.
             if source_digest(&e.document)? != source_digest(&current)?
                 || source_digest(&e.template)? != source_digest(&tmpl)?
             {
                 e.problem = Some("SourceChanged".into());
+            }
+            if e.problem.is_none() {
+                let mut chosen = envelope.draft.clone();
+                if let Draft::Document {
+                    name,
+                    english_name,
+                    glossary_summary,
+                    glossary_excluded,
+                    fields,
+                    ..
+                } = &mut chosen
+                {
+                    *name = body.name.clone();
+                    *english_name = body.english_name.clone();
+                    *glossary_summary = body.glossary_summary.clone();
+                    *glossary_excluded = body.glossary_excluded.clone();
+                    *fields = body.fields.clone();
+                } else {
+                    chosen = Draft::Document {
+                        document: Some(id.to_string()),
+                        template: template.clone(),
+                        name: body.name.clone(),
+                        english_name: body.english_name.clone(),
+                        glossary_summary: body.glossary_summary.clone(),
+                        glossary_excluded: body.glossary_excluded.clone(),
+                        fields: body.fields.clone(),
+                        composing: false,
+                    };
+                }
+                let restored = ctx.read(|ready| {
+                    store.restore_selected_assets(
+                        &d,
+                        &chosen,
+                        ready.locked_project().canonical_root(),
+                    )
+                });
+                if !matches!(restored, Ok(Ok(()))) {
+                    e.problem = Some("RecoveryAssetsUnavailable".into());
+                    e.observations.push(Box::new(restored));
+                }
             }
             e.draft = key.draft_id.clone();
             e.generation = g;

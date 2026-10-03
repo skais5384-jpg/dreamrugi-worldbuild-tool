@@ -82,6 +82,8 @@ fn bool_is_false(value: &bool) -> bool {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct DraftField {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) archive_title: Option<Intent<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) writing_guide: Option<Intent<String>>,
     pub(crate) id: String,
     pub(crate) label: String,
@@ -90,6 +92,12 @@ pub(crate) struct DraftField {
     pub(crate) presentation: Intent<String>,
     pub(crate) default: Intent<ValueDto>,
     pub(crate) archived: bool,
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub(crate) restore: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) archive_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) archive_order: Vec<String>,
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -138,6 +146,12 @@ pub(crate) struct DraftOption {
     pub(crate) id: String,
     pub(crate) label: String,
     pub(crate) archived: bool,
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub(crate) restore: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) archive_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) archive_order: Vec<String>,
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -279,7 +293,7 @@ impl Deposit {
                 .map_err(|e| RecoveryError::caused(Category::Corrupt, Stage::Validate, e))?,
         );
         let bytes = serde_json::to_vec(&FileV1 {
-            recovery_schema_version: 4,
+            recovery_schema_version: 5,
             payload_digest: digest.clone(),
             envelope: envelope.clone(),
         })
@@ -303,7 +317,7 @@ impl Deposit {
             .get("recoverySchemaVersion")
             .and_then(serde_json::Value::as_u64)
         {
-            Some(1 | 2 | 3 | 4) => (),
+            Some(1 | 2 | 3 | 4 | 5) => (),
             Some(_) => return Err(reject(Category::UnsupportedVersion)),
             None => return Err(reject(Category::Corrupt)),
         }

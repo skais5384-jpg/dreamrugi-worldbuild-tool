@@ -2060,7 +2060,10 @@ export class DocumentController {
     });
     return stored;
   }
-  async restore(row: RecoveryRow) {
+  async restore(
+    row: RecoveryRow,
+    reapply?: import("../bridge/workspace").RecoveryApply,
+  ) {
     if (
       this.project !== this.shell.snapshot().projectId ||
       this.projectGeneration !== this.shell.projectGeneration()
@@ -2076,6 +2079,7 @@ export class DocumentController {
         return;
       const r = await this.work({
         action: "restore",
+        reapply,
         key: row.row.key,
         deposit_id: row.row.depositId,
         digest: row.row.payloadDigest,
@@ -2084,14 +2088,17 @@ export class DocumentController {
       this.publish({ draft: r, restoredOwner: r.owner });
     });
   }
-  async restoreEdit(row: RecoveryRow) {
+  async restoreEdit(
+    row: RecoveryRow,
+    reapply?: import("../bridge/workspace").RecoveryApply,
+  ) {
     if (
       this.project !== this.shell.snapshot().projectId ||
       this.projectGeneration !== this.shell.projectGeneration()
     )
       await this.load();
     await this.action(async () => {
-      const id = await this.edits.restore(row);
+      const id = await this.edits.restore(row, reapply);
       this.publish({ restoredOwner: this.edits.entries[id].status.owner });
       this.persist({
         ...this.state.ui,

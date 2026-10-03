@@ -65,6 +65,8 @@ fn writing_guide_schema_upgrade_uses_exact_backup_and_existing_recovery() -> Tes
                         presentation_token: None,
                         default: Some(FieldValueDraft::unset()),
                         archived: false,
+                        restore: false,
+                        restored_options: Default::default(),
                         archived_options: Default::default(),
                     }],
                 },

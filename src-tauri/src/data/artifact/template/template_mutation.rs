@@ -1411,11 +1411,38 @@ pub(crate) fn restore_tombstoned_template(
 /// 개별 명령과 전체 초안은 같은 마지막 검증·이력 확정 경계를 공유한다.
 fn finish_candidate(
     source: &TemplateArtifact,
-    mut candidate: TemplateArtifact,
+    candidate: TemplateArtifact,
     updated_at_utc: &str,
     allow_template_restore: bool,
 ) -> Result<TemplateMutationOutcome, TemplateMutationError> {
-    validate_historical_invariants(source, &candidate, allow_template_restore)?;
+    finish_candidate_with_restorations(
+        source,
+        candidate,
+        updated_at_utc,
+        allow_template_restore,
+        &Restorations::default(),
+    )
+}
+
+#[derive(Default)]
+struct Restorations {
+    fields: BTreeSet<FieldId>,
+    options: BTreeSet<(FieldId, OptionId)>,
+}
+
+fn finish_candidate_with_restorations(
+    source: &TemplateArtifact,
+    mut candidate: TemplateArtifact,
+    updated_at_utc: &str,
+    allow_template_restore: bool,
+    restoring: &Restorations,
+) -> Result<TemplateMutationOutcome, TemplateMutationError> {
+    validate_historical_invariants_with_restorations(
+        source,
+        &candidate,
+        allow_template_restore,
+        restoring,
+    )?;
 
     // revision/timestamp까지 포함한 전체 equality라 unknown extra 차이도 no-op으로 축소되지 않는다.
     if candidate == *source {
@@ -2098,6 +2125,20 @@ fn validate_historical_invariants(
     candidate: &TemplateArtifact,
     allow_template_restore: bool,
 ) -> Result<(), TemplateMutationError> {
+    validate_historical_invariants_with_restorations(
+        source,
+        candidate,
+        allow_template_restore,
+        &Restorations::default(),
+    )
+}
+
+fn validate_historical_invariants_with_restorations(
+    source: &TemplateArtifact,
+    candidate: &TemplateArtifact,
+    allow_template_restore: bool,
+    restoring: &Restorations,
+) -> Result<(), TemplateMutationError> {
     if (source.schema_version != candidate.schema_version
         && !(source.schema_version.get() == 1
             && candidate.schema_version.get() == 2
@@ -2161,6 +2202,8 @@ fn validate_historical_invariants(
         }
 
         match (source_field.lifecycle, candidate_field.lifecycle) {
+            (FieldLifecycle::Archived, FieldLifecycle::Active)
+                if restoring.fields.contains(field_id) => {}
             (FieldLifecycle::Archived, FieldLifecycle::Active) => {
                 return Err(TemplateMutationError::field_reactivated(*field_id));
             }
@@ -2170,11 +2213,14 @@ fn validate_historical_invariants(
         }
 
         // Option ID/owner/lifecycle는 archived Field 전체 비교보다 구체적인 기존 오류를 유지한다.
-        validate_persisted_options(candidate, *field_id, source_field)?;
+        validate_persisted_options(candidate, *field_id, source_field, restoring)?;
 
         // archived Field는 마지막 label/default/configuration/option을 포함한 복구 snapshot이다.
         // 속성을 열거하면 미래 member가 빠질 수 있으므로 persisted definition 전체를 고정한다.
-        if source_field.lifecycle == FieldLifecycle::Archived && source_field != candidate_field {
+        if source_field.lifecycle == FieldLifecycle::Archived
+            && !restoring.fields.contains(field_id)
+            && source_field != candidate_field
+        {
             return Err(TemplateMutationError::immutable_field_changed(*field_id));
         }
     }
@@ -2185,6 +2231,7 @@ fn validate_persisted_options(
     candidate: &TemplateArtifact,
     source_field_id: FieldId,
     source_field: &super::FieldDefinition,
+    restoring: &Restorations,
 ) -> Result<(), TemplateMutationError> {
     let Some(source_options) = source_field.configuration.options() else {
         return Ok(());
@@ -2211,6 +2258,8 @@ fn validate_persisted_options(
         };
 
         match (source_option.lifecycle, candidate_option.lifecycle) {
+            (OptionLifecycle::Archived, OptionLifecycle::Active)
+                if restoring.options.contains(&(source_field_id, *option_id)) => {}
             (OptionLifecycle::Archived, OptionLifecycle::Active) => {
                 return Err(TemplateMutationError::option_reactivated(*option_id));
             }
@@ -2220,6 +2269,7 @@ fn validate_persisted_options(
         }
         if source_option.extra != candidate_option.extra
             || (source_option.lifecycle == OptionLifecycle::Archived
+                && !restoring.options.contains(&(source_field_id, *option_id))
                 && source_option.label != candidate_option.label)
         {
             return Err(TemplateMutationError::immutable_option_changed(*option_id));

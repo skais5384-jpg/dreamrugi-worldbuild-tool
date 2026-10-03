@@ -1,4 +1,5 @@
-import { useState, useSyncExternalStore } from "react";
+import { recoveryText } from "./recoveryText";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   Dialog,
   DialogActions,
@@ -13,6 +14,7 @@ import { InlineNotice } from "../ui/InlineNotice";
 import type { ReapplyIntent, RecoveryContent } from "../bridge/workspace";
 import type { Template } from "../bridge/types";
 import type { WorkspaceController } from "./workspaceController";
+import { RecoveryComparison } from "./RecoveryComparison";
 import { ValueRead } from "./FieldValue";
 import { text } from "../strings";
 import { formatLocalDateTime } from "./localDateTime";
@@ -30,6 +32,38 @@ export function RecoveryCenter({
   const [choices, setChoices] = useState<ReapplyIntent[]>([]);
   const selected = state.selected;
   const content = state.recovery;
+  const previousComparison = useRef<RecoveryContent["comparison"]>(undefined);
+  const [copyState, setCopyState] = useState<string | null>(null);
+  useEffect(() => {
+    const previous = previousComparison.current;
+    setChoices((choices) =>
+      choices.filter(
+        (choice) =>
+          choice.kind !== "change" ||
+          content?.comparison?.some(
+            (item) =>
+              item.id === choice.change &&
+              item.status !== "blocked" &&
+              (!previous ||
+                previous.some(
+                  (old) =>
+                    old.id === item.id &&
+                    JSON.stringify([
+                      old.current,
+                      old.original,
+                      old.preserved,
+                    ]) ===
+                      JSON.stringify([
+                        item.current,
+                        item.original,
+                        item.preserved,
+                      ]),
+                )),
+          ),
+      ),
+    );
+    previousComparison.current = content?.comparison;
+  }, [content?.comparison]);
   const project = controller.shell.snapshot().project;
   const ready = project?.status === "Ready" && project.runtime === "Ready";
   return (
@@ -226,6 +260,31 @@ export function RecoveryCenter({
                         <summary>{text("recovery.raw")}</summary>
                         <DraftRead content={content} />
                       </details>
+                      <details open>
+                        <summary>{text("recoveryCompare.copy")}</summary>
+                        <HelpText>{text("recoveryCompare.copyHelp")}</HelpText>
+                        <pre className="recovery-raw">
+                          {recoveryText(content)}
+                        </pre>
+                        <Button
+                          type="button"
+                          onClick={() => {
+                            void navigator.clipboard
+                              .writeText(recoveryText(content))
+                              .then(
+                                () =>
+                                  setCopyState(text("recoveryCompare.copied")),
+                                () =>
+                                  setCopyState(
+                                    "클립보드에 복사하지 못했습니다. 표시된 내용을 직접 선택해 복사할 수 있습니다.",
+                                  ),
+                              );
+                          }}
+                        >
+                          {text("recoveryCompare.copy")}
+                        </Button>
+                        {copyState && <p role="status">{copyState}</p>}
+                      </details>
                       {content.draft.kind === "document" &&
                         content.draft.document === null && (
                           <Button
@@ -245,7 +304,7 @@ export function RecoveryCenter({
                                   r.row.key?.projectFingerprint ===
                                     selected.key.projectFingerprint,
                               );
-                              if (row) void controller.restoreCreation(row);
+                              if (row) void controller.restore();
                             }}
                           >
                             {text("documents.restoreCreation")}
@@ -267,38 +326,55 @@ export function RecoveryCenter({
                                 r.row.key?.projectFingerprint ===
                                   selected.key.projectFingerprint,
                             );
-                            if (row) void controller.restoreDocument(row);
+                            if (row) void controller.restore();
                           }}
                         >
                           {text("documentEdit.restore")}
                         </Button>
                       )}
                       {content.draft.kind === "admitted_composite" && (
-                        <p>{text("whole.documentDeferred")}</p>
-                      )}
-                      {selected.canRestore && (
-                        <div className="actions">
+                        <div>
+                          <p>{text("recoveryCompare.compositeHelp")}</p>
                           <Button
                             type="button"
-                            appearance="primary"
                             disabled={state.busy || !ready}
-                            onClick={() => void controller.restore()}
+                            onClick={() => {
+                              setChoices([]);
+                              void controller.restore([
+                                { kind: "component_template" },
+                              ]);
+                            }}
                           >
-                            {text(
-                              selected.phase === "unchecked"
-                                ? "whole.restore"
-                                : "whole.checkCurrent",
-                            )}
+                            {text("recoveryCompare.templatePart")}
                           </Button>
                         </div>
                       )}
+                      {selected.canRestore &&
+                        content.draft.kind === "template" && (
+                          <div className="actions">
+                            <Button
+                              type="button"
+                              appearance="primary"
+                              disabled={state.busy || !ready}
+                              onClick={() => void controller.restore()}
+                            >
+                              {text(
+                                selected.phase === "unchecked"
+                                  ? "whole.restore"
+                                  : "whole.checkCurrent",
+                              )}
+                            </Button>
+                          </div>
+                        )}
                       {selected.phase !== "unchecked" &&
                         selected.phase !== "conflict" && (
                           <InlineNotice kind="error">
                             {text(
-                              selected.phase === "deleted"
-                                ? "whole.deletedSource"
-                                : "whole.unreadableSource",
+                              selected.phase === "uncertain"
+                                ? "recoveryCompare.uncertain"
+                                : selected.phase === "deleted"
+                                  ? "whole.deletedSource"
+                                  : "whole.unreadableSource",
                             )}
                           </InlineNotice>
                         )}
@@ -316,41 +392,59 @@ export function RecoveryCenter({
                               template={content.current}
                             />
                           </div>
+                          {content.comparison && (
+                            <RecoveryComparison
+                              content={content}
+                              selected={choices
+                                .filter((choice) => choice.kind === "change")
+                                .map((choice) => choice.change)}
+                              change={(ids) =>
+                                setChoices(
+                                  ids.map((change) => ({
+                                    kind: "change",
+                                    change,
+                                  })),
+                                )
+                              }
+                            />
+                          )}
                           <div className="reapply-options">
-                            {selected.intents.map((intent) => {
-                              const key = JSON.stringify(intent);
-                              const label =
-                                "field" in intent
-                                  ? (content.original?.fields.find(
-                                      (f) => f.id === intent.field,
-                                    )?.label ?? intent.field)
-                                  : "";
-                              return (
-                                <Checkbox
-                                  key={key}
-                                  label={[label, intentLabel(intent)]
-                                    .filter(Boolean)
-                                    .join(" · ")}
-                                  checked={choices.some(
-                                    (i) => JSON.stringify(i) === key,
-                                  )}
-                                  onChange={(_, data) =>
-                                    setChoices((items) =>
-                                      data.checked === true
-                                        ? [...items, intent]
-                                        : items.filter(
-                                            (i) => JSON.stringify(i) !== key,
-                                          ),
-                                    )
-                                  }
-                                />
-                              );
-                            })}
+                            {selected.intents
+                              .filter((intent) => intent.kind !== "change")
+                              .map((intent) => {
+                                const key = JSON.stringify(intent);
+                                const label =
+                                  "field" in intent
+                                    ? (content.original?.fields.find(
+                                        (f) => f.id === intent.field,
+                                      )?.label ?? intent.field)
+                                    : "";
+                                return (
+                                  <Checkbox
+                                    key={key}
+                                    label={[label, intentLabel(intent)]
+                                      .filter(Boolean)
+                                      .join(" · ")}
+                                    checked={choices.some(
+                                      (i) => JSON.stringify(i) === key,
+                                    )}
+                                    onChange={(_, data) =>
+                                      setChoices((items) =>
+                                        data.checked === true
+                                          ? [...items, intent]
+                                          : items.filter(
+                                              (i) => JSON.stringify(i) !== key,
+                                            ),
+                                      )
+                                    }
+                                  />
+                                );
+                              })}
                           </div>
                           <Button
                             type="button"
                             appearance="primary"
-                            disabled={state.busy || !ready || !choices.length}
+                            disabled={state.busy || !ready}
                             onClick={() => void controller.restore(choices)}
                           >
                             {text("whole.reapply")}
@@ -379,6 +473,10 @@ export function RecoveryCenter({
 }
 function intentLabel(intent: ReapplyIntent) {
   switch (intent.kind) {
+    case "component_template":
+      return text("recoveryCompare.templatePart");
+    case "change":
+      return text("recoveryCompare.title");
     case "name":
       return text("app.message23");
     case "presentation":

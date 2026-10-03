@@ -1,3 +1,4 @@
+import { archiveDefinition, restoreDefinition } from "./archiveDefinition";
 import { useState } from "react";
 import { Button, Checkbox, Input, Select, Textarea } from "../ui/Controls";
 import { text } from "../strings";
@@ -380,9 +381,7 @@ export function GroupDefinition({
               onClick={() => {
                 change(
                   old
-                    ? members.map((f) =>
-                        f.id === current.id ? { ...f, archived: true } : f,
-                      )
+                    ? archiveDefinition(members, current.id)
                     : members.filter((f) => f.id !== current.id),
                 );
                 setSelected(null);
@@ -399,7 +398,32 @@ export function GroupDefinition({
           {members
             .filter((f) => f.archived)
             .map((f) => (
-              <p key={f.id}>{f.label}</p>
+              <div key={f.id}>
+                <p>{f.label}</p>
+                <Button
+                  type="button"
+                  disabled={disabled || composing}
+                  onClick={() => {
+                    change(
+                      restoreDefinition(
+                        members,
+                        f.id,
+                        original?.members?.find((m) => m.id === canonical(f.id))
+                          ?.lifecycle === "Archived",
+                      ),
+                    );
+                    setSelected(f.id);
+                    setNotice(text("archive.restoredDraft"));
+                  }}
+                >
+                  {text(
+                    original?.members?.find((m) => m.id === canonical(f.id))
+                      ?.lifecycle === "Archived"
+                      ? "archive.restore"
+                      : "archive.undo",
+                  )}
+                </Button>
+              </div>
             ))}
         </details>
       )}

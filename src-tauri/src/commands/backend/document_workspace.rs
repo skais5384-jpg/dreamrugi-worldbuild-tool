@@ -295,6 +295,7 @@ struct Creation {
     base_documents: Vec<Summary>,
     body: CreationBody,
     deposit: Option<Deposit>,
+    restore_assets: Option<Deposit>,
     proof: Option<Proof>,
     outcome: Option<Box<ResultDto>>,
     original: Option<Box<dyn Any + Send>>,
@@ -947,7 +948,12 @@ pub(super) fn finish_session(ctx: &mut Context, binding: &Binding) -> (bool, Box
         Box::new((observation, release, removal)),
     )
 }
-fn write_layout(ctx: &mut Context, job: &Job, input: &LayoutWrite) -> Reply<LayoutWriteResult> {
+fn write_layout(
+    ctx: &mut Context,
+    job: &Job,
+    input: &LayoutWrite,
+    recovery_assets: Option<(&Deposit, &Draft)>,
+) -> Reply<LayoutWriteResult> {
     // LayoutWrite가 그대로 encode하여 제출하는 후보를 결과와 함께 보유한다.
     // 이 snapshot은 읽기 권한 토큰이 아니며 committed/uncertain 판정은 실제 실행 결과만 한다.
     let candidate = input
@@ -976,6 +982,78 @@ fn write_layout(ctx: &mut Context, job: &Job, input: &LayoutWrite) -> Reply<Layo
         c.binding = Some(binding.clone());
         return Ok((c, Some(binding), None, None));
     };
+    if let Some((deposit, chosen)) = recovery_assets {
+        let copied = (|| -> Reply<()> {
+            ctx.read(|ready| {
+                let repository = ArtifactRepository::new(ready)?;
+                let layout = repository.load_layout()?;
+                if layout.as_ref().map(|l| l.source()) != input.base.source.as_ref() {
+                    return Ok(false);
+                }
+                let membership = input
+                    .documents
+                    .sources()
+                    .map(|source| source.id())
+                    .collect();
+                repository.confirm_document_membership(&membership)?;
+                for source in input.documents.sources() {
+                    if !repository.reread_bytes_match(source)? {
+                        return Ok(false);
+                    }
+                }
+                if let Some((document, template, _)) = &input.create {
+                    if repository.load_template(template.id)?.source() != &template.token {
+                        return Ok(false);
+                    }
+                    if input.documents.source(document.document_id()).is_some() {
+                        return Ok(false);
+                    }
+                }
+                Ok::<_, crate::data::repository::RepositoryError>(true)
+            })
+            .map_err(|_| Code::RuntimeRejected)?
+            .map_err(|_| Code::RepositoryRejected)
+            .and_then(|same| {
+                if same {
+                    Ok(())
+                } else {
+                    Err(Code::WrongBinding.into())
+                }
+            })?;
+            let store = job.recovery.connect().map_err(|_| Code::SinkUnavailable)?;
+            let store = store.lock().map_err(|_| Code::Unavailable)?;
+            ctx.read(|ready| {
+                store.restore_selected_assets(
+                    deposit,
+                    chosen,
+                    ready.locked_project().canonical_root(),
+                )
+            })
+            .map_err(|_| Code::RuntimeRejected)?
+            .map_err(|_| Code::RecoveryRejected)?;
+            if let Some((document, _, _)) = &input.create {
+                let raw =
+                    artifact::encode_document(document).map_err(|_| Code::SerializationFailed)?;
+                ctx.read(|ready| {
+                    crate::data::assets::validate_document(
+                        ready.locked_project().canonical_root(),
+                        &raw,
+                    )
+                })
+                .map_err(|_| Code::RuntimeRejected)?
+                .map_err(|_| Code::PreparationRejected)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = copied {
+            let (released, cleanup) = finish_session(ctx, &binding);
+            let mut completed = Completed::reject((registration, cleanup), error);
+            if !released {
+                completed.binding = Some(binding.clone());
+            }
+            return Ok((completed, (!released).then_some(binding), None, None));
+        }
+    }
     let execution = ctx
         .session(key)
         .map_err(|_| Code::SessionRejected)?
@@ -1770,7 +1848,7 @@ pub(crate) fn execute(
                 } else {
                     None
                 };
-                let write_result = write_layout(ctx, job, &input);
+                let write_result = write_layout(ctx, job, &input, None);
                 let (mut c, binding, evidence, committed) = match write_result {
                     Ok(result) => result,
                     Err(error) => {
@@ -1876,6 +1954,7 @@ pub(crate) fn execute(
                         composing: false,
                     },
                     deposit: None,
+                    restore_assets: None,
                     proof: None,
                     outcome: None,
                     original: None,
@@ -2021,7 +2100,10 @@ pub(crate) fn execute(
                             }
                             Intent::Set(ValueDto::Group { instances }) => {
                                 let definition = t.fields().get(&id).ok_or(Code::InvalidInput)?;
-                                let inputs = convert::group_inputs(instances)?;
+                                let inputs = convert::group_inputs_with_policy(
+                                    instances,
+                                    d.restore_assets.is_some(),
+                                )?;
                                 match artifact::group::assemble(
                                     definition,
                                     t.revision(),
@@ -2036,7 +2118,11 @@ pub(crate) fn execute(
                                     }
                                 }
                             }
-                            Intent::Set(v) => match v.creation_value() {
+                            Intent::Set(v) => match if d.restore_assets.is_some() {
+                                v.preserved_creation_value()
+                            } else {
+                                v.creation_value()
+                            } {
                                 Ok(v) => v,
                                 Err(_) => {
                                     d.problem = Some("InvalidValue".into());
@@ -2076,14 +2162,16 @@ pub(crate) fn execute(
                     };
                     let raw = artifact::encode_document(&candidate)
                         .map_err(|e| observed(&mut observations, e, Code::SerializationFailed))?;
-                    ctx.read(|ready| {
-                        crate::data::assets::validate_document(
-                            ready.locked_project().canonical_root(),
-                            &raw,
-                        )
-                    })
-                    .map_err(|e| observed(&mut observations, e, Code::RuntimeRejected))?
-                    .map_err(|e| observed(&mut observations, e, Code::PreparationRejected))?;
+                    if d.restore_assets.is_none() {
+                        ctx.read(|ready| {
+                            crate::data::assets::validate_document(
+                                ready.locked_project().canonical_root(),
+                                &raw,
+                            )
+                        })
+                        .map_err(|e| observed(&mut observations, e, Code::RuntimeRejected))?
+                        .map_err(|e| observed(&mut observations, e, Code::PreparationRejected))?;
+                    }
                     let input = LayoutWrite {
                         base: d.base.clone(),
                         documents: Arc::clone(&d.documents),
@@ -2095,7 +2183,22 @@ pub(crate) fn execute(
                             d.body.parent.as_ref().map(|v| convert::id(v)).transpose()?,
                         )),
                     };
-                    let (completed, binding, evidence, committed) = write_layout(ctx, job, &input)?;
+                    let chosen = Draft::Document {
+                        document: None,
+                        template: t.template_id().to_string(),
+                        name: Intent::Set(d.body.name.clone()),
+                        english_name: Intent::Set(d.body.english_name.clone()),
+                        glossary_summary: Intent::Set(d.body.glossary_summary.clone()),
+                        glossary_excluded: Intent::Set(d.body.glossary_excluded),
+                        fields: d.body.fields.clone(),
+                        composing: false,
+                    };
+                    let (completed, binding, evidence, committed) = write_layout(
+                        ctx,
+                        job,
+                        &input,
+                        d.restore_assets.as_ref().map(|deposit| (deposit, &chosen)),
+                    )?;
                     d.binding = binding;
                     if let Some((snapshot, mut attempt)) = evidence {
                         attempt.submitted_generation = d.generation;
@@ -2273,6 +2376,7 @@ pub(crate) fn execute(
                 ))
             }
             Request::Restore {
+                reapply,
                 key,
                 deposit_id,
                 digest,
@@ -2307,21 +2411,12 @@ pub(crate) fn execute(
                     .map_err(|e| observed(&mut observations, e, Code::RecoveryRejected))?
                     .checked_add(1)
                     .ok_or(Code::Full)?;
-                ctx.read(|ready| {
-                    store.restore_assets(&deposit, ready.locked_project().canonical_root())
-                })
-                .map_err(|_| Code::RuntimeRejected)?
-                .map_err(|e| observed(&mut observations, e, Code::RecoveryRejected))?;
                 let envelope = deposit.envelope();
                 let Draft::Document {
                     document: None,
                     template,
-                    name: Intent::Set(name),
-                    english_name,
-                    glossary_summary,
-                    glossary_excluded,
-                    fields,
-                    composing: _stored_composing,
+                    name: Intent::Set(_),
+                    ..
                 } = &envelope.draft
                 else {
                     return Err(Code::WrongBinding.into());
@@ -2329,14 +2424,41 @@ pub(crate) fn execute(
                 let template = load_template(ctx, template, &mut observations)?;
                 let token = &template.template()?.token;
                 let old = envelope.originals.first().ok_or(Code::WrongBinding)?;
-                if old.source_digest
-                    != token
+                if reapply.is_none()
+                    && old.source_digest
+                        != token
+                            .sha256()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<String>()
+                {
+                    return Err(Code::WrongBinding.into());
+                }
+                if envelope.attempt.as_ref().is_some_and(|a| {
+                    matches!(
+                        a.result,
+                        crate::data::edit_recovery::model::SaveState::Unknown
+                            | crate::data::edit_recovery::model::SaveState::Uncertain
+                            | crate::data::edit_recovery::model::SaveState::Committed
+                    )
+                }) {
+                    return Err(Code::RecoveryRejected.into());
+                }
+                let mut recovered = super::recovery_document::body(&envelope.draft)?;
+                if let Some(choices) = reapply {
+                    let digest = token
                         .sha256()
                         .iter()
                         .map(|b| format!("{b:02x}"))
-                        .collect::<String>()
-                {
-                    return Err(Code::WrongBinding.into());
+                        .collect::<String>();
+                    if choices.template_digest != digest || choices.document_digest.is_some() {
+                        return Err(Code::WrongBinding.into());
+                    }
+                    let View::Template(current) = &*template else {
+                        return Err(Code::WrongBinding.into());
+                    };
+                    let plan = super::recovery_document::plan(envelope, current.artifact(), None)?;
+                    recovered = super::recovery_document::apply(&plan, &choices.selected)?;
                 }
                 let (base, base_documents, _, problem, documents) =
                     layout_snapshot(ctx, &mut observations)?;
@@ -2354,26 +2476,30 @@ pub(crate) fn execute(
                     documents,
                     base_documents,
                     body: CreationBody {
-                        name: name.clone(),
-                        english_name: match english_name {
+                        name: match &recovered.name {
+                            Intent::Set(name) => name.clone(),
+                            _ => String::new(),
+                        },
+                        english_name: match &recovered.english_name {
                             Intent::Set(value) => value.clone(),
                             Intent::Keep | Intent::Unset => String::new(),
                         },
-                        glossary_summary: match glossary_summary {
+                        glossary_summary: match &recovered.glossary_summary {
                             Intent::Set(value) => value.clone(),
                             Intent::Keep | Intent::Unset => String::new(),
                         },
-                        glossary_excluded: match glossary_excluded {
+                        glossary_excluded: match &recovered.glossary_excluded {
                             Intent::Set(value) => *value,
                             Intent::Keep | Intent::Unset => false,
                         },
                         parent: None,
-                        fields: fields.clone(),
+                        fields: recovered.fields.clone(),
                         // 보관본의 조합 표시는 당시 OS 입력 세션의 증거다. 복원은
                         // 새 세션이므로 이를 활성 조합 상태로 다시 설치하지 않는다.
                         composing: false,
                     },
                     deposit: None,
+                    restore_assets: None,
                     proof: None,
                     outcome: None,
                     original: None,
@@ -2387,6 +2513,8 @@ pub(crate) fn execute(
                     uncertain: false,
                     commit: None,
                 };
+                let mut d = d;
+                d.restore_assets = Some(deposit);
                 let result = draft_reply(job.allocated, &d)?;
                 registry.drafts.insert(job.allocated, d);
                 workspace.sync_owners();

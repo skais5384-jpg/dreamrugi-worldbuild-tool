@@ -1,4 +1,5 @@
 use super::*;
+mod archive_recovery;
 mod groups;
 mod media;
 #[path = "workspace_restore.rs"]

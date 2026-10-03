@@ -65,6 +65,16 @@ struct InstanceWire {
     extra: ExtraFields,
 }
 
+impl Instance {
+    pub(crate) fn contains_unknown_storage_data(&self) -> bool {
+        !self.extra.is_empty()
+            || self
+                .values
+                .values()
+                .any(FieldValue::contains_unknown_storage_data)
+    }
+}
+
 impl GroupValueWire {
     pub(super) fn into_value(self) -> (GroupValue, ExtraFields) {
         (
@@ -147,12 +157,9 @@ impl GroupValue {
         Ok(FieldValidationOutcome::Valid)
     }
     pub(crate) fn contains_unknown_storage_data(&self) -> bool {
-        self.instances.values().any(|v| {
-            !v.extra.is_empty()
-                || v.values
-                    .values()
-                    .any(FieldValue::contains_unknown_storage_data)
-        })
+        self.instances
+            .values()
+            .any(|v| v.contains_unknown_storage_data())
     }
 }
 

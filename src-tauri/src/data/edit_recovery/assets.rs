@@ -1,4 +1,5 @@
 //! 전체 초안 receipt는 참조 ID뿐 아니라 별도 보관한 원본 bytes의 검증까지 포함한다.
+use super::model::Draft;
 use super::*;
 use crate::data::assets;
 pub(super) fn ids(deposit: &Deposit) -> Result<std::collections::BTreeSet<String>, RecoveryError> {
@@ -101,6 +102,36 @@ impl Store {
         let target = assets::Store::open(project, true)?;
         for id in ids {
             let (meta, bytes) = source.read(&id)?;
+            target.put(&meta, &bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Recover only references in the explicitly selected draft. Comparison and
+    /// cancellation do not call this function; unselected recovery bytes stay put.
+    pub(crate) fn restore_selected_assets(
+        &self,
+        deposit: &Deposit,
+        selected: &Draft,
+        project: &Path,
+    ) -> Result<(), RecoveryError> {
+        let raw = serde_json::to_value(selected)
+            .map_err(|e| RecoveryError::caused(Category::Corrupt, Stage::Validate, e))?;
+        let referenced = assets::references(&raw)?;
+        let owned = ids(deposit)?;
+        let referenced: Vec<_> = referenced.intersection(&owned).cloned().collect();
+        if referenced.is_empty() {
+            return Ok(());
+        }
+        let (path, _guards) = self.directory(deposit.key(), false)?;
+        let source = assets::Store::open(&path, false)?;
+        // Validate all selected source packages before creating any target package.
+        let packages = referenced
+            .iter()
+            .map(|id| source.read(id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let target = assets::Store::open(project, true)?;
+        for (meta, bytes) in packages {
             target.put(&meta, &bytes)?;
         }
         Ok(())

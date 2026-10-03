@@ -94,6 +94,25 @@ pub(crate) enum TemplateEditIntent {
     },
 }
 impl TemplateEditIntent {
+    /// Build a read-only recovery candidate against the preserved source. This
+    /// performs normal artifact admission but does not acquire an owner or write.
+    pub(crate) fn recovery_candidate(
+        &self,
+        source: &TemplateArtifact,
+        timestamp: &str,
+    ) -> Result<TemplateArtifact, template_mutation::TemplateMutationError> {
+        Ok(
+            match template_mutation::apply_template_mutation(
+                source,
+                source.revision(),
+                timestamp,
+                self.command(source)?,
+            )? {
+                TemplateMutationOutcome::Unchanged => source.clone(),
+                TemplateMutationOutcome::Changed(candidate) => *candidate,
+            },
+        )
+    }
     /// 복합 보관을 문서 편집으로 연결할 때 Template 의도가 남지 않았음을 순수 검증한다.
     pub(crate) fn is_unchanged(
         &self,

@@ -13,6 +13,9 @@ pub(super) struct Selected {
     phase: &'static str,
     current: Option<Arc<View>>,
     intents: Vec<ReapplyIntent>,
+    comparison: Option<super::super::recovery_merge::Plan>,
+    basis: Option<super::super::recovery_merge::Apply>,
+    template_part: Option<TemplateBody>,
 }
 impl Selected {
     fn dto(&self, snapshot: Id) -> RecoverySelection {
@@ -20,7 +23,7 @@ impl Selected {
             snapshot,
             key: self.deposit.key().clone(),
             phase: self.phase,
-            can_restore: matches!(self.deposit.envelope().draft, Draft::Template { .. }),
+            can_restore: true,
             intents: self.intents.clone(),
         }
     }
@@ -32,6 +35,9 @@ impl Selected {
             original: Option<TemplateDto>,
             current: Option<TemplateDto>,
             attempt: &'a Option<crate::data::edit_recovery::model::Attempt>,
+            comparison: Option<&'a [super::super::recovery_merge::Change]>,
+            basis: &'a Option<super::super::recovery_merge::Apply>,
+            template_part: bool,
         }
         let original = self
             .deposit
@@ -63,6 +69,9 @@ impl Selected {
             original,
             current,
             attempt: &self.deposit.envelope().attempt,
+            comparison: self.comparison.as_ref().map(|plan| plan.changes.as_slice()),
+            basis: &self.basis,
+            template_part: self.template_part.is_some(),
         })
         .map_err(|_| Code::SerializationFailed)?;
         if self.content.len() > crate::data::edit_recovery::model::MAX_FILE_BYTES {
@@ -165,6 +174,9 @@ pub(crate) fn run(
                     phase: "unchecked",
                     current: None,
                     intents: vec![],
+                    comparison: None,
+                    basis: None,
+                    template_part: None,
                 };
                 selected.rebuild()?;
                 let dto = selected.dto(snapshot);
@@ -260,23 +272,143 @@ pub(super) fn restore(ctx: &mut Context, job: &Job) -> Reply<Completed> {
         Err(e) => return Ok(failure(Arc::new(e))),
     };
     let generation = latest.checked_add(1).ok_or(Code::Full)?;
-    match ctx.read(|ready| {
-        locked_store.restore_assets(&selected.deposit, ready.locked_project().canonical_root())
-    }) {
-        Ok(Ok(())) => (),
-        Ok(Err(e)) => return Ok(failure(Arc::new(e))),
-        Err(e) => return Ok(Completed::reject(e, Code::RuntimeRejected.into())),
-    }
     // 기존 project worker 직렬화와 workspace lock이 scan 뒤의 보관/등록도 보호한다.
     // store lock은 begin_owner의 복구 연결 전에 놓아 잠금 순서를 역전하지 않는다.
     drop(locked_store);
-    let Some(mut body) = TemplateBody::from_recovery(&envelope.draft) else {
+    if envelope.attempt.as_ref().is_some_and(|a| {
+        matches!(
+            a.result,
+            crate::data::edit_recovery::model::SaveState::Unknown
+                | crate::data::edit_recovery::model::SaveState::Uncertain
+        )
+    }) {
+        selected.phase = "uncertain";
+        selected.rebuild()?;
+        return Ok(Completed::new(
+            (),
+            Ok(ResultDto::RecoverySelection {
+                selection: selected.dto(*snapshot),
+            }),
+        ));
+    }
+    let component_request = reapply
+        .as_ref()
+        .is_some_and(|choices| choices.as_slice() == [ReapplyIntent::ComponentTemplate]);
+    if component_request {
+        selected.template_part = Some(super::recovery_template::composite_preview(&envelope)?);
+        selected.basis = None;
+    }
+    if !component_request && reapply.is_none() && selected.template_part.is_some() {
+        selected.template_part = None;
+        selected.basis = None;
+        selected.current = None;
+        selected.comparison = None;
+    }
+    if !matches!(envelope.draft, Draft::Template { .. }) && selected.template_part.is_none() {
+        let (template_id, document_id) = match &envelope.draft {
+            Draft::Document {
+                template, document, ..
+            } => (template, document.as_deref()),
+            Draft::AdmittedDocument {
+                template, document, ..
+            }
+            | Draft::AdmittedComposite {
+                template, document, ..
+            } => (template, Some(document.as_str())),
+            _ => return Err(Code::InvalidInput.into()),
+        };
+        let template_id = convert::id(template_id)?;
+        let loaded =
+            match ctx.read(|ready| ArtifactRepository::new(ready)?.load_template(template_id)) {
+                Ok(Ok(template)) => template,
+                original => {
+                    selected.phase = "missing_or_unreadable";
+                    selected.rebuild()?;
+                    return Ok(Completed::new(
+                        original,
+                        Ok(ResultDto::RecoverySelection {
+                            selection: selected.dto(*snapshot),
+                        }),
+                    ));
+                }
+            };
+        if loaded.artifact().lifecycle() != artifact::TemplateLifecycle::Active {
+            selected.phase = "deleted";
+            selected.rebuild()?;
+            return Ok(Completed::new(
+                loaded,
+                Ok(ResultDto::RecoverySelection {
+                    selection: selected.dto(*snapshot),
+                }),
+            ));
+        }
+        let document = if let Some(id) = document_id {
+            let id = convert::id(id)?;
+            match ctx.read(|ready| ArtifactRepository::new(ready)?.load_document(id)) {
+                Ok(Ok(document)) => Some(document),
+                original => {
+                    selected.phase = "missing_or_unreadable";
+                    selected.rebuild()?;
+                    return Ok(Completed::new(
+                        original,
+                        Ok(ResultDto::RecoverySelection {
+                            selection: selected.dto(*snapshot),
+                        }),
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        let plan = super::super::recovery_document::plan(
+            &envelope,
+            loaded.artifact(),
+            document.as_ref().map(|d| d.artifact()),
+        )?;
+        let digest = |token: &crate::data::repository::SourceToken| {
+            token
+                .sha256()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        selected.basis = Some(super::super::recovery_merge::Apply {
+            template_digest: digest(loaded.source()),
+            document_digest: document.as_ref().map(|d| digest(d.source())),
+            selected: vec![],
+        });
+        selected.intents = plan
+            .changes
+            .iter()
+            .filter(|change| change.status != "blocked")
+            .map(|change| ReapplyIntent::Change {
+                change: change.id.clone(),
+            })
+            .collect();
+        selected.comparison = Some(plan);
+        selected.current = Some(Arc::new(View::Template(loaded)));
+        selected.phase = "conflict";
+        selected.rebuild()?;
+        return Ok(Completed::new(
+            document,
+            Ok(ResultDto::RecoverySelection {
+                selection: selected.dto(*snapshot),
+            }),
+        ));
+    }
+    let Some(mut body) = selected
+        .template_part
+        .clone()
+        .or_else(|| TemplateBody::from_recovery(&envelope.draft))
+    else {
         return Err(Code::InvalidInput.into());
     };
-    let Draft::Template { template, .. } = &envelope.draft else {
-        return Err(Code::InvalidInput.into());
+    let template = match &envelope.draft {
+        Draft::Template { template, .. } => template.clone(),
+        Draft::AdmittedComposite { template, .. } => Some(template.clone()),
+        _ => return Err(Code::InvalidInput.into()),
     };
-    let base = if let Some(id) = template {
+    let base = if let Some(id) = &template {
         let id = convert::id(id)?;
         let loaded = match ctx.read(|r| ArtifactRepository::new(r)?.load_template(id)) {
             Ok(Ok(loaded)) => loaded,
@@ -290,7 +422,11 @@ pub(super) fn restore(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                 ));
             }
         };
-        let original = envelope.originals.first().ok_or(Code::WrongBinding)?;
+        let original = envelope
+            .originals
+            .iter()
+            .find(|o| o.kind == crate::data::edit_recovery::model::OriginalKind::Template)
+            .ok_or(Code::WrongBinding)?;
         let token = loaded.source();
         let actual_digest: String = token.sha256().iter().map(|b| format!("{b:02x}")).collect();
         let same = actual_digest == original.source_digest
@@ -306,13 +442,23 @@ pub(super) fn restore(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                 }),
             ));
         }
-        if !same {
+        if !same || selected.template_part.is_some() {
             let reapply_current = selected
                 .current
                 .as_ref()
                 .is_some_and(|v| v.template().is_ok_and(|s| s.token == *token));
-            if reapply.is_none() || !reapply_current {
-                selected.intents = offered(&body, loaded.artifact())?;
+            if reapply.is_none() || component_request || !reapply_current {
+                let base = artifact::decode_template(original.snapshot.as_bytes())
+                    .map_err(|_| Code::RecoveryRejected)?;
+                let plan = super::recovery_template::plan(&body, &base, loaded.artifact())?;
+                selected.intents = plan
+                    .changes
+                    .iter()
+                    .map(|change| ReapplyIntent::Change {
+                        change: change.id.clone(),
+                    })
+                    .collect();
+                selected.comparison = Some(plan);
                 selected.current = Some(Arc::new(View::Template(loaded)));
                 selected.phase = "conflict";
                 selected.rebuild()?;
@@ -329,10 +475,36 @@ pub(super) fn restore(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                 ));
             }
             let choices = reapply.as_ref().ok_or(Code::InvalidInput)?;
-            if choices.is_empty() || choices.iter().any(|i| !selected.intents.contains(i)) {
+            let mapped_choices = choices
+                .iter()
+                .map(|choice| match choice {
+                    ReapplyIntent::Name => ReapplyIntent::Change {
+                        change: "[\"name\"]".into(),
+                    },
+                    other => other.clone(),
+                })
+                .collect::<Vec<_>>();
+            let choices = &mapped_choices;
+            if choices.iter().any(|i| !selected.intents.contains(i)) {
                 return Err(Code::InvalidInput.into());
             }
-            body = apply_selected(&body, loaded.artifact(), choices)?;
+            let ids = choices
+                .iter()
+                .map(|choice| match choice {
+                    ReapplyIntent::Change { change } => Ok(change.clone()),
+                    _ => Err(Code::InvalidInput.into()),
+                })
+                .collect::<Reply<Vec<_>>>()?;
+            body = serde_json::from_value(
+                selected
+                    .comparison
+                    .as_ref()
+                    .ok_or(Code::WrongBinding)?
+                    .apply(&ids)
+                    .map_err(|_| Code::WrongBinding)?,
+            )
+            .map_err(|_| Code::InvalidInput)?;
+            super::recovery_template::restoration_intents(&mut body, loaded.artifact())?;
         }
         Some(Arc::new(View::Template(loaded)))
     } else {
@@ -341,6 +513,21 @@ pub(super) fn restore(ctx: &mut Context, job: &Job) -> Reply<Completed> {
         }
         None
     };
+    if envelope.attempt.as_ref().is_some_and(|a| {
+        matches!(
+            a.result,
+            crate::data::edit_recovery::model::SaveState::Unknown
+                | crate::data::edit_recovery::model::SaveState::Uncertain
+        )
+    }) {
+        selected.phase = "uncertain";
+        return Ok(Completed::new(
+            (),
+            Ok(ResultDto::RecoverySelection {
+                selection: selected.dto(*snapshot),
+            }),
+        ));
+    }
     let draft_id = envelope.key.draft_id.clone();
     let seed = if base.is_none() {
         Some(
@@ -382,6 +569,11 @@ pub(super) fn restore(ctx: &mut Context, job: &Job) -> Reply<Completed> {
         deposit: None,
         original: None,
         expected_digest: None,
+        restore_assets: Some(ReceiptDto {
+            key: envelope.key.clone(),
+            deposit_id: envelope.deposit_id.clone(),
+            digest: selected.deposit.payload_digest().into(),
+        }),
         restored_from: Some(envelope.key),
         proof: None,
         release_first: None,
@@ -416,6 +608,7 @@ pub(super) fn restore(ctx: &mut Context, job: &Job) -> Reply<Completed> {
     );
     Ok(result)
 }
+#[cfg(test)]
 fn offered(body: &TemplateBody, current: &TemplateArtifact) -> Reply<Vec<ReapplyIntent>> {
     let mut out = vec![ReapplyIntent::Name, ReapplyIntent::Presentation];
     let now = body_from_source(current)?;
@@ -457,6 +650,7 @@ fn offered(body: &TemplateBody, current: &TemplateArtifact) -> Reply<Vec<Reapply
     }
     Ok(out)
 }
+#[cfg(test)]
 fn apply_selected(
     body: &TemplateBody,
     current: &TemplateArtifact,
@@ -465,6 +659,9 @@ fn apply_selected(
     let mut draft = body_from_source(current)?;
     for choice in choices {
         let id = match choice {
+            ReapplyIntent::Change { .. } | ReapplyIntent::ComponentTemplate => {
+                return Err(Code::InvalidInput.into())
+            }
             ReapplyIntent::Name => {
                 draft.name = body.name.clone();
                 continue;
@@ -515,6 +712,7 @@ fn apply_selected(
     Ok(draft)
 }
 
+#[cfg(test)]
 fn title_reapply(from: &DraftConfiguration, to: &DraftConfiguration) -> Option<Intent<String>> {
     match (from, to) {
         (

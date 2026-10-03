@@ -160,6 +160,7 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             original: Some(Box::new(registration)),
             expected_digest: None,
             restored_from: None,
+            restore_assets: None,
             proof: None,
             release_first: None,
             release_latest: None,
@@ -258,12 +259,6 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             let frozen =
                 Deposit::freeze(record.envelope.clone()).map_err(|_| Code::RecoveryRejected)?;
             let mut notes = vec![];
-            let captured = recovery::capture_assets(ctx, job, &frozen, &mut notes);
-            entry.original = Some(Box::new((entry.original.take(), notes)));
-            if let Err(error) = captured {
-                entry.error = Some(error);
-                return reply(entry);
-            }
             let binding = job.binding.as_ref().ok_or(Code::WrongBinding)?;
             if ctx.session_key(&binding.registration).is_none() {
                 let target = ArtifactSourceId::Template(entry.artifact()?.template_id())
@@ -279,6 +274,55 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             let key = ctx
                 .session_key(&binding.registration)
                 .ok_or(Code::WrongBinding)?;
+            if let Some(receipt) = &entry.restore_assets {
+                let copied = (|| -> Reply<()> {
+                    if let Some(base) = &entry.base {
+                        let source = base.template()?;
+                        let current = ctx
+                            .read(|ready| ArtifactRepository::new(ready)?.load_template(source.id))
+                            .map_err(|_| Code::RuntimeRejected)?
+                            .map_err(|_| Code::RepositoryRejected)?;
+                        if current.source() != &source.token {
+                            return Err(Code::WrongBinding.into());
+                        }
+                    }
+                    let store = job.recovery.connect().map_err(|_| Code::SinkUnavailable)?;
+                    let store = store.lock().map_err(|_| Code::Unavailable)?;
+                    let deposit = store
+                        .read(&receipt.key, &receipt.deposit_id)
+                        .map_err(|_| Code::RecoveryRejected)?;
+                    if deposit.payload_digest() != receipt.digest {
+                        return Err(Code::WrongBinding.into());
+                    }
+                    let chosen = entry.body.recovery(
+                        entry
+                            .base
+                            .as_ref()
+                            .map(|base| base.template().map(|t| t.id.to_string()))
+                            .transpose()?,
+                    );
+                    ctx.read(|ready| {
+                        store.restore_selected_assets(
+                            &deposit,
+                            &chosen,
+                            ready.locked_project().canonical_root(),
+                        )
+                    })
+                    .map_err(|_| Code::RuntimeRejected)?
+                    .map_err(|_| Code::RecoveryRejected)?;
+                    Ok(())
+                })();
+                if let Err(error) = copied {
+                    entry.error = Some(error);
+                    return reply(entry);
+                }
+            }
+            let captured = recovery::capture_assets(ctx, job, &frozen, &mut notes);
+            entry.original = Some(Box::new((entry.original.take(), notes)));
+            if let Err(error) = captured {
+                entry.error = Some(error);
+                return reply(entry);
+            }
             recovery::connect(&mut ctx.session_control(), job, binding);
             let payload = entry.payload(job, &record);
             let previous = match ctx
@@ -461,6 +505,27 @@ fn refresh(ctx: &mut Context, entry: &mut Entry) -> Reply<()> {
     if &digest != expected {
         return Err(Code::WrongBinding.into());
     }
+    fn consume(fields: &mut [DraftField]) {
+        for field in fields {
+            field.restore = false;
+            field.archive_index = None;
+            field.archive_order.clear();
+            field.archive_title = None;
+            match &mut field.configuration {
+                DraftConfiguration::Group { members, .. } => consume(members),
+                DraftConfiguration::SingleChoice { options }
+                | DraftConfiguration::MultiChoice { options } => {
+                    for option in options {
+                        option.restore = false;
+                        option.archive_index = None;
+                        option.archive_order.clear();
+                    }
+                }
+                _ => (),
+            }
+        }
+    }
+    consume(&mut entry.body.fields);
     entry.base = Some(Arc::new(View::Template(loaded)));
     entry.seed = None;
     entry.phase = "saved";

@@ -119,6 +119,7 @@ export type DocumentRequest =
   | { action: "edit_retry"; owner: Id; generation: string; body: EditBody }
   | {
       action: "edit_restore";
+      reapply?: import("./workspace").RecoveryApply;
       key: RecoveryKey;
       deposit_id: string;
       digest: string;
@@ -168,7 +169,13 @@ export type DocumentRequest =
     }
   | { action: "deposit"; owner: Id; generation: string; body: CreationBody }
   | { action: "release"; owner: Id; generation: string; discard: boolean }
-  | { action: "restore"; key: RecoveryKey; deposit_id: string; digest: string };
+  | {
+      action: "restore";
+      key: RecoveryKey;
+      deposit_id: string;
+      digest: string;
+      reapply?: import("./workspace").RecoveryApply;
+    };
 export type DocumentResponse =
   | { kind: "asset"; metadata: AssetMetadata; contentType?: string | null }
   | { kind: "asset_chunk"; data: string; done: boolean }

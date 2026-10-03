@@ -43,6 +43,7 @@
     "scripts/updater-test-server.mjs",
     "scripts/manage-release-key.ps1",
     "scripts/build-release-candidate.ps1",
-    "scripts/store-identity.py"
+    "scripts/store-identity.py",
+    "docs/v1.0.1-candidate-notes.md"
   ]
 }

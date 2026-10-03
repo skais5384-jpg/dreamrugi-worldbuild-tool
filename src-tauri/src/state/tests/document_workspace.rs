@@ -1,5 +1,6 @@
 use super::*;
 use crate::data::edit_recovery::model::Key;
+mod archive_recovery;
 mod fix;
 mod groups;
 mod replace_m44;
@@ -1276,7 +1277,22 @@ fn document_creation_guides_empty_values_required_validation_and_raw_recovery() 
     let restored = request(&h, &p, restore)["value"].clone();
     assert_eq!(restored["body"]["fields"], body["fields"]);
     body["fields"][2]["value"]["value"]["value"] = "0".into();
-    let saved = save(&h, &p, &restored, "5", body);
+    let blank_recovered = save(&h, &p, &restored, "5", body.clone());
+    assert!(blank_recovered["outcome"].is_null());
+    assert_eq!(blank_recovered["body"], body);
+    // Recovery preserves raw Set/Unset. The user explicitly clears unsupported
+    // blank scalar/choice tokens; ordinary new-document normalization above stays.
+    for (index, field) in body["fields"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        if index != 2 {
+            field["value"] = json!({"intent":"unset"});
+        }
+    }
+    let saved = save(&h, &p, &blank_recovered, "6", body);
     assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
     let doc: Value = serde_json::from_slice(
         &fs::read(h.root.join(format!(

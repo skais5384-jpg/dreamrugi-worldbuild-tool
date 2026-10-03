@@ -1,3 +1,4 @@
+import { rebaseRestorationIntents } from "./archiveDefinition";
 import { DocumentController } from "./documentController";
 import { BridgeFailure } from "../bridge/client";
 import type { Id, ResultDto, Template, Work } from "../bridge/types";
@@ -560,7 +561,18 @@ export class WorkspaceController {
       const content = await this.content(result.status, d.project);
       const current = this.state.draft;
       if (current?.status.owner === d.status.owner)
-        this.publish({ draft: { ...current, base: content.base } });
+        this.publish({
+          draft: {
+            ...current,
+            base: content.base,
+            body: rebaseRestorationIntents(
+              current.body,
+              content.base,
+              result.status.identities,
+              current.generation === result.status.generation,
+            ),
+          },
+        });
       await this.shell.refresh();
     }
   }
@@ -583,7 +595,18 @@ export class WorkspaceController {
       const content = await this.content(result.status, d.project);
       const current = this.state.draft;
       if (current?.status.owner === d.status.owner)
-        this.publish({ draft: { ...current, base: content.base } });
+        this.publish({
+          draft: {
+            ...current,
+            base: content.base,
+            body: rebaseRestorationIntents(
+              current.body,
+              content.base,
+              result.status.identities,
+              current.generation === result.status.generation,
+            ),
+          },
+        });
     });
   }
   reload() {
@@ -687,6 +710,54 @@ export class WorkspaceController {
       const selected = this.state.selected,
         project = this.shell.snapshot().projectId;
       if (!selected || !project || this.state.draft) return;
+      const content = this.state.recovery;
+      if (
+        reapply !== null &&
+        content?.basis &&
+        content.draft.kind !== "template" &&
+        !content.templatePart
+      ) {
+        const row = this.state.page?.entries.find(
+          (row) =>
+            row.row.key?.projectFingerprint ===
+              selected.key.projectFingerprint &&
+            row.row.key.draftId === selected.key.draftId &&
+            row.row.key.generation === selected.key.generation,
+        );
+        if (!row) return;
+        const apply = {
+          ...content.basis,
+          selected: reapply
+            .filter((choice) => choice.kind === "change")
+            .map((choice) => choice.change),
+        };
+        const compared = requireResult(
+          await this.work({
+            kind: "recovery_restore",
+            project,
+            snapshot: selected.snapshot,
+            reapply: null,
+          }),
+          "recovery_selection",
+        );
+        await this.readRecovery(compared.selection);
+        const latestBasis = this.state.recovery?.basis;
+        if (
+          !latestBasis ||
+          latestBasis.templateDigest !== apply.templateDigest ||
+          latestBasis.documentDigest !== apply.documentDigest
+        ) {
+          this.publish({ message: text("recoveryCompare.stale") });
+          return;
+        }
+        if (
+          content.draft.kind === "document" &&
+          content.draft.document === null
+        )
+          await this.restoreCreation(row, apply);
+        else await this.restoreDocument(row, apply);
+        return;
+      }
       const result = await this.work({
         kind: "recovery_restore",
         project,
@@ -703,12 +774,18 @@ export class WorkspaceController {
       );
     });
   }
-  async restoreCreation(row: RecoveryRow) {
-    await this.documents.restore(row);
+  async restoreCreation(
+    row: RecoveryRow,
+    reapply?: import("../bridge/workspace").RecoveryApply,
+  ) {
+    await this.documents.restore(row, reapply);
     if (this.documents.snapshot().draft) this.publish({ center: false });
   }
-  async restoreDocument(row: RecoveryRow) {
-    await this.documents.restoreEdit(row);
+  async restoreDocument(
+    row: RecoveryRow,
+    reapply?: import("../bridge/workspace").RecoveryApply,
+  ) {
+    await this.documents.restoreEdit(row, reapply);
     if (!this.documents.snapshot().error) this.publish({ center: false });
   }
   requestDiscard(row: RecoveryRow) {

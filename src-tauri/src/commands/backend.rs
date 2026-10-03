@@ -10,6 +10,8 @@ pub(crate) use document_workspace::install_issue_snapshot_hook;
 pub(crate) mod project_backup;
 pub(crate) mod project_settings;
 pub(crate) mod recovery;
+mod recovery_document;
+pub(crate) mod recovery_merge;
 pub(crate) mod workspace;
 use super::{convert, dto::*, projection};
 use crate::data::{

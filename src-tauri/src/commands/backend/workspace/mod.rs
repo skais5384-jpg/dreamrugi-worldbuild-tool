@@ -13,6 +13,7 @@ use crate::data::{
 use std::collections::{BTreeMap, BTreeSet};
 pub(crate) mod center;
 mod operations;
+pub(super) mod recovery_template;
 pub(crate) use operations::{control, execute};
 
 #[derive(Default)]
@@ -68,6 +69,7 @@ struct Entry {
     original: Option<Box<dyn Any + Send>>,
     expected_digest: Option<String>,
     restored_from: Option<Key>,
+    restore_assets: Option<ReceiptDto>,
     proof: Option<crate::data::edit_recovery::Proof>,
     release_first: Option<Box<dyn Any + Send>>,
     release_latest: Option<Box<dyn Any + Send>>,
@@ -291,6 +293,9 @@ fn body_from_source(t: &artifact::TemplateArtifact) -> Reply<TemplateBody> {
                     id: o.id.clone(),
                     label: o.label.clone(),
                     archived: o.lifecycle == "Archived",
+                    restore: false,
+                    archive_index: None,
+                    archive_order: vec![],
                 })
             })
             .collect::<Reply<Vec<_>>>()?;
@@ -322,6 +327,7 @@ fn body_from_source(t: &artifact::TemplateArtifact) -> Reply<TemplateBody> {
             _ => return Err(Code::InvalidInput.into()),
         };
         fields.push(DraftField {
+            archive_title: None,
             writing_guide: None,
             id: f.id.clone(),
             label: f.label.clone(),
@@ -330,6 +336,9 @@ fn body_from_source(t: &artifact::TemplateArtifact) -> Reply<TemplateBody> {
             presentation: Intent::Keep,
             default: Intent::Keep,
             archived: f.lifecycle == "Archived",
+            restore: false,
+            archive_index: None,
+            archive_order: vec![],
         });
     }
     Ok(TemplateBody {
@@ -343,7 +352,7 @@ fn body_from_source(t: &artifact::TemplateArtifact) -> Reply<TemplateBody> {
 }
 
 /// 새 항목은 backend가 발급한 논리적 draft ID와 역할에 묶인다. 복원·재시도에도 매핑이 같다.
-fn allocated_id(draft: &str, role: &str, raw: &str) -> Reply<String> {
+pub(super) fn allocated_id(draft: &str, role: &str, raw: &str) -> Reply<String> {
     let local = raw.strip_prefix("new:").ok_or(Code::InvalidInput)?;
     if !crate::data::edit_recovery::model::valid_id(local) {
         return Err(Code::InvalidInput.into());
@@ -403,6 +412,7 @@ fn normalize_parts(
         let id = field_id(&raw.id)?;
         let original = source.fields().get(&id);
         let mut archived_options = BTreeSet::new();
+        let mut restored_options = BTreeSet::new();
         let options = match &raw.configuration {
             DraftConfiguration::SingleChoice { options }
             | DraftConfiguration::MultiChoice { options } => options.as_slice(),
@@ -414,6 +424,17 @@ fn normalize_parts(
             let oid = option_id(id, &o.id)?;
             order.push(oid);
             definitions.push(NewChoiceOptionDraft::new(oid, o.label.clone()));
+            if o.restore {
+                if o.archived
+                    || original
+                        .and_then(|f| f.configuration().options())
+                        .and_then(|v| v.get(&oid))
+                        .is_none_or(|v| v.lifecycle() != artifact::OptionLifecycle::Archived)
+                {
+                    return Err(Code::WrongBinding.into());
+                }
+                restored_options.insert(oid);
+            }
             if o.archived {
                 archived_options.insert(oid);
             }
@@ -552,6 +573,8 @@ fn normalize_parts(
             ),
             default,
             archived: raw.archived,
+            restore: raw.restore,
+            restored_options,
             archived_options,
         });
     }

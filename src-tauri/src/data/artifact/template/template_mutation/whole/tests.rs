@@ -10,6 +10,96 @@ const G: &str = "33333333-3333-4333-8333-333333333333";
 const A: &str = "44444444-4444-4444-8444-444444444444";
 const B: &str = "55555555-5555-4555-8555-555555555555";
 
+#[test]
+fn explicit_restoration_keeps_identity_title_and_unknown_metadata_after_reopen() {
+    let active = card_title_source(Some(G));
+    let mut draft = card_title_draft(&active, None);
+    draft.fields[0].archived = true;
+    let archived = prepare_template_draft(&active, active.revision, LATER, draft)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    let mut restore = card_title_draft(&archived, None);
+    assert!(prepare_template_draft(&archived, archived.revision, LATER, restore.clone()).is_err());
+    restore.fields[0].restore = true;
+    restore.fields[0].label = "restored and renamed".into();
+    let restored = prepare_template_draft(&archived, archived.revision, LATER, restore)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    let reopened = decode_template(&encode_template(&restored).unwrap()).unwrap();
+    let id: FieldId = F.parse().unwrap();
+    assert_eq!(reopened.field_order, vec![id]);
+    assert_eq!(
+        reopened.fields[&id].initial_default_value,
+        archived.fields[&id].initial_default_value
+    );
+    assert_eq!(
+        reopened.fields[&id].presentation,
+        archived.fields[&id].presentation
+    );
+    assert_eq!(
+        reopened.fields[&id].configuration,
+        archived.fields[&id].configuration
+    );
+    assert_eq!(
+        reopened.fields[&id].introduced_revision,
+        archived.fields[&id].introduced_revision
+    );
+    assert_eq!(reopened.fields[&id].extra, archived.fields[&id].extra);
+    assert_eq!(archived.fields[&id].lifecycle, FieldLifecycle::Archived);
+}
+
+#[test]
+fn restoration_is_scoped_and_does_not_implicitly_restore_archived_children() {
+    let source = card_title_source(Some(G));
+    let mut archive = card_title_draft(&source, None);
+    archive.fields[0].members[0].archived = true;
+    archive.fields[0].archived = true;
+    let archived = prepare_template_draft(&source, source.revision, LATER, archive)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    let mut restore = card_title_draft(&archived, None);
+    restore.fields[0].restore = true;
+    restore.fields[0].members[0].archived = true;
+    let restored = prepare_template_draft(&archived, archived.revision, LATER, restore)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    let (_, children) = restored.fields[&F.parse().unwrap()]
+        .configuration
+        .members()
+        .unwrap();
+    assert_eq!(
+        children[&G.parse().unwrap()].lifecycle,
+        FieldLifecycle::Archived
+    );
+    let mut child_restore = card_title_draft(&restored, None);
+    assert!(
+        prepare_template_draft(&restored, restored.revision, LATER, child_restore.clone()).is_err()
+    );
+    child_restore.fields[0].members[0].restore = true;
+    let restored_child = prepare_template_draft(&restored, restored.revision, LATER, child_restore)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    let (order, children) = restored_child.fields[&F.parse().unwrap()]
+        .configuration
+        .members()
+        .unwrap();
+    assert_eq!(order, &[G.parse().unwrap()]);
+    assert_eq!(
+        children[&G.parse().unwrap()].lifecycle,
+        FieldLifecycle::Active
+    );
+    let mut forged = card_title_draft(&restored_child, None);
+    forged.fields[0].restore = true;
+    assert!(
+        prepare_template_draft(&restored_child, restored_child.revision, LATER, forged).is_err()
+    );
+}
+
 fn card_title_source(title: Option<&str>) -> TemplateArtifact {
     let mut wire: serde_json::Value =
         serde_json::from_slice(&encode_template(&fixture()).unwrap()).unwrap();
@@ -36,6 +126,8 @@ fn card_title_draft(source: &TemplateArtifact, title: Option<FieldId>) -> Templa
         presentation_token: None,
         default: None,
         archived: false,
+        restore: false,
+        restored_options: Default::default(),
         archived_options: BTreeSet::new(),
     };
     TemplateDraftInput {
@@ -57,6 +149,8 @@ fn card_title_draft(source: &TemplateArtifact, title: Option<FieldId>) -> Templa
             presentation_token: None,
             default: None,
             archived: false,
+            restore: false,
+            restored_options: Default::default(),
             archived_options: BTreeSet::new(),
         }],
     }
@@ -244,6 +338,8 @@ fn unchanged(source: &TemplateArtifact) -> TemplateDraftInput {
                     presentation_token: f.presentation.token.clone(),
                     default: None,
                     archived: false,
+                    restore: false,
+                    restored_options: Default::default(),
                     archived_options: BTreeSet::new(),
                 }
             })
@@ -317,6 +413,8 @@ fn whole_new_field_first_default_is_final_value_and_net_noop_stays_noop() {
         presentation_token: None,
         default: Some(FieldValueDraft::number("20".into())),
         archived: false,
+        restore: false,
+        restored_options: Default::default(),
         archived_options: BTreeSet::new(),
     });
     let added = prepare_template_draft(&source, source.revision, LATER, draft.clone())
@@ -402,6 +500,8 @@ fn whole_create_is_one_unpublished_candidate_revision_one() {
             presentation_token: None,
             default: Some(FieldValueDraft::number("20".into())),
             archived: false,
+            restore: false,
+            restored_options: Default::default(),
             archived_options: BTreeSet::new(),
         }],
     };

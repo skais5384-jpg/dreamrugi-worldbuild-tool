@@ -1,4 +1,10 @@
 import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
+import {
+  archiveDefinition,
+  restoreDefinition,
+  changeGroupMembers,
+} from "./archiveDefinition";
+import { ArchivedDefinitionActions } from "./ArchivedDefinitionActions";
 import { GroupDefinition } from "./GroupDefinition";
 import {
   orderedTemplateItemIds,
@@ -734,6 +740,7 @@ export function WholeTemplate({
                       changeTitle={(cardTitleField) =>
                         editField(current.id, (f) => ({
                           ...f,
+                          archiveTitle: undefined,
                           configuration:
                             f.configuration.kind === "group"
                               ? {
@@ -757,36 +764,12 @@ export function WholeTemplate({
                       templates={templates}
                       change={(members) =>
                         editField(current.id, (f) => {
-                          if (f.configuration.kind !== "group") return f;
-                          const intent = f.configuration.cardTitleField;
-                          const title =
-                            intent?.intent === "set"
-                              ? intent.value
-                              : intent?.intent === "unset"
-                                ? null
-                                : original?.cardTitleField;
-                          const member = members.find((m) => m.id === title);
-                          const previousMember = f.configuration.members.find(
-                            (m) => m.id === title,
+                          return changeGroupMembers(
+                            f,
+                            members,
+                            original?.cardTitleField,
+                            canonical,
                           );
-                          const changedTarget =
-                            title &&
-                            (intent?.intent === "set" ||
-                              previousMember?.configuration.kind ===
-                                "rich_text") &&
-                            (!member ||
-                              member.configuration.kind !== "rich_text" ||
-                              (member.archived && intent?.intent === "set"));
-                          return {
-                            ...f,
-                            configuration: {
-                              ...f.configuration,
-                              members,
-                              cardTitleField: changedTarget
-                                ? { intent: "unset" as const }
-                                : intent,
-                            },
-                          };
                         })
                       }
                     />
@@ -1038,7 +1021,39 @@ export function WholeTemplate({
                                 ))}
                             </PropertyRow>
                             {option.archived ? (
-                              <span>{text("whole.archived")}</span>
+                              <Button
+                                type="button"
+                                disabled={actionBlocked || draft.body.composing}
+                                onClick={() => {
+                                  editField(current.id, (f) =>
+                                    "options" in f.configuration
+                                      ? {
+                                          ...f,
+                                          configuration: {
+                                            ...f.configuration,
+                                            options: restoreDefinition(
+                                              f.configuration.options,
+                                              option.id,
+                                              original?.options.find(
+                                                (o) =>
+                                                  o.id === canonical(option.id),
+                                              )?.lifecycle === "Archived",
+                                            ),
+                                          },
+                                        }
+                                      : f,
+                                  );
+                                  setNotice(text("archive.restoredDraft"));
+                                }}
+                              >
+                                {text(
+                                  original?.options.find(
+                                    (o) => o.id === canonical(option.id),
+                                  )?.lifecycle === "Archived"
+                                    ? "archive.restore"
+                                    : "archive.undo",
+                                )}
+                              </Button>
                             ) : (
                               <div className="actions">
                                 <Button
@@ -1055,14 +1070,9 @@ export function WholeTemplate({
                                                 ? f.configuration.options.filter(
                                                     (o) => o.id !== option.id,
                                                   )
-                                                : f.configuration.options.map(
-                                                    (o) =>
-                                                      o.id === option.id
-                                                        ? {
-                                                            ...o,
-                                                            archived: true,
-                                                          }
-                                                        : o,
+                                                : archiveDefinition(
+                                                    f.configuration.options,
+                                                    option.id,
                                                   ),
                                             },
                                           }
@@ -1174,9 +1184,9 @@ export function WholeTemplate({
                             fields: b.fields.filter((f) => f.id !== current.id),
                           }));
                         else
-                          editField(current.id, (f) => ({
-                            ...f,
-                            archived: true,
+                          changed((b) => ({
+                            ...b,
+                            fields: archiveDefinition(b.fields, current.id),
                           }));
                         setSelected(null);
                       }}
@@ -1196,8 +1206,11 @@ export function WholeTemplate({
           </div>
         </section>
         {!!archived.length && (
-          <details>
-            <summary>{text("whole.history")}</summary>
+          <details open>
+            <summary>
+              {text("whole.archived")} ({archived.length})
+            </summary>
+            <HelpText>{text("archive.restoreHelp")}</HelpText>
             {archived.map((f) => (
               <div key={f.id}>
                 <h4>
@@ -1205,6 +1218,59 @@ export function WholeTemplate({
                   {text("whole.archived")}
                 </h4>
                 <p>{text(`whole.kind.${f.configuration.kind}`)}</p>
+                <ArchivedDefinitionActions
+                  canonical={canonical}
+                  field={f}
+                  original={draft.base.fields.find(
+                    (s) => s.id === canonical(f.id),
+                  )}
+                  disabled={actionBlocked || draft.body.composing}
+                  change={(value) => {
+                    changed((b) => ({
+                      ...b,
+                      fields: restoreDefinition(
+                        b.fields,
+                        f.id,
+                        draft.base.fields.find((s) => s.id === canonical(f.id))
+                          ?.lifecycle === "Archived",
+                      ).map((item) =>
+                        item.id === f.id
+                          ? {
+                              ...value,
+                              archiveIndex: item.archiveIndex,
+                              archiveOrder: item.archiveOrder,
+                            }
+                          : item,
+                      ),
+                    }));
+                    setSelected(f.id);
+                    setNotice(text("archive.restoredDraft"));
+                  }}
+                />
+                <Button
+                  type="button"
+                  disabled={actionBlocked || draft.body.composing}
+                  onClick={() => {
+                    changed((b) => ({
+                      ...b,
+                      fields: restoreDefinition(
+                        b.fields,
+                        f.id,
+                        draft.base.fields.find((s) => s.id === canonical(f.id))
+                          ?.lifecycle === "Archived",
+                      ),
+                    }));
+                    setSelected(f.id);
+                    setNotice(text("archive.restoredDraft"));
+                  }}
+                >
+                  {text(
+                    draft.base.fields.find((s) => s.id === canonical(f.id))
+                      ?.lifecycle === "Archived"
+                      ? "archive.restore"
+                      : "archive.undo",
+                  )}
+                </Button>
                 {draft.base.fields.find((s) => s.id === canonical(f.id)) && (
                   <ValueRead
                     value={

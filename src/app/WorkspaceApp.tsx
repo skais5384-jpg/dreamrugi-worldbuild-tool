@@ -1449,6 +1449,13 @@ export default function WorkspaceApp({
               collaborative={collaborative}
               svnStatus={collaborative ? svnStatus : null}
               onCommitDocument={(id) => setSvnCommitTarget(id)}
+              onRestoreField={(id) => {
+                const row = app.rows.find((item) => item.id === id);
+                if (row) {
+                  setMode("templates");
+                  void controller.navigate({ kind: "select", id: row.id });
+                }
+              }}
               onPdfCompleted={(cleanupWarning) => {
                 setPdfCompletionPause(null);
                 setPdfCompletion({

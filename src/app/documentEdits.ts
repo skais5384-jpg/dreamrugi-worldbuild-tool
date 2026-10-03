@@ -642,11 +642,15 @@ export class DocumentEdits {
     const entry = this.entries[id];
     if (entry) this.publish(id, { ...entry, localUncommitted: false });
   }
-  async restore(row: RecoveryRow) {
+  async restore(
+    row: RecoveryRow,
+    reapply?: import("../bridge/workspace").RecoveryApply,
+  ) {
     if (!row.row.key || !row.row.depositId || !row.row.payloadDigest)
       throw new BridgeFailure("protocol");
     const r = await this.work({
       action: "edit_restore",
+      reapply,
       key: row.row.key,
       deposit_id: row.row.depositId,
       digest: row.row.payloadDigest,

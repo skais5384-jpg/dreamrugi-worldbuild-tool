@@ -25,6 +25,8 @@ pub(crate) struct FieldDraftInput {
     /// None은 이 backend 원본의 current default를 그대로 유지한다.
     pub(crate) default: Option<FieldValueDraft>,
     pub(crate) archived: bool,
+    pub(crate) restore: bool,
+    pub(crate) restored_options: BTreeSet<OptionId>,
     pub(crate) archived_options: BTreeSet<OptionId>,
 }
 
@@ -40,8 +42,9 @@ pub(crate) fn prepare_template_draft(
         .revision
         .checked_increment()
         .unwrap_or(source.revision);
+    let restoring = restorations(source, &draft)?;
     let candidate = assemble(source, draft, introduction)?;
-    finish_candidate(source, candidate, timestamp, false)
+    finish_candidate_with_restorations(source, candidate, timestamp, false, &restoring)
 }
 
 pub(crate) fn unpublished_seed(
@@ -96,11 +99,42 @@ fn admit(
     Ok(())
 }
 
+// Only whole-draft inputs carry this explicit intent. Ordinary mutations retain the
+// historical prohibition. Identity, ownership and revision admission are unchanged.
+fn restorations(
+    source: &TemplateArtifact,
+    draft: &TemplateDraftInput,
+) -> Result<Restorations, TemplateMutationError> {
+    let mut result = Restorations::default();
+    for input in &draft.fields {
+        let original = source.fields.get(&input.id);
+        if input.restore {
+            if input.archived || original.is_none_or(|f| f.lifecycle != FieldLifecycle::Archived) {
+                return Err(TemplateMutationError::invalid_field_draft(input.id));
+            }
+            result.fields.insert(input.id);
+        }
+        for id in &input.restored_options {
+            if input.archived_options.contains(id)
+                || original
+                    .and_then(|f| f.configuration.options())
+                    .and_then(|o| o.get(id))
+                    .is_none_or(|o| o.lifecycle != OptionLifecycle::Archived)
+            {
+                return Err(TemplateMutationError::invalid_option_draft(input.id, *id));
+            }
+            result.options.insert((input.id, *id));
+        }
+    }
+    Ok(result)
+}
+
 fn assemble(
     source: &TemplateArtifact,
     draft: TemplateDraftInput,
     introduction: TemplateRevision,
 ) -> Result<TemplateArtifact, TemplateMutationError> {
+    let restoring = restorations(source, &draft)?;
     let mut candidate = source.clone();
     candidate.sections = super::super::sections::assemble(&source.sections, draft.sections)
         .map_err(TemplateMutationError::invalid_candidate)?;
@@ -282,7 +316,9 @@ fn assemble(
             }
         }
         if validate_new_default && definition.kind == FieldKind::Number {
-            definition
+            let mut active_default = definition.clone();
+            active_default.lifecycle = FieldLifecycle::Active;
+            active_default
                 .validate_fresh_default()
                 .map_err(|error| TemplateMutationError::invalid_current_default(id, error))?;
         }
@@ -339,7 +375,7 @@ fn assemble(
             }
         }
     }
-    validate_historical_invariants(source, &candidate, false)?;
+    validate_historical_invariants_with_restorations(source, &candidate, false, &restoring)?;
     // Option 보관과 default 교체를 모두 반영한 다음 한 번만 의미를 검사한다.
     Ok(candidate)
 }

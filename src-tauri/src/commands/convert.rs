@@ -76,6 +76,13 @@ impl ValueDto {
             Self::RichText { content } => D::from_normalized_rich_text(rich(content)?),
         })
     }
+    pub(crate) fn preserved_creation_value(&self) -> Reply<artifact::FieldValue> {
+        // Recovery carries an explicit Set, rather than an untouched empty editor.
+        if matches!(self, Self::Unset {}) {
+            return Ok(artifact::DocumentValueEdit::unset().into_field_value());
+        }
+        Ok(self.document_value()?.into_field_value())
+    }
     pub(crate) fn creation_value(&self) -> Reply<artifact::FieldValue> {
         // 비어 있는 신규 입력만 미설정이다. 공백, 0, 잘못된 원시 입력은 지우거나 보정하지 않는다.
         let empty = match self {
@@ -147,6 +154,12 @@ impl ValueDto {
     }
 }
 pub(crate) fn edits(values: &[DocumentEdit]) -> Reply<artifact::DocumentEditSet> {
+    edits_with_policy(values, false)
+}
+pub(crate) fn edits_with_policy(
+    values: &[DocumentEdit],
+    preserved: bool,
+) -> Reply<artifact::DocumentEditSet> {
     use artifact::DocumentEdit as D;
     let mut fields = std::collections::BTreeSet::new();
     let mut renamed = false;
@@ -186,7 +199,7 @@ pub(crate) fn edits(values: &[DocumentEdit]) -> Reply<artifact::DocumentEditSet>
                     return Err(Code::InvalidInput.into());
                 }
                 if let ValueDto::Group { instances } = value {
-                    D::SetGroup(f, group_inputs(instances)?)
+                    D::SetGroup(f, group_inputs_with_policy(instances, preserved)?)
                 } else {
                     D::SetValue(f, value.document_value()?)
                 }
@@ -344,6 +357,12 @@ pub(crate) fn intent(edit: &TemplateEdit) -> Reply<TemplateEditIntent> {
 pub(crate) fn group_inputs(
     drafts: &[artifact::group::InstanceDraft],
 ) -> Reply<Vec<artifact::group::InstanceInput>> {
+    group_inputs_with_policy(drafts, false)
+}
+pub(crate) fn group_inputs_with_policy(
+    drafts: &[artifact::group::InstanceDraft],
+    preserved: bool,
+) -> Reply<Vec<artifact::group::InstanceInput>> {
     use crate::data::edit_recovery::model::Intent;
     drafts
         .iter()
@@ -360,7 +379,11 @@ pub(crate) fn group_inputs(
                             value: match &f.value {
                                 Intent::Keep => Intent::Keep,
                                 Intent::Unset => Intent::Unset,
-                                Intent::Set(v) => Intent::Set(v.creation_value()?),
+                                Intent::Set(v) => Intent::Set(if preserved {
+                                    v.preserved_creation_value()?
+                                } else {
+                                    v.creation_value()?
+                                }),
                             },
                         })
                     })

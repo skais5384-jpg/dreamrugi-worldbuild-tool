@@ -4,13 +4,13 @@ Windows용 세계관 개발 및 관리 도구입니다. 한국어 UI로 Template
 
 ## 버전과 설치
 
-이 안내는 **1.0.1**의 설치와 사용 기준입니다. 설치 파일을 받을 때는 [1.0.1 릴리스 페이지](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/tag/v1.0.1)에서 실제 게시된 Windows x64 설치 파일과 대응 소스를 확인합니다. 버전별 게시 상태는 [릴리스 목록](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases)에서 확인할 수 있습니다. 공개 소스의 대상은 [공개 저장소](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool)입니다.
+현재 공개판은 **1.0.0**이며, **1.0.1은 사용자 수동 확인 전 후보**입니다. 1.0.1 정식 공개와 운영 업데이트 피드는 보류 중입니다. 설치 파일을 받을 때는 [1.0.0 릴리스 페이지](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases/tag/v1.0.0)에서 실제 게시된 Windows x64 설치 파일과 대응 소스를 확인합니다. 버전별 게시 상태는 [릴리스 목록](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool/releases)에서 확인할 수 있습니다. 공개 소스의 대상은 [공개 저장소](https://github.com/skais5384-jpg/dreamrugi-worldbuild-tool)입니다.
 
 Windows 10 19041 이상/Windows 11 x64와 Microsoft Edge WebView2 Runtime이 필요합니다. GitHub NSIS는 현재 사용자 범위 설치입니다. WebView2가 없으면 설치 중 인터넷 연결이 필요하며 오프라인 PC는 Microsoft 공식 Evergreen Standalone Installer로 런타임을 미리 준비합니다. Store MSIX도 WebView2가 사전 설치되어 있어야 합니다. GitHub 게시와 Store 심사·게시는 별도로 진행되므로 GitHub 릴리스가 Store 게시를 뜻하지 않습니다.
 
 공개0.1.0에는 updater가 없으므로 첫1.0.0은 수동 설치합니다. 실제 게시된 신뢰할 수 있는1.0.0 설치 파일로 업데이트하고 기존 프로젝트·설정·복구 센터의 보관 입력을 확인합니다. 프로젝트 폴더와 보관 입력을 삭제하지 마십시오. 기존 GitHub 제품 identifier를 유지합니다.
 
-1.0.1 후보는 저장 후 자동 리소스 재점검, 문서 트리 들여쓰기, 반복 카드 제목 표시를 개선합니다. 실제 게시 여부는 릴리스 페이지에서 확인합니다. 반복 그룹의 Template 편집에서 **카드 제목 필드**를 선택하면 해당 본문이 카드 제목으로 한 번 표시됩니다. 기존 그룹은 자동 지정하지 않습니다.
+1.0.1 후보는 저장 후 자동 리소스 재점검, 문서 트리 들여쓰기, 반복 카드 제목 표시를 개선합니다. 템플릿에서 보관한 필드·반복 그룹·하위 필드·선택지를 같은 프로젝트에서 복원하고, 복구 센터에서 현재 내용과 보관 입력을 비교해 선택한 부분을 편집으로 회수합니다. 저장 전 보관 취소는 다른 입력을 유지합니다. 복원은 정상 저장으로 확정하며 원 보관본은 남습니다. 실제 게시 여부는 릴리스 페이지에서 확인합니다. 반복 그룹의 Template 편집에서 **카드 제목 필드**를 선택하면 해당 본문이 카드 제목으로 한 번 표시됩니다. 기존 그룹은 자동 지정하지 않습니다.
 
 ## 사용과 보존
 

@@ -42,6 +42,7 @@ fn sample() -> Envelope {
             presentation: Intent::Keep,
             composing: true,
             fields: vec![DraftField {
+                archive_title: None,
                 writing_guide: None,
                 id: "raw invalid field id".into(),
                 label: "미확정".into(),
@@ -53,6 +54,9 @@ fn sample() -> Envelope {
                 presentation: Intent::Unset,
                 default: Intent::Set(ValueDto::Number { value: "-".into() }),
                 archived: false,
+                restore: false,
+                archive_index: None,
+                archive_order: vec![],
             }],
         },
     }
@@ -475,7 +479,7 @@ fn recovery_reader_isolates_future_corrupt_depth_size_id_and_digest() {
     let path = file(&fixture.root(), deposit.key());
     let parent = path.parent().unwrap();
     let mut future: serde_json::Value = serde_json::from_slice(deposit.bytes()).unwrap();
-    future["recoverySchemaVersion"] = 5.into();
+    future["recoverySchemaVersion"] = 6.into();
     fs::write(parent.join("2.json"), serde_json::to_vec(&future).unwrap()).unwrap();
     fs::write(parent.join("3.json"), b"{broken").unwrap();
     fs::write(
@@ -823,7 +827,7 @@ fn m36_recovery_v1_retains_original_bytes_and_rejects_v2_semantics() {
     let deposit = Deposit::freeze(sample()).unwrap();
     let bytes = String::from_utf8(deposit.bytes().to_vec())
         .unwrap()
-        .replace("\"recoverySchemaVersion\":4", "\"recoverySchemaVersion\":1");
+        .replace("\"recoverySchemaVersion\":5", "\"recoverySchemaVersion\":1");
     let decoded = Deposit::decode(bytes.as_bytes()).unwrap();
     assert_eq!(decoded.bytes(), bytes.as_bytes());
     let mut e = sample();
@@ -837,6 +841,6 @@ fn m36_recovery_v1_retains_original_bytes_and_rejects_v2_semantics() {
     assert_eq!(current.bytes(), deposit.bytes());
     let legacy = String::from_utf8(deposit.bytes().to_vec())
         .unwrap()
-        .replace("\"recoverySchemaVersion\":4", "\"recoverySchemaVersion\":1");
+        .replace("\"recoverySchemaVersion\":5", "\"recoverySchemaVersion\":1");
     assert!(Deposit::decode(legacy.as_bytes()).is_err());
 }

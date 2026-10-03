@@ -14,6 +14,9 @@ export interface DraftOption {
   id: string;
   label: string;
   archived: boolean;
+  restore?: boolean;
+  archiveIndex?: number;
+  archiveOrder?: string[];
 }
 export type DraftConfiguration =
   | { kind: "group"; members: DraftField[]; cardTitleField?: Intent<string> }
@@ -38,6 +41,7 @@ export type DraftConfiguration =
     }
   | { kind: "document_link" };
 export interface DraftField {
+  archiveTitle?: Intent<string>;
   id: string;
   label: string;
   configuration: DraftConfiguration;
@@ -46,6 +50,9 @@ export interface DraftField {
   writingGuide?: Intent<string>;
   default: Intent<Value>;
   archived: boolean;
+  restore?: boolean;
+  archiveIndex?: number;
+  archiveOrder?: string[];
 }
 export interface TemplateBody {
   sections?: import("./types").Section[];
@@ -136,6 +143,8 @@ export interface RecoveryPage {
   };
 }
 export type ReapplyIntent =
+  | { kind: "component_template" }
+  | { kind: "change"; change: string }
   | { kind: "name" | "presentation" }
   | {
       kind:
@@ -179,7 +188,24 @@ export type RecoveryDraft =
       fields: { field: string; value: Intent<Value> }[];
       composing: boolean;
     };
+export interface RecoveryChange {
+  id: string;
+  path: string[];
+  status: "proposed" | "conflict" | "blocked";
+  reason?: string | null;
+  original: unknown;
+  current: unknown;
+  preserved: unknown;
+}
+export interface RecoveryApply {
+  templateDigest: string;
+  documentDigest: string | null;
+  selected: string[];
+}
 export interface RecoveryContent {
+  basis?: RecoveryApply | null;
+  templatePart?: boolean;
+  comparison?: RecoveryChange[] | null;
   draft: RecoveryDraft;
   original: Template | null;
   current: Template | null;

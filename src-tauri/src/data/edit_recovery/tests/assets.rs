@@ -241,7 +241,7 @@ fn m37_recovery_media_cannot_be_read_under_older_version_headers() {
     for version in [1, 2] {
         assert!(Deposit::decode(
             raw.replace(
-                "\"recoverySchemaVersion\":4",
+                "\"recoverySchemaVersion\":5",
                 &format!("\"recoverySchemaVersion\":{version}")
             )
             .as_bytes()
@@ -335,7 +335,7 @@ fn m38_group_receipt_and_subprocess_restore_preserve_raw_order_and_shared_bytes(
     for version in [1, 2, 3] {
         assert!(Deposit::decode(
             raw.replace(
-                "\"recoverySchemaVersion\":4",
+                "\"recoverySchemaVersion\":5",
                 &format!("\"recoverySchemaVersion\":{version}")
             )
             .as_bytes()

@@ -109,6 +109,7 @@ export function DocumentWorkspace({
   onCommitDocument,
   svnStatus,
   onPdfCompleted,
+  onRestoreField,
 }: {
   controller: DocumentController;
   hidden?: boolean;
@@ -119,6 +120,7 @@ export function DocumentWorkspace({
   onCommitDocument?: (id: string) => void;
   svnStatus?: SvnStatus | null;
   onPdfCompleted?: (cleanupWarning: boolean) => void;
+  onRestoreField?: (template: string) => void;
 }) {
   const state = useSyncExternalStore(controller.subscribe, controller.snapshot);
   const app = useSyncExternalStore(
@@ -946,6 +948,23 @@ export function DocumentWorkspace({
                                 )}
                               </InlineNotice>
                             )}
+                            {f.state !== "Active" &&
+                              onRestoreField &&
+                              state.read?.template.fields.some(
+                                (field) =>
+                                  field.id === f.id &&
+                                  field.lifecycle === "Archived",
+                              ) && (
+                                <Button
+                                  type="button"
+                                  disabled={locked}
+                                  onClick={() =>
+                                    onRestoreField(state.read!.template.id)
+                                  }
+                                >
+                                  {text("archive.openDefinitions")}
+                                </Button>
+                              )}
                             {f.provenance === "HistoricalInitialDefault" && (
                               <p>{text("documents.historical")}</p>
                             )}
