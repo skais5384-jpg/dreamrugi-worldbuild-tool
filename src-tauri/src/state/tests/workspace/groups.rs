@@ -18,7 +18,10 @@ fn m38_whole_template_member_history_order_owner_and_duplicate() {
     let tid = saved["artifact"].as_str().unwrap();
     let path = h.root.join(format!("templates/{tid}.json"));
     let first: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(first["schemaVersion"], 7);
+    assert_eq!(
+        first["schemaVersion"],
+        artifact::TEMPLATE_SCHEMA_VERSION.get()
+    );
     assert_eq!(saved["identities"].as_object().unwrap().len(), 5);
     assert!(release(&h, &p, &saved, false)["error"].is_null());
     let view = h.read_template(&p, tid);

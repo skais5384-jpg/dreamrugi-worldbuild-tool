@@ -49,7 +49,12 @@ fn recovery_worker_production_sink_failure_retry_ack_release_and_files_survive()
         assert_eq!(result["custody"], "Preserved");
         h.ack(&operation);
         let store = h.state.recovery.connect().unwrap();
-        store.lock().unwrap().fault = Some(Stage::Reopen);
+        let canary = if composite {
+            store.lock().unwrap().fault = Some(Stage::Reopen);
+            None
+        } else {
+            Some(block_latest_target(&h, "document", document))
+        };
         let accept = json!({"kind":"session_control","project":project,"session":session,"control":"accept"});
         assert_eq!(
             h.control(accept.clone())["error"]["code"],
@@ -57,10 +62,13 @@ fn recovery_worker_production_sink_failure_retry_ack_release_and_files_survive()
         );
         let status = h.call(json!({"action":"session_status","project":project,"session":session}));
         assert_eq!(status["custody"], "Pending");
-        assert_eq!(status["recovery_error"]["category"], "durability_uncertain");
+        assert!(!status["recovery_error"].is_null(), "{status}");
         assert!(!status.to_string().contains("PRIVATE"));
         assert!(!h.control(json!({"kind":"session_control","project":project,"session":session,"control":"acknowledge_recovery"}))["error"].is_null());
         assert!(!h.state.lock().retained.is_empty());
+        if let Some(canary) = canary {
+            unblock_latest_target(&canary);
+        }
         store.lock().unwrap().fault = None;
         assert!(h.control(accept)["error"].is_null());
         assert_eq!(
@@ -68,14 +76,18 @@ fn recovery_worker_production_sink_failure_retry_ack_release_and_files_survive()
                 ["custody"],
             "DurablyAccepted"
         );
-        let listing = store.lock().unwrap().list().unwrap();
-        assert_eq!(listing.entries.len(), 1);
-        let row = &listing.entries[0];
-        let deposit = store
-            .lock()
-            .unwrap()
-            .read(row.key.as_ref().unwrap(), row.deposit_id.as_ref().unwrap())
-            .unwrap();
+        let deposit = if composite {
+            let listing = store.lock().unwrap().list().unwrap();
+            assert_eq!(listing.entries.len(), 1);
+            let row = &listing.entries[0];
+            store
+                .lock()
+                .unwrap()
+                .read(row.key.as_ref().unwrap(), row.deposit_id.as_ref().unwrap())
+                .unwrap()
+        } else {
+            latest_target_deposit(&h, "document", document)
+        };
         assert_eq!(
             deposit.envelope().attempt.as_ref().unwrap().operation_id,
             operation
@@ -94,7 +106,13 @@ fn recovery_worker_production_sink_failure_retry_ack_release_and_files_survive()
             .lose
             .store(false, std::sync::atomic::Ordering::SeqCst);
         h.close_clean();
-        assert_eq!(store.lock().unwrap().list().unwrap().entries.len(), 1);
+        assert_eq!(
+            store.lock().unwrap().list().unwrap().entries.len(),
+            usize::from(composite)
+        );
+        if !composite {
+            latest_target_deposit(&h, "document", document);
+        }
         drop(store);
     }
 }
@@ -103,7 +121,6 @@ fn recovery_worker_production_sink_failure_retry_ack_release_and_files_survive()
 fn recovery_initialization_failure_is_observable_and_reconnects_on_explicit_accept() {
     let provider = Arc::new(Provider::new());
     let h = Harness::with_provider(provider.clone());
-    unavailable(&h);
     let project = h.open();
     let (template, _) = h.template(&project);
     let t = h.read_template(&project, &template);
@@ -112,6 +129,7 @@ fn recovery_initialization_failure_is_observable_and_reconnects_on_explicit_acce
     );
     let d =
         h.work(json!({"kind":"read_document","project":project,"document":created["artifact"]}));
+    let canary = block_latest_target(&h, "document", created["artifact"].as_str().unwrap());
     let session = h.session(
         &project,
         vec![d["view"].clone(), t["view"].clone()],
@@ -127,7 +145,7 @@ fn recovery_initialization_failure_is_observable_and_reconnects_on_explicit_acce
         .store(true, std::sync::atomic::Ordering::SeqCst);
     // 실제 provider 재검증 실패 후 preserve할 수 있다. UI의 정상 명시 deposit과 구분한다.
     h.control(json!({"kind":"session_control","project":project,"session":session,"control":"revalidate"}));
-    fs::remove_file(h.base.join("locks/edit-recovery")).unwrap();
+    unblock_latest_target(&canary);
     let deadline = Instant::now() + LIMIT;
     loop {
         let status = h.call(json!({"action":"session_status","project":project,"session":session}));
@@ -149,7 +167,7 @@ fn recovery_initialization_failure_is_observable_and_reconnects_on_explicit_acce
 }
 
 #[test]
-fn collaborative_edit_rejects_busy_recovery_before_lock_and_canonical_write() {
+fn independent_copy_can_edit_with_busy_unrelated_store_but_matching_namespace_blocks() {
     let provider = Arc::new(Provider::new());
     let first_base =
         std::env::temp_dir().join(format!("worldbuild-m7-busy-{}", uuid::Uuid::new_v4()));
@@ -161,6 +179,7 @@ fn collaborative_edit_rejects_busy_recovery_before_lock_and_canonical_write() {
         json!({"kind":"create_document","project":first_project,"view":t["view"],"name":"original"}),
     );
     let document = created["artifact"].as_str().unwrap();
+    let _busy_store = first.state.recovery.connect().unwrap();
     let second_base =
         std::env::temp_dir().join(format!("worldbuild-m7-second-{}", uuid::Uuid::new_v4()));
     let second_root = second_base.join("project");
@@ -184,31 +203,41 @@ fn collaborative_edit_rejects_busy_recovery_before_lock_and_canonical_write() {
             h.root.clone(),
         )));
     }
-    let lock_calls = provider.threads.lock().unwrap().len();
-    let rejected = h.work(json!({
-        "kind":"document_workspace", "project":project,
-        "request":{"action":"edit_begin","document":document}
-    }));
-    assert_eq!(rejected["kind"], "rejected", "{rejected}");
-    assert_eq!(
-        rejected["error"]["code"], "recovery_store_busy",
-        "{rejected}"
-    );
-    assert_eq!(provider.threads.lock().unwrap().len(), lock_calls);
+    let editing = h.work(json!({"kind":"document_workspace", "project":project,
+        "request":{"action":"edit_begin","document":document}}));
+    assert_eq!(editing["value"]["kind"], "editing", "{editing}");
     assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(provider.threads.lock().unwrap().len() > 0);
+    let kept = h.work(json!({"kind":"document_workspace", "project":project,
+        "request":{"action":"edit_deposit","owner":editing["value"]["owner"],
+          "generation":editing["value"]["generation"],"body":editing["value"]["body"]}}));
+    assert_eq!(kept["value"]["deposited"], true, "{kept}");
+    let deposit = latest_target_deposit(&h, "document", document);
+    let matching = first_base
+        .join("locks/edit-recovery")
+        .join(&deposit.key().project_fingerprint);
+    fs::create_dir(&matching).unwrap();
+    let released = h.work(json!({"kind":"document_workspace", "project":project,
+        "request":{"action":"edit_release","owner":kept["value"]["owner"],
+          "generation":kept["value"]["generation"]}}));
+    assert_eq!(released["value"]["kind"], "released", "{released}");
+    let denied = h.work(json!({"kind":"document_workspace", "project":project,
+        "request":{"action":"list"}}));
+    assert_eq!(denied["error"]["code"], "sink_unavailable", "{denied}");
+    assert_eq!(
+        h.state.recovery.connect().err().unwrap().category,
+        crate::data::edit_recovery::error::Category::Busy
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    // Empty matching namespace is still evidence requiring legacy admission.
+    // Only remove the owned synthetic marker; no existing input is discarded.
+    fs::remove_dir(&matching).unwrap();
+    drop(_busy_store);
     first.close_clean();
     drop(first);
-    let editing = h.work(json!({
-        "kind":"document_workspace", "project":project,
-        "request":{"action":"edit_begin","document":document}
-    }));
-    assert_eq!(editing["value"]["kind"], "editing", "{editing}");
-    let released = h.work(json!({
-        "kind":"document_workspace", "project":project,
-        "request":{"action":"edit_release","owner":editing["value"]["owner"],
-            "generation":editing["value"]["generation"]}
-    }));
-    assert_eq!(released["value"]["kind"], "released", "{released}");
+    let retry = h.work(json!({"kind":"document_workspace", "project":project,
+        "request":{"action":"list"}}));
+    assert!(retry["error"].is_null(), "{retry}");
     h.close_clean();
     drop(h);
     fs::remove_dir_all(first_base).unwrap();
@@ -563,6 +592,7 @@ fn collaborative_store_first_process_child() {
         "request":{"action":"edit_release","owner":editing["value"]["owner"],
             "generation":"2"}}));
     assert_eq!(released["value"]["kind"], "released", "{released}");
+    let _global_store = h.state.recovery.connect().unwrap();
     fs::write(base.join("ready"), document).unwrap();
     let deadline = Instant::now() + Duration::from_secs(45);
     while !base.join("finish").exists() {
@@ -573,7 +603,7 @@ fn collaborative_store_first_process_child() {
 }
 
 #[test]
-fn collaborative_two_processes_share_store_without_second_write() {
+fn independent_processes_can_save_local_inputs_while_legacy_store_is_busy() {
     use std::process::{Command, Stdio};
     let base = std::env::temp_dir().join(format!("worldbuild-m7-two-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&base).unwrap();
@@ -619,20 +649,14 @@ fn collaborative_two_processes_share_store_without_second_write() {
     }
     let canonical = h.root.join(format!("documents/{document}.json"));
     let before = fs::read(&canonical).unwrap();
-    let lock_calls = provider.threads.lock().unwrap().len();
-    let denied = h.work(json!({"kind":"document_workspace","project":project,
-        "request":{"action":"edit_begin","document":document}}));
-    assert_eq!(denied["error"]["code"], "recovery_store_busy", "{denied}");
-    assert_eq!(provider.threads.lock().unwrap().len(), lock_calls);
-    assert_eq!(fs::read(&canonical).unwrap(), before);
-    fs::write(base.join("finish"), b"close normally").unwrap();
-    assert!(
-        child.wait().unwrap().success(),
-        "first app failed to close normally"
-    );
     let editing = h.work(json!({"kind":"document_workspace","project":project,
         "request":{"action":"edit_begin","document":document}}));
     assert_eq!(editing["value"]["kind"], "editing", "{editing}");
+    assert_eq!(fs::read(&canonical).unwrap(), before);
+    assert!(
+        h.state.recovery.connect().is_err(),
+        "the legacy store must actually remain busy"
+    );
     let mut body = editing["value"]["body"].clone();
     body["name"] = json!({"intent":"set","value":"둘째 창 저장 확인"});
     let saved = h.work(json!({"kind":"document_workspace","project":project,
@@ -644,11 +668,14 @@ fn collaborative_two_processes_share_store_without_second_write() {
         "request":{"action":"edit_deposit","owner":editing["value"]["owner"],
             "generation":"2","body":body}}));
     assert_eq!(deposited["value"]["deposited"], true, "{deposited}");
-    let store = h.state.recovery.connect().unwrap();
-    let listing = store.lock().unwrap().list().unwrap();
-    assert!(listing.complete && !listing.entries.is_empty());
-    assert!(listing.entries.iter().all(|entry| entry.error.is_none()));
-    drop(store);
+    let checkpoint = latest_target_deposit(&h, "document", &document);
+    assert_eq!(checkpoint.key().generation, 2);
+    assert!(h.state.recovery.connect().is_err());
+    fs::write(base.join("finish"), b"close normally").unwrap();
+    assert!(
+        child.wait().unwrap().success(),
+        "first app failed to close normally"
+    );
     let released = h.work(json!({"kind":"document_workspace","project":project,
         "request":{"action":"edit_release","owner":editing["value"]["owner"],
             "generation":"2"}}));

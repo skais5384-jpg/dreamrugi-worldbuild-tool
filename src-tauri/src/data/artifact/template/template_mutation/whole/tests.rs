@@ -587,7 +587,7 @@ fn writing_guide_schema_validates_typed_slot_and_blocks_future() {
     }
     wire["fields"][F]["writingGuide"] = json!("가이드");
     assert!(decode_template(&serde_json::to_vec(&wire).unwrap()).is_ok());
-    wire["schemaVersion"] = json!(8);
+    wire["schemaVersion"] = json!(crate::data::artifact::TEMPLATE_SCHEMA_VERSION.get() + 1);
     assert!(decode_template(&serde_json::to_vec(&wire).unwrap()).is_err());
 }
 
@@ -682,4 +682,50 @@ fn m36_format_conflict_rejects_new_known_key_even_matching_old_unknown_type() {
         )
         .is_err());
     }
+}
+
+#[test]
+fn version_restore_is_a_forward_template_change_and_keeps_new_definitions_archived() {
+    let historical = fixture();
+    let mut draft = unchanged(&historical);
+    draft.name = "현재 이름".into();
+    draft.fields.push(FieldDraftInput {
+        id: A.parse().unwrap(),
+        label: "나중에 추가".into(),
+        kind: FieldKind::SingleLineText,
+        configuration: NewFieldConfiguration::single_line_text(),
+        required: false,
+        writing_guide: None,
+        presentation_token: None,
+        default: Some(FieldValueDraft::unset()),
+        archived: false,
+        restore: false,
+        restored_options: Default::default(),
+        archived_options: Default::default(),
+        members: vec![],
+        card_title_field: crate::data::edit_recovery::model::Intent::Keep,
+    });
+    let current = prepare_template_draft(&historical, historical.revision, LATER, draft)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    let restored = prepare_version_restore(&current, &historical, LATER)
+        .unwrap()
+        .into_changed()
+        .unwrap();
+    assert_eq!(restored.revision.get(), current.revision.get() + 1);
+    assert_eq!(restored.template_id, current.template_id);
+    assert_eq!(restored.name, historical.name);
+    assert_eq!(
+        restored.fields[&A.parse().unwrap()].lifecycle,
+        FieldLifecycle::Archived
+    );
+    assert_eq!(
+        restored.fields[&F.parse().unwrap()].initial_default_value,
+        current.fields[&F.parse().unwrap()].initial_default_value
+    );
+    assert!(prepare_version_restore(&restored, &historical, LATER)
+        .unwrap()
+        .changed()
+        .is_none());
 }

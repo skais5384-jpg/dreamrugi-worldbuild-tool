@@ -135,6 +135,17 @@ fn document_purge_follows_layout_commit_and_rollback() {
     let committed_id = uuid::Uuid::new_v4().to_string();
     trashed_document(committed.path(), &committed_id);
     let purge = begin_document_purge(committed.path(), &committed_id).unwrap();
+    // The real canonical layout transaction re-reads the strict document scan.
+    // A DELETE-access guard here used to make that read fail on Windows.
+    let canonical_read = crate::data::project_file::open_existing_project_file(
+        committed.path(),
+        &crate::data::project_relative_path::ProjectRelativePath::parse(&format!(
+            "documents/{committed_id}.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    drop(canonical_read);
     publish_layout_without_document(committed.path());
     assert!(!finish_document_purge(committed.path(), purge, true).unwrap());
     assert!(!committed
@@ -1330,7 +1341,7 @@ fn deleted_template_purge_requires_complete_unreferenced_evidence_and_fresh_toke
 }
 
 #[test]
-fn format_history_unknown_member_protects_deleted_template_definition() {
+fn old_format_history_does_not_pin_deleted_template_but_current_sources_still_do() {
     let fixture = root();
     let id = uuid::Uuid::new_v4().to_string();
     deleted_template(fixture.path(), &id, "history protected");
@@ -1339,6 +1350,21 @@ fn format_history_unknown_member_protects_deleted_template_definition() {
     fs::write(
         history.join("snapshot.json"),
         format!("{{\"futureArchivedEnvelope\":{{\"templateId\":\"{id}\"}}}}"),
+    )
+    .unwrap();
+    let inspection = inspect(fixture.path()).unwrap();
+    let row = inspection
+        .deleted_templates
+        .iter()
+        .find(|row| row.id == id)
+        .unwrap();
+    assert!(row.removable);
+    assert_eq!(row.reason, None);
+    // A current source still protects the same template; only history is excluded.
+    fs::create_dir_all(fixture.path().join("documents")).unwrap();
+    fs::write(
+        fixture.path().join("documents/current.json"),
+        format!("{{\"templateId\":\"{id}\"}}"),
     )
     .unwrap();
     let inspection = inspect(fixture.path()).unwrap();
@@ -1478,4 +1504,67 @@ fn m545_fix001_gui_fixture_reflects_user_purge_results() {
     assert!(!fixture
         .join("templates/939823d2-0ceb-45df-9c5c-d46f9a2c2277.json")
         .exists());
+}
+
+#[test]
+fn confirmed_document_purge_removes_target_records_and_preserves_other_targets_and_backup() {
+    let fixture = root();
+    let id = uuid::Uuid::new_v4().to_string();
+    let other = uuid::Uuid::new_v4().to_string();
+    trashed_document(fixture.path(), &id);
+    for namespace in ["content-versions", "latest-drafts", "format-history"] {
+        let name = match namespace {
+            "content-versions" => "v00000000000000000001.json".to_string(),
+            "latest-drafts" => "d00000000000000000001.json".to_string(),
+            _ => format!("{}.json", "a".repeat(64)),
+        };
+        for target in [&id, &other] {
+            let path = fixture
+                .path()
+                .join(".worldbuild")
+                .join(namespace)
+                .join(format!("document-{target}"));
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join(&name), b"synthetic retained input").unwrap();
+        }
+    }
+    let backup = fixture.path().join("independent-backup");
+    fs::create_dir(&backup).unwrap();
+    fs::write(backup.join("preserved.json"), b"independent copy").unwrap();
+    let purge = begin_document_purge(fixture.path(), &id).unwrap();
+    publish_layout_without_document(fixture.path());
+    assert!(!finish_document_purge(fixture.path(), purge, true).unwrap());
+    for namespace in ["content-versions", "latest-drafts", "format-history"] {
+        let base = fixture.path().join(".worldbuild").join(namespace);
+        assert!(!base.join(format!("document-{id}")).exists());
+        assert!(base.join(format!("document-{other}")).exists());
+    }
+    assert_eq!(
+        fs::read(backup.join("preserved.json")).unwrap(),
+        b"independent copy"
+    );
+    assert!(!has_pending(fixture.path()).unwrap());
+    recover_pending(fixture.path()).unwrap();
+}
+
+#[test]
+fn target_record_purge_rejects_unknown_entries_before_deleting_and_resumes_after_cleanup() {
+    let fixture = root();
+    let id = uuid::Uuid::new_v4().to_string();
+    let path = fixture
+        .path()
+        .join(".worldbuild/content-versions")
+        .join(format!("template-{id}"));
+    fs::create_dir_all(&path).unwrap();
+    fs::write(path.join("v00000000000000000001.json"), b"retained").unwrap();
+    fs::write(path.join("unknown.txt"), b"unknown").unwrap();
+    assert!(purge_target_records(fixture.path(), "template", &id).is_err());
+    assert_eq!(
+        fs::read(path.join("v00000000000000000001.json")).unwrap(),
+        b"retained"
+    );
+    fs::remove_file(path.join("unknown.txt")).unwrap();
+    purge_target_records(fixture.path(), "template", &id).unwrap();
+    assert!(!path.exists());
+    purge_target_records(fixture.path(), "template", &id).unwrap();
 }

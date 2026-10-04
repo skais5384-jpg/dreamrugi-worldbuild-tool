@@ -72,7 +72,6 @@ import { DocumentWorkspace } from "./DocumentWorkspace";
 import { DocumentGlossary } from "./DocumentGlossary";
 import { WholeTemplate } from "./WholeTemplate";
 import { ReadonlyTemplate } from "./ReadonlyTemplate";
-import { RecoveryCenter } from "./RecoveryCenter";
 import { FollowUp } from "./FollowUp";
 import { ProjectHealth } from "./ProjectHealth";
 import { ProjectFiles } from "./ProjectFiles";
@@ -789,7 +788,13 @@ export default function WorkspaceApp({
     </div>
   );
   return (
-    <MediaContext.Provider value={controller.documents}>
+    <MediaContext.Provider
+      value={
+        controller.documents.mediaProjectIsCurrent()
+          ? controller.documents
+          : null
+      }
+    >
       <main className="app-shell workbench-shell">
         <FloatingMessage>
           {!app.projectData && feedbackToast}
@@ -962,13 +967,6 @@ export default function WorkspaceApp({
                       >
                         {text("backup.manage")}
                       </MenuItem>
-                      <MenuItem
-                        icon={<History20Regular />}
-                        disabled={!app.ready || locked}
-                        onClick={() => void controller.showCenter()}
-                      >
-                        {text("whole.center")}
-                      </MenuItem>
                       <MenuDivider />
                       <MenuItem
                         icon={<DismissCircle20Regular />}
@@ -1132,8 +1130,6 @@ export default function WorkspaceApp({
                     icon={icon}
                     onClick={() => {
                       setMode(item);
-                      if (state.center)
-                        void controller.navigate({ kind: "browse" });
                     }}
                   />
                 </Tooltip>
@@ -1176,39 +1172,43 @@ export default function WorkspaceApp({
               }}
             />
           )}
-          {(state.error || app.error) && (
-            <FloatingNotice
-              intent="error"
-              eventId={state.error || errorNoticeIdentity}
-              scope={templateScope}
-              isCurrent={() =>
-                `${shell.projectGeneration()}:${shell.snapshot().projectId ?? ""}` ===
-                  templateScope &&
-                shell.snapshot().errorEvent === app.errorEvent
-              }
-            >
-              <FloatingNoticeContent>
-                {state.error || app.error}
-                {!state.error &&
-                  app.error &&
-                  (app.errorDetail || app.projectId) && (
-                    <details>
-                      <summary>{text("error.details")}</summary>
-                      {app.errorDetail && <code>{app.errorDetail}</code>}
-                      {app.projectId && (
-                        <Button
-                          type="button"
-                          size="small"
-                          onClick={() => shell.showHealth()}
-                        >
-                          {text("error.openDiagnostics")}
-                        </Button>
-                      )}
-                    </details>
-                  )}
-              </FloatingNoticeContent>
-            </FloatingNotice>
-          )}
+          {(state.error || app.error) &&
+            !(
+              app.form?.kind === "create" &&
+              (state.error || app.error) === text("whole.createFailed")
+            ) && (
+              <FloatingNotice
+                intent="error"
+                eventId={state.error || errorNoticeIdentity}
+                scope={templateScope}
+                isCurrent={() =>
+                  `${shell.projectGeneration()}:${shell.snapshot().projectId ?? ""}` ===
+                    templateScope &&
+                  shell.snapshot().errorEvent === app.errorEvent
+                }
+              >
+                <FloatingNoticeContent>
+                  {state.error || app.error}
+                  {!state.error &&
+                    app.error &&
+                    (app.errorDetail || app.projectId) && (
+                      <details>
+                        <summary>{text("error.details")}</summary>
+
+                        {app.projectId && (
+                          <Button
+                            type="button"
+                            size="small"
+                            onClick={() => shell.showHealth()}
+                          >
+                            {text("error.openDiagnostics")}
+                          </Button>
+                        )}
+                      </details>
+                    )}
+                </FloatingNoticeContent>
+              </FloatingNotice>
+            )}
           {documentState.error &&
             !(
               documentState.draft?.problem &&
@@ -1721,7 +1721,8 @@ export default function WorkspaceApp({
                                 aria-pressed={
                                   state.draft
                                     ? state.draft.status.artifact === row.id
-                                    : app.selection?.content.id === row.id
+                                    : (state.unavailableTemplate ??
+                                        app.selection?.content.id) === row.id
                                 }
                                 aria-selected={currentTemplateSelection.includes(
                                   row.id,
@@ -1845,7 +1846,85 @@ export default function WorkspaceApp({
                   />
                 ) : (
                   <>
-                    {app.selection &&
+                    {state.unavailableTemplate && (
+                      <section>
+                        <h2>
+                          {app.rows.find(
+                            (row) => row.id === state.unavailableTemplate,
+                          )?.name ?? text("field.emptyLabel")}
+                        </h2>
+                        <InlineNotice kind="warning">
+                          {text("format.sourceUnavailable")}
+                        </InlineNotice>
+                        <FormatControl
+                          shell={shell}
+                          kind="template"
+                          artifact={state.unavailableTemplate}
+                          locked={locked || state.busy || collaborative}
+                          changed={() =>
+                            controller.navigate({
+                              kind: "format",
+                              id: state.unavailableTemplate!,
+                            })
+                          }
+                        />
+                      </section>
+                    )}
+                    {app.form?.kind === "create" && (
+                      <section aria-label={text("whole.newTemplateName")}>
+                        <h2>{text("whole.newTemplateName")}</h2>
+                        <InlineNotice
+                          kind={
+                            state.busy || app.busy
+                              ? "info"
+                              : app.form.submitted
+                                ? "warning"
+                                : "error"
+                          }
+                        >
+                          {text(
+                            state.busy || app.busy
+                              ? "whole.creating"
+                              : app.form.submitted
+                                ? "whole.createUncertain"
+                                : "whole.createFailed",
+                          )}
+                        </InlineNotice>
+                        <div className="actions">
+                          <Button
+                            appearance="primary"
+                            disabled={
+                              locked ||
+                              state.busy ||
+                              app.form.submitted ||
+                              app.form.handedOff ||
+                              app.retainedRefs.length > 0
+                            }
+                            onClick={() =>
+                              void controller.navigate({ kind: "new" })
+                            }
+                          >
+                            {text("whole.retryCreate")}
+                          </Button>
+                          <Button
+                            disabled={
+                              locked ||
+                              state.busy ||
+                              app.form.submitted ||
+                              app.form.handedOff
+                            }
+                            onClick={() =>
+                              void shell.navigate({ kind: "cancel" })
+                            }
+                          >
+                            {text("app.message26")}
+                          </Button>
+                        </div>
+                      </section>
+                    )}
+                    {!app.form &&
+                      !state.unavailableTemplate &&
+                      app.selection &&
                       app.selection.content.lifecycle !== "Deleted" && (
                         <>
                           <ReadonlyTemplate
@@ -1918,6 +1997,8 @@ export default function WorkspaceApp({
                 )}
                 {!state.draft &&
                   !app.templateAction &&
+                  !app.form &&
+                  !state.unavailableTemplate &&
                   (!app.selection ||
                     app.selection.content.lifecycle === "Deleted") && (
                     <EmptyState>{text("app.message31")}</EmptyState>
@@ -1926,7 +2007,6 @@ export default function WorkspaceApp({
             </div>
           )}
         </div>
-        {state.center && <RecoveryCenter controller={controller} />}
         <ProjectHealth
           controller={shell}
           documentList={documentState.list}
@@ -2150,6 +2230,7 @@ export default function WorkspaceApp({
                       app.projectData.errorSource !== "cleanup" && (
                         <FloatingNotice
                           intent="warning"
+                          recordDetail={<p>{app.projectData.detail}</p>}
                           eventId={backupNoticeIdentity}
                           scope={`${templateScope}:${app.projectData.dialogGeneration ?? ""}:${app.projectData.storage ?? ""}:${app.projectData.selected ?? ""}`}
                           isCurrent={() => {
@@ -2172,9 +2253,7 @@ export default function WorkspaceApp({
                             {app.projectData.error}
                             <details>
                               <summary>{text("error.details")}</summary>
-                              {app.projectData.detail && (
-                                <code>{app.projectData.detail}</code>
-                              )}
+
                               <Button
                                 type="button"
                                 size="small"
@@ -2187,35 +2266,52 @@ export default function WorkspaceApp({
                         </FloatingNotice>
                       )}
                     {app.projectData.deletedCleanupWarning && (
-                      <FloatingNotice intent="warning">
-                        <FloatingNoticeContent>
-                          {text("backup.deletedCleanupRequired")}
+                      <FloatingNotice
+                        intent="warning"
+                        eventId={JSON.stringify(
+                          app.projectData.deletedCleanupFacts ?? [],
+                        )}
+                        recordDetail={
                           <details>
                             <summary>{text("error.details")}</summary>
-                            {app.projectData.deletedCleanupFacts?.length ? (
-                              <ul>
-                                {app.projectData.deletedCleanupFacts.map(
-                                  (fact) => (
-                                    <li key={`${fact.id}:${fact.operation}`}>
-                                      <code>{fact.id}</code>{" "}
-                                      <code>{fact.warning}</code>
-                                    </li>
-                                  ),
-                                )}
-                                {app.projectData.deletedListWarning && (
-                                  <li>
-                                    <code>
-                                      {app.projectData.deletedListWarning}
-                                    </code>
-                                  </li>
-                                )}
-                              </ul>
-                            ) : (
-                              <code>
-                                {app.projectData.deletedCleanupWarning}
-                              </code>
-                            )}
+                            <table>
+                              <thead>
+                                <tr>
+                                  <th>대상</th>
+                                  <th>작업</th>
+                                  <th>결과</th>
+                                  <th>진단</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(
+                                  app.projectData.deletedCleanupFacts ?? []
+                                ).map((fact) => (
+                                  <tr key={fact.id}>
+                                    <td>{fact.id}</td>
+                                    <td>{fact.operation}</td>
+                                    <td>{fact.outcome}</td>
+                                    <td>{fact.warning}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
                           </details>
+                        }
+                      >
+                        <FloatingNoticeContent>
+                          {text("backup.deletedCleanupRequired")}
+                          <Button
+                            type="button"
+                            size="small"
+                            onClick={() => {
+                              shell.closeProjectData();
+                              focus.current.prepare();
+                              setLogOpen(true);
+                            }}
+                          >
+                            실행 기록 보기
+                          </Button>
                         </FloatingNoticeContent>
                       </FloatingNotice>
                     )}
@@ -2651,7 +2747,9 @@ export default function WorkspaceApp({
                   {text(
                     app.projectData?.confirm
                       ? "backup.backToList"
-                      : "app.message26",
+                      : app.projectData?.completedRoot
+                        ? "common.close"
+                        : "app.message26",
                   )}
                 </Button>
               </DialogActions>

@@ -219,6 +219,7 @@ fn archive_recovery_changed_template_merges_new_fields_options_order_members_tit
     b["fields"].as_array_mut().unwrap().push(field("number"));
     let dep = submit(&h, &p, &edit, "2", &b, "deposit");
     assert!(release(&h, &p, &dep, false)["error"].is_null());
+    stage_latest_as_legacy_archive(&h, &dep["draftId"]);
     let receipt = &dep["receipt"];
     let key = serde_json::from_value(receipt["key"].clone()).unwrap();
     let original = h

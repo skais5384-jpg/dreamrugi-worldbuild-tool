@@ -1,3 +1,5 @@
+import { missingRequired } from "./requiredWarnings";
+import { InlineNotice } from "../ui/InlineNotice";
 import { useState } from "react";
 import { Tooltip } from "@fluentui/react-components";
 import {
@@ -237,6 +239,7 @@ export function GroupEditor({
                   return (
                     <PropertyRow
                       key={child.id}
+                      requiredAnchor={key}
                       label={
                         (child.lifecycle === "Active"
                           ? child.label
@@ -247,6 +250,14 @@ export function GroupEditor({
                       complex
                       block={blockField(child.kind)}
                     >
+                      {missingRequired(
+                        child,
+                        intent.intent === "set" ? intent.value : null,
+                      ) && (
+                        <InlineNotice kind="warning">
+                          {text("required.missing")}
+                        </InlineNotice>
+                      )}
                       {readOnly ? (
                         <>
                           <ValueRead
@@ -362,9 +373,20 @@ export function GroupRead({
                   />
                 </div>
               )}
+            {promoted &&
+              titleField &&
+              missingRequired(titleField, titleValue) && (
+                <InlineNotice kind="warning">
+                  {text("required.missing")}
+                </InlineNotice>
+              )}
             {[
-              ...(field?.memberOrder ?? []).map((id) =>
-                card.fields.find((c) => c.field === id),
+              ...(field?.memberOrder ?? []).map(
+                (id) =>
+                  card.fields.find((c) => c.field === id) ?? {
+                    field: id,
+                    value: { intent: "unset" as const },
+                  },
               ),
               ...card.fields.filter(
                 (c) => !field?.memberOrder?.includes(c.field),
@@ -384,11 +406,20 @@ export function GroupRead({
                         ? child.label
                         : (card.labels?.[cell.field] ??
                           child?.label ??
-                          cell.field)
+                          "이름을 확인할 수 없는 하위 필드")
                     }
                     complex
                     block={blockField(child?.kind)}
                   >
+                    {child &&
+                      missingRequired(
+                        child,
+                        cell.value.intent === "set" ? cell.value.value : null,
+                      ) && (
+                        <InlineNotice kind="warning">
+                          {text("required.missing")}
+                        </InlineNotice>
+                      )}
                     <ValueRead
                       value={
                         cell.value.intent === "set"
@@ -396,6 +427,7 @@ export function GroupRead({
                           : { kind: "unset" }
                       }
                       options={child?.options ?? []}
+                      field={child}
                       reference={reference}
                     />
                   </PropertyRow>

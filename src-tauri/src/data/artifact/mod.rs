@@ -71,6 +71,7 @@ pub(crate) use document::document_save::{
     DocumentSaveError, DocumentSaveErrorCategory, DocumentSaveOutcome, DocumentSaveOutcomeKind,
     DocumentSaveStage, DocumentValueEdit,
 };
+pub(crate) use document::prepare_version_restore as prepare_document_version_restore;
 pub(crate) use document::{DocumentArtifact, OrphanedFieldDefinition, OrphanedOptionDefinition};
 pub(crate) use id::{DocumentId, FieldId, OptionId, PersistentIdError, ReferenceId, TemplateId};
 pub(crate) use revision::{TemplateRevision, TemplateRevisionError};

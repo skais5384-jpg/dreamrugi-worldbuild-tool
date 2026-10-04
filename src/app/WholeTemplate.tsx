@@ -31,9 +31,9 @@ import type {
   Intent,
   TemplateBody,
 } from "../bridge/workspace";
+import { kinds } from "./fieldEditing";
 import type { Field as FieldDefinition, Value } from "../bridge/types";
 import { ValueInput, ValueRead } from "./FieldValue";
-import { kinds } from "./fieldEditing";
 import { text } from "../strings";
 import type { WholeDraft, WorkspaceController } from "./workspaceController";
 import { problemHelp, problemTarget, revealProblem } from "./draftProblems";
@@ -42,8 +42,10 @@ import { PropertyRow } from "./PropertyRow";
 import { HelpText } from "../ui/HelpText";
 import { InlineNotice } from "../ui/InlineNotice";
 import { boundsProblem } from "./numberBounds";
+import { DraftConflictChoices } from "./DraftConflictChoices";
 import { FormatControl } from "./FormatControl";
 import { IconCommand } from "../ui/IconCommand";
+import { MediaTargetContext } from "./MediaValue";
 import { useSaveShortcut } from "./useSaveShortcut";
 
 function token(intent: Intent<string>, original: string | null) {
@@ -259,900 +261,942 @@ export function WholeTemplate({
       revealProblem(document.getElementById(target.input)),
     );
   };
+  if (draft.status.comparison)
+    return (
+      <section className="whole-template">
+        <h1>{draft.base.name}</h1>
+        {state.error && (
+          <InlineNotice kind="warning">{state.error}</InlineNotice>
+        )}
+        <DraftConflictChoices
+          key={JSON.stringify(draft.status.comparison)}
+          changes={draft.status.comparison}
+          template={draft.base}
+          busy={locked}
+          reference={{ list: null, templates, preview: true, open: () => {} }}
+          apply={(selected) => controller.resume(selected)}
+          cancel={() => controller.cancelComparison()}
+        />
+      </section>
+    );
   return (
-    <section
-      ref={shortcutRoot}
-      className="whole-template"
-      {...reorder.surface}
-      aria-label={text("whole.operation")}
-      onCompositionStartCapture={() => controller.compose(true)}
-      onCompositionEndCapture={() => controller.compose(false)}
+    <MediaTargetContext.Provider
+      value={{ kind: "template", artifact: draft.base.id }}
     >
-      <div className="whole-heading">
-        <div>
-          <h2>{draft.body.name || text("field.emptyLabel")}</h2>
-        </div>
-        <p className="document-save-state" data-state={saveState} role="status">
-          <SaveStateIcon aria-hidden />
-          <span>
-            {state.pendingAction
-              ? text(
-                  state.pendingAction === "save"
-                    ? "whole.saving"
-                    : "whole.depositing",
-                )
-              : controller.dirty()
-                ? text("whole.dirty")
-                : text("whole.saved")}
-          </span>
-        </p>
-        <div className="actions">
-          <IconCommand
-            label={text("whole.save")}
-            icon={<Save20Regular />}
-            disabled={actionBlocked || draft.body.composing}
-            onClick={() => void controller.save()}
-          />
-          {draft.status.artifact && (
-            <FormatControl
-              shell={controller.shell}
-              kind="template"
-              artifact={draft.status.artifact}
-              locked
-              changed={() => controller.shell.refresh()}
-            />
-          )}
-          {!draft.loaded && (
-            <IconCommand
-              label={text("whole.loadedRetry")}
-              icon={<ArrowSync20Regular />}
-              disabled={state.busy}
-              onClick={() => void controller.reload()}
-            />
-          )}
-          {draft.status.phase === "saved_read_required" && (
-            <IconCommand
-              label={text("whole.refreshSaved")}
-              icon={<ArrowSync20Regular />}
-              disabled={blocked}
-              onClick={() => void controller.refreshSaved()}
-            />
-          )}
-          <IconCommand
-            label={text("whole.deposit")}
-            icon={<Archive20Regular />}
-            disabled={blocked}
-            onClick={() => void controller.deposit()}
-          />
-          <IconCommand
-            label={text("whole.endEditing")}
-            icon={<DoorArrowRight20Regular />}
-            disabled={blocked}
-            onClick={() => void controller.navigate({ kind: "browse" })}
-          />
-        </div>
-      </div>
-      {!draft.loaded && !state.busy && (
-        <FloatingNotice intent="warning">
-          <FloatingNoticeContent>
-            {text("whole.loadIncomplete")}
-          </FloatingNoticeContent>
-        </FloatingNotice>
-      )}
-      {draft.status.phase === "saved_read_required" && (
-        <FloatingNotice intent="warning">
-          <FloatingNoticeContent>
-            {text("whole.readRequired")}
-          </FloatingNoticeContent>
-        </FloatingNotice>
-      )}
-      {draft.status.phase === "uncertain" && (
-        <FloatingNotice intent="error">
-          <FloatingNoticeContent>
-            {text("whole.uncertain")}
-          </FloatingNoticeContent>
-        </FloatingNotice>
-      )}
-      {draft.status.phase === "conflict" && (
-        <FloatingNotice intent="warning">
-          <FloatingNoticeContent>
-            {text("whole.conflict")}
-          </FloatingNoticeContent>
-        </FloatingNotice>
-      )}
-      {hasError && (
-        <section
-          ref={errors}
-          tabIndex={-1}
-          className="whole-errors"
-          role="alert"
-          aria-label={text("whole.errors")}
-        >
-          <h3>
-            <ErrorCircle16Regular aria-hidden />
-            {text("whole.errors")}
-          </h3>
-          <p>{text("whole.invalidHelp")}</p>
-          {!problems.length && <p>{state.error}</p>}
-          <ul>
-            {problems.map((p, i) => (
-              <li key={i}>
-                {problemTarget(p, draft) ? (
-                  <Button type="button" onClick={() => focusProblem(p)}>
-                    {problemHelp(p)} ({p.category})
-                  </Button>
-                ) : (
-                  <span>
-                    {problemHelp(p)} ({p.category})
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-      <Fieldset disabled={locked || !draft.loaded} className="whole-inputs">
-        <legend>{text("whole.basic")}</legend>
-        <PropertyRow label={text("app.message23")} htmlFor="whole-name">
-          <Input
-            id="whole-name"
-            value={draft.body.name}
-            onChange={(e) => changed((b) => ({ ...b, name: e.target.value }))}
-          />
-        </PropertyRow>
-        <PropertyRow
-          label={text("glossary.exclude")}
-          htmlFor="whole-glossary-excluded"
-        >
-          <Checkbox
-            id="whole-glossary-excluded"
-            aria-label={text("glossary.excludeTemplate")}
-            checked={draft.body.glossaryExcluded ?? false}
-            onChange={(_, data) =>
-              changed((body) => ({
-                ...body,
-                glossaryExcluded: data.checked === true,
-              }))
-            }
-          />
-        </PropertyRow>
-        <section aria-labelledby="whole-fields-title">
-          <div className="panel-heading">
-            <h3 id="whole-fields-title">{text("whole.fields")}</h3>
-            {!!archived.length && (
-              <Button
-                type="button"
-                onClick={() => {
-                  const section = archiveRoot.current;
-                  if (!section) return;
-                  section.open = true;
-                  section.scrollIntoView({ block: "nearest" });
-                  section.querySelector("summary")?.focus();
-                }}
-              >
-                {text("archive.fields")} ({archived.length})
-              </Button>
-            )}
+      <section
+        ref={shortcutRoot}
+        className="whole-template"
+        {...reorder.surface}
+        aria-label={text("whole.operation")}
+        onCompositionStartCapture={() => controller.compose(true)}
+        onCompositionEndCapture={() => controller.compose(false)}
+      >
+        <div className="whole-heading">
+          <div>
+            <h2>{draft.body.name || text("field.emptyLabel")}</h2>
           </div>
-          <div className="whole-field-layout">
-            <ul className="whole-field-list">
-              {ordered.map((id, index) => {
-                const field = active.find((candidate) => candidate.id === id);
-                const section = draft.body.sections?.find(
-                  (candidate) => candidate.id === id,
-                );
-                if (!field && !section) return null;
-                const card = reorder.card("template-items", id, ordered);
-                return (
-                  <li
-                    key={id}
-                    {...card}
-                    className={`${card.className} whole-field-card${selected === id ? " selected" : ""}`}
-                  >
-                    <Button
-                      type="button"
-                      appearance="subtle"
-                      className="whole-field-name"
-                      aria-label={
-                        (field?.label || section?.title) ??
-                        text("field.emptyLabel")
-                      }
-                      aria-pressed={selected === id}
-                      aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                      aria-description={text("whole.fieldReorderHelp")}
-                      title={text("whole.fieldReorderHelp")}
-                      onClick={() => setSelected(id)}
-                      onKeyDown={(event) => {
-                        if (
-                          blocked ||
-                          draft.body.composing ||
-                          !event.altKey ||
-                          event.ctrlKey ||
-                          event.metaKey ||
-                          event.shiftKey ||
-                          !["ArrowUp", "ArrowDown"].includes(event.key)
-                        )
-                          return;
-                        event.preventDefault();
-                        const delta = event.key === "ArrowUp" ? -1 : 1;
-                        if (
-                          index + delta >= 0 &&
-                          index + delta < ordered.length
-                        )
-                          reorderItem(id, delta);
-                      }}
-                    >
-                      {!blocked &&
-                        !draft.body.composing &&
-                        ordered.length > 1 && (
-                          <span className="whole-field-grip" aria-hidden="true">
-                            <ReOrderDotsVertical20Regular />
-                          </span>
-                        )}
-                      <span className="whole-field-label">
-                        {(field?.label || section?.title) ??
-                          text("field.emptyLabel")}
-                      </span>
-                      <Badge
-                        aria-hidden="true"
-                        appearance="tint"
-                        color={fieldKindBadgeColor(
-                          section ? "section" : field!.configuration.kind,
-                        )}
-                        className="whole-field-kind-badge"
-                      >
-                        {text(
-                          `whole.kind.${section ? "section" : field!.configuration.kind}`,
-                        )}
-                      </Badge>
+          <p
+            className="document-save-state"
+            data-state={saveState}
+            role="status"
+          >
+            <SaveStateIcon aria-hidden />
+            <span>
+              {state.pendingAction
+                ? text(
+                    state.pendingAction === "save"
+                      ? "whole.saving"
+                      : "whole.depositing",
+                  )
+                : controller.dirty()
+                  ? text("whole.dirty")
+                  : text("whole.saved")}
+            </span>
+          </p>
+          <div className="actions">
+            <IconCommand
+              label={text("whole.save")}
+              icon={<Save20Regular />}
+              disabled={actionBlocked || draft.body.composing}
+              onClick={() => void controller.save()}
+            />
+            {draft.status.artifact && (
+              <FormatControl
+                shell={controller.shell}
+                kind="template"
+                artifact={draft.status.artifact}
+                locked
+                changed={() => controller.shell.refresh()}
+              />
+            )}
+            {!draft.loaded && (
+              <IconCommand
+                label={text("whole.loadedRetry")}
+                icon={<ArrowSync20Regular />}
+                disabled={state.busy}
+                onClick={() => void controller.reload()}
+              />
+            )}
+            {draft.status.phase === "saved_read_required" && (
+              <IconCommand
+                label={text("whole.refreshSaved")}
+                icon={<ArrowSync20Regular />}
+                disabled={blocked}
+                onClick={() => void controller.refreshSaved()}
+              />
+            )}
+            <IconCommand
+              label={text("whole.deposit")}
+              icon={<Archive20Regular />}
+              disabled={blocked}
+              onClick={() => void controller.deposit()}
+            />
+            <IconCommand
+              label={text("whole.endEditing")}
+              icon={<DoorArrowRight20Regular />}
+              disabled={blocked}
+              onClick={() => void controller.navigate({ kind: "browse" })}
+            />
+          </div>
+        </div>
+        {!draft.loaded && !state.busy && (
+          <FloatingNotice intent="warning">
+            <FloatingNoticeContent>
+              {text("whole.loadIncomplete")}
+            </FloatingNoticeContent>
+          </FloatingNotice>
+        )}
+        {draft.status.phase === "saved_read_required" && (
+          <FloatingNotice intent="warning">
+            <FloatingNoticeContent>
+              {text("whole.readRequired")}
+            </FloatingNoticeContent>
+          </FloatingNotice>
+        )}
+        {draft.status.remainingInput && (
+          <InlineNotice kind="warning">
+            현재 구조에 적용할 수 없는 입력이 남아 있습니다. 입력은 이 템플릿에
+            보존됩니다. 관련 정의를 복원한 뒤 편집을 다시 열어 확인해 주세요.
+          </InlineNotice>
+        )}
+        {draft.status.savedGeneration === null &&
+          draft.status.phase === "editing" && (
+            <InlineNotice kind="info">{text("draft.resumed")}</InlineNotice>
+          )}
+        {draft.status.phase === "uncertain" && (
+          <FloatingNotice intent="error">
+            <FloatingNoticeContent>
+              {text("whole.uncertain")}
+            </FloatingNoticeContent>
+          </FloatingNotice>
+        )}
+        {draft.status.phase === "conflict" && (
+          <FloatingNotice intent="warning">
+            <FloatingNoticeContent>
+              {text("whole.conflict")}
+            </FloatingNoticeContent>
+          </FloatingNotice>
+        )}
+        {hasError && (
+          <section
+            ref={errors}
+            tabIndex={-1}
+            className="whole-errors"
+            role="alert"
+            aria-label={text("whole.errors")}
+          >
+            <h3>
+              <ErrorCircle16Regular aria-hidden />
+              {text("whole.errors")}
+            </h3>
+            <p>{text("whole.invalidHelp")}</p>
+            {!problems.length && <p>{state.error}</p>}
+            <ul>
+              {problems.map((p, i) => (
+                <li key={i}>
+                  {problemTarget(p, draft) ? (
+                    <Button type="button" onClick={() => focusProblem(p)}>
+                      {problemHelp(p)}
                     </Button>
-                    {field &&
-                      problems.some(
-                        (problem) => problem.field === canonical(field.id),
-                      ) && <small>{text("whole.errors")}</small>}
-                  </li>
-                );
-              })}
-              <li className="whole-field-add-card">
+                  ) : (
+                    <span>{problemHelp(p)}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <Fieldset disabled={locked || !draft.loaded} className="whole-inputs">
+          <legend>{text("whole.basic")}</legend>
+          <PropertyRow label={text("app.message23")} htmlFor="whole-name">
+            <Input
+              id="whole-name"
+              value={draft.body.name}
+              onChange={(e) => changed((b) => ({ ...b, name: e.target.value }))}
+            />
+          </PropertyRow>
+          <PropertyRow
+            label={text("glossary.exclude")}
+            htmlFor="whole-glossary-excluded"
+          >
+            <Checkbox
+              id="whole-glossary-excluded"
+              aria-label={text("glossary.excludeTemplate")}
+              checked={draft.body.glossaryExcluded ?? false}
+              onChange={(_, data) =>
+                changed((body) => ({
+                  ...body,
+                  glossaryExcluded: data.checked === true,
+                }))
+              }
+            />
+          </PropertyRow>
+          <section aria-labelledby="whole-fields-title">
+            <div className="panel-heading">
+              <h3 id="whole-fields-title">{text("whole.fields")}</h3>
+              {!!archived.length && (
                 <Button
                   type="button"
-                  appearance="subtle"
-                  aria-label={text("whole.newField")}
-                  title={text("whole.newField")}
                   onClick={() => {
-                    const id = "new:" + crypto.randomUUID();
-                    changed((body) => ({
-                      ...body,
-                      fields: [...body.fields, newDraftField(id)],
-                    }));
-                    setSelected(id);
+                    const section = archiveRoot.current;
+                    if (!section) return;
+                    section.open = true;
+                    section.scrollIntoView({ block: "nearest" });
+                    section.querySelector("summary")?.focus();
                   }}
                 >
-                  +
+                  {text("archive.fields")} ({archived.length})
                 </Button>
-              </li>
-            </ul>
-            <div className="whole-field-detail">
-              {currentSection ? (
-                <>
-                  <h4>{text("whole.kind.section")}</h4>
-                  <PropertyRow
-                    label={text("section.title")}
-                    htmlFor={"whole-section-" + currentSection.id}
-                  >
-                    <Input
-                      id={"whole-section-" + currentSection.id}
-                      value={currentSection.title}
-                      onChange={(event) =>
-                        changed((body) => ({
-                          ...body,
-                          sections: body.sections?.map((section) =>
-                            section.id === currentSection.id
-                              ? { ...section, title: event.target.value }
-                              : section,
-                          ),
-                        }))
-                      }
-                    />
-                  </PropertyRow>
-                  <PropertyRow
-                    label={text("field.kind")}
-                    htmlFor={"whole-section-kind-" + currentSection.id}
-                  >
-                    <Select
-                      id={"whole-section-kind-" + currentSection.id}
-                      value="section"
-                      disabled={!newSection(currentSection.id)}
-                      onChange={(event) => {
-                        const kind = event.target.value as
-                          DraftField["configuration"]["kind"] | "section";
-                        if (kind === "section") return;
-                        const id = "new:" + crypto.randomUUID();
-                        const ids = ordered.map((item) =>
-                          item === currentSection.id ? id : item,
-                        );
-                        changed((body) =>
-                          reorderTemplateItems(
-                            {
-                              ...body,
-                              sections: body.sections?.filter(
-                                (section) => section.id !== currentSection.id,
-                              ),
-                              fields: [
-                                ...body.fields,
-                                newDraftField(id, currentSection.title, kind),
-                              ],
-                            },
-                            ids,
-                          ),
-                        );
-                        setSelected(id);
-                      }}
+              )}
+            </div>
+            <div className="whole-field-layout">
+              <ul className="whole-field-list">
+                {ordered.map((id, index) => {
+                  const field = active.find((candidate) => candidate.id === id);
+                  const section = draft.body.sections?.find(
+                    (candidate) => candidate.id === id,
+                  );
+                  if (!field && !section) return null;
+                  const card = reorder.card("template-items", id, ordered);
+                  return (
+                    <li
+                      key={id}
+                      {...card}
+                      className={`${card.className} whole-field-card${selected === id ? " selected" : ""}`}
                     >
-                      <option value="section">
-                        {text("whole.kind.section")}
-                      </option>
-                      {([...Object.values(kinds), "group"] as const).map(
-                        (kind) => (
-                          <option key={kind} value={kind}>
-                            {text(`whole.kind.${kind}`)}
-                          </option>
-                        ),
-                      )}
-                    </Select>
-                    {!newSection(currentSection.id) && (
-                      <HelpText>{text("field.kindLocked")}</HelpText>
-                    )}
-                  </PropertyRow>
-                  <div className="whole-detail-actions">
-                    <Button
-                      type="button"
-                      danger
-                      onClick={() => {
-                        changed((body) => ({
-                          ...body,
-                          sections: body.sections?.filter(
-                            (section) => section.id !== currentSection.id,
-                          ),
-                        }));
-                        setSelected(null);
-                      }}
-                    >
-                      {text("section.remove")}
-                    </Button>
-                  </div>
-                </>
-              ) : current && !current.archived ? (
-                <>
-                  <h4>{text("whole.fieldBasic")}</h4>
-                  <PropertyRow
-                    label={text("field.label")}
-                    htmlFor={"whole-field-" + current.id}
-                    complex
+                      <Button
+                        type="button"
+                        appearance="subtle"
+                        className="whole-field-name"
+                        aria-label={
+                          (field?.label || section?.title) ??
+                          text("field.emptyLabel")
+                        }
+                        aria-pressed={selected === id}
+                        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                        aria-description={text("whole.fieldReorderHelp")}
+                        title={text("whole.fieldReorderHelp")}
+                        onClick={() => setSelected(id)}
+                        onKeyDown={(event) => {
+                          if (
+                            blocked ||
+                            draft.body.composing ||
+                            !event.altKey ||
+                            event.ctrlKey ||
+                            event.metaKey ||
+                            event.shiftKey ||
+                            !["ArrowUp", "ArrowDown"].includes(event.key)
+                          )
+                            return;
+                          event.preventDefault();
+                          const delta = event.key === "ArrowUp" ? -1 : 1;
+                          if (
+                            index + delta >= 0 &&
+                            index + delta < ordered.length
+                          )
+                            reorderItem(id, delta);
+                        }}
+                      >
+                        {!blocked &&
+                          !draft.body.composing &&
+                          ordered.length > 1 && (
+                            <span
+                              className="whole-field-grip"
+                              aria-hidden="true"
+                            >
+                              <ReOrderDotsVertical20Regular />
+                            </span>
+                          )}
+                        <span className="whole-field-label">
+                          {(field?.label || section?.title) ??
+                            text("field.emptyLabel")}
+                        </span>
+                        <Badge
+                          aria-hidden="true"
+                          appearance="tint"
+                          color={fieldKindBadgeColor(
+                            section ? "section" : field!.configuration.kind,
+                          )}
+                          className="whole-field-kind-badge"
+                        >
+                          {text(
+                            `whole.kind.${section ? "section" : field!.configuration.kind}`,
+                          )}
+                        </Badge>
+                      </Button>
+                      {field &&
+                        problems.some(
+                          (problem) => problem.field === canonical(field.id),
+                        ) && <small>{text("whole.errors")}</small>}
+                    </li>
+                  );
+                })}
+                <li className="whole-field-add-card">
+                  <Button
+                    type="button"
+                    appearance="subtle"
+                    aria-label={text("whole.newField")}
+                    title={text("whole.newField")}
+                    onClick={() => {
+                      const id = "new:" + crypto.randomUUID();
+                      changed((body) => ({
+                        ...body,
+                        fields: [...body.fields, newDraftField(id)],
+                      }));
+                      setSelected(id);
+                    }}
                   >
-                    <div className="field-name-controls">
+                    +
+                  </Button>
+                </li>
+              </ul>
+              <div className="whole-field-detail">
+                {currentSection ? (
+                  <>
+                    <h4>{text("whole.kind.section")}</h4>
+                    <PropertyRow
+                      label={text("section.title")}
+                      htmlFor={"whole-section-" + currentSection.id}
+                    >
                       <Input
-                        id={"whole-field-" + current.id}
-                        value={current.label}
-                        onChange={(e) =>
-                          editField(current.id, (f) => ({
-                            ...f,
-                            label: e.target.value,
+                        id={"whole-section-" + currentSection.id}
+                        value={currentSection.title}
+                        onChange={(event) =>
+                          changed((body) => ({
+                            ...body,
+                            sections: body.sections?.map((section) =>
+                              section.id === currentSection.id
+                                ? { ...section, title: event.target.value }
+                                : section,
+                            ),
                           }))
                         }
                       />
-                      {current.configuration.kind !== "group" && (
-                        <Checkbox
-                          label={text("field.required")}
-                          checked={current.required}
-                          onChange={(_, data) =>
-                            editField(current.id, (f) => ({
-                              ...f,
-                              required: data.checked === true,
-                            }))
-                          }
-                        />
-                      )}
-                    </div>
-                  </PropertyRow>
-                  <div id={"whole-configuration-" + current.id} tabIndex={-1}>
+                    </PropertyRow>
                     <PropertyRow
                       label={text("field.kind")}
-                      htmlFor={"whole-kind-" + current.id}
+                      htmlFor={"whole-section-kind-" + currentSection.id}
                     >
-                      {problems
-                        .filter(
-                          (p) =>
-                            p.field === canonical(current.id) &&
-                            p.property === "configuration",
-                        )
-                        .map((p, i) => (
-                          <InlineNotice key={i} kind="error">
-                            {problemHelp(p)} ({p.category})
-                          </InlineNotice>
-                        ))}
                       <Select
-                        id={"whole-kind-" + current.id}
-                        value={current.configuration.kind}
-                        disabled={!newField(current.id)}
-                        onChange={(e) => {
-                          const kind = e.target.value as DraftKind | "section";
-                          if (kind === "section") {
-                            const id = crypto.randomUUID();
-                            const ids = ordered.map((item) =>
-                              item === current.id ? id : item,
-                            );
-                            changed((body) =>
-                              reorderTemplateItems(
-                                {
-                                  ...body,
-                                  fields: body.fields.filter(
-                                    (field) => field.id !== current.id,
-                                  ),
-                                  sections: [
-                                    ...(body.sections ?? []),
-                                    {
-                                      id,
-                                      title:
-                                        current.label || text("section.new"),
-                                      beforeField: null,
-                                    },
-                                  ],
-                                },
-                                ids,
-                              ),
-                            );
-                            setSelected(id);
-                            return;
-                          }
-                          editField(current.id, (field) => ({
-                            ...field,
-                            configuration: draftConfiguration(kind),
-                            default: { intent: "unset" },
-                          }));
+                        id={"whole-section-kind-" + currentSection.id}
+                        value="section"
+                        disabled={!newSection(currentSection.id)}
+                        onChange={(event) => {
+                          const kind = event.target.value as
+                            DraftField["configuration"]["kind"] | "section";
+                          if (kind === "section") return;
+                          const id = "new:" + crypto.randomUUID();
+                          const ids = ordered.map((item) =>
+                            item === currentSection.id ? id : item,
+                          );
+                          changed((body) =>
+                            reorderTemplateItems(
+                              {
+                                ...body,
+                                sections: body.sections?.filter(
+                                  (section) => section.id !== currentSection.id,
+                                ),
+                                fields: [
+                                  ...body.fields,
+                                  newDraftField(id, currentSection.title, kind),
+                                ],
+                              },
+                              ids,
+                            ),
+                          );
+                          setSelected(id);
                         }}
                       >
-                        {(
-                          [...Object.values(kinds), "group", "section"] as const
-                        ).map((kind) => (
-                          <option key={kind} value={kind}>
-                            {text(`whole.kind.${kind}`)}
-                          </option>
-                        ))}
+                        <option value="section">
+                          {text("whole.kind.section")}
+                        </option>
+                        {([...Object.values(kinds), "group"] as const).map(
+                          (kind) => (
+                            <option key={kind} value={kind}>
+                              {text(`whole.kind.${kind}`)}
+                            </option>
+                          ),
+                        )}
                       </Select>
-                      {!newField(current.id) && (
+                      {!newSection(currentSection.id) && (
                         <HelpText>{text("field.kindLocked")}</HelpText>
                       )}
                     </PropertyRow>
-                  </div>
-                  <PropertyRow
-                    label={text(
-                      current.configuration.kind === "group"
-                        ? "group.writingGuide"
-                        : "field.writingGuide",
-                    )}
-                    htmlFor={"whole-guide-" + current.id}
-                    complex
-                  >
-                    <Input
-                      id={"whole-guide-" + current.id}
-                      value={token(
-                        current.writingGuide ?? { intent: "keep" },
-                        original?.writingGuide ?? null,
-                      )}
-                      placeholder={text("field.writingGuideHelp")}
-                      aria-description={text("field.writingGuideHelp")}
-                      onChange={(e) =>
-                        editField(current.id, (f) => ({
-                          ...f,
-                          writingGuide:
-                            e.target.value === ""
-                              ? { intent: "unset" }
-                              : { intent: "set", value: e.target.value },
-                        }))
-                      }
-                    />
-                  </PropertyRow>
-                  {current.configuration.kind === "group" && (
-                    <GroupDefinition
-                      key={current.id}
-                      members={current.configuration.members}
-                      cardTitleField={
-                        current.configuration.cardTitleField?.intent === "set"
-                          ? current.configuration.cardTitleField.value
-                          : current.configuration.cardTitleField?.intent ===
-                              "unset"
-                            ? null
-                            : original?.cardTitleField
-                      }
-                      changeTitle={(cardTitleField) =>
-                        editField(current.id, (f) => ({
-                          ...f,
-                          archiveTitle: undefined,
-                          configuration:
-                            f.configuration.kind === "group"
-                              ? {
-                                  ...f.configuration,
-                                  cardTitleField: cardTitleField
-                                    ? {
-                                        intent: "set" as const,
-                                        value: cardTitleField,
-                                      }
-                                    : { intent: "unset" as const },
-                                }
-                              : f.configuration,
-                        }))
-                      }
-                      original={original}
-                      owner={draft.status.owner}
-                      generation={draft.generation}
-                      savedGeneration={draft.status.savedGeneration}
-                      composing={draft.body.composing}
-                      disabled={blocked}
-                      canonical={canonical}
-                      templates={templates}
-                      change={(members) =>
-                        editField(current.id, (f) => {
-                          return changeGroupMembers(
-                            f,
-                            members,
-                            original?.cardTitleField,
-                            canonical,
-                          );
-                        })
-                      }
-                    />
-                  )}
-                  {current.configuration.kind === "relation" && (
-                    <>
-                      <PropertyRow label={text("relation.multiple")}>
-                        <Checkbox
-                          aria-label={text("relation.multiple")}
-                          disabled={blocked}
-                          checked={current.configuration.multiple}
-                          onChange={(_, data) =>
-                            editField(current.id, (field) => ({
-                              ...field,
-                              configuration:
-                                field.configuration.kind === "relation"
-                                  ? {
-                                      ...field.configuration,
-                                      multiple: data.checked === true,
-                                    }
-                                  : field.configuration,
+                    <div className="whole-detail-actions">
+                      <Button
+                        type="button"
+                        danger
+                        onClick={() => {
+                          changed((body) => ({
+                            ...body,
+                            sections: body.sections?.filter(
+                              (section) => section.id !== currentSection.id,
+                            ),
+                          }));
+                          setSelected(null);
+                        }}
+                      >
+                        {text("section.remove")}
+                      </Button>
+                    </div>
+                  </>
+                ) : current && !current.archived ? (
+                  <>
+                    <h4>{text("whole.fieldBasic")}</h4>
+                    <PropertyRow
+                      label={text("field.label")}
+                      htmlFor={"whole-field-" + current.id}
+                      complex
+                    >
+                      <div className="field-name-controls">
+                        <Input
+                          id={"whole-field-" + current.id}
+                          value={current.label}
+                          onChange={(e) =>
+                            editField(current.id, (f) => ({
+                              ...f,
+                              label: e.target.value,
                             }))
                           }
                         />
-                      </PropertyRow>
+                        {current.configuration.kind !== "group" && (
+                          <Checkbox
+                            label={text("field.required")}
+                            checked={current.required}
+                            onChange={(_, data) =>
+                              editField(current.id, (f) => ({
+                                ...f,
+                                required: data.checked === true,
+                              }))
+                            }
+                          />
+                        )}
+                      </div>
+                    </PropertyRow>
+                    <div id={"whole-configuration-" + current.id} tabIndex={-1}>
                       <PropertyRow
-                        label={text("relation.allowedTemplates")}
-                        htmlFor={"whole-relation-templates-" + current.id}
+                        label={text("field.kind")}
+                        htmlFor={"whole-kind-" + current.id}
                       >
+                        {problems
+                          .filter(
+                            (p) =>
+                              p.field === canonical(current.id) &&
+                              p.property === "configuration",
+                          )
+                          .map((p, i) => (
+                            <InlineNotice key={i} kind="error">
+                              {problemHelp(p)}
+                            </InlineNotice>
+                          ))}
                         <Select
-                          id={"whole-relation-templates-" + current.id}
-                          multiple
-                          disabled={blocked}
-                          value={current.configuration.allowedTemplates}
-                          onChange={(event) =>
+                          id={"whole-kind-" + current.id}
+                          value={current.configuration.kind}
+                          disabled={!newField(current.id)}
+                          onChange={(e) => {
+                            const kind = e.target.value as
+                              DraftKind | "section";
+                            if (kind === "section") {
+                              const id = crypto.randomUUID();
+                              const ids = ordered.map((item) =>
+                                item === current.id ? id : item,
+                              );
+                              changed((body) =>
+                                reorderTemplateItems(
+                                  {
+                                    ...body,
+                                    fields: body.fields.filter(
+                                      (field) => field.id !== current.id,
+                                    ),
+                                    sections: [
+                                      ...(body.sections ?? []),
+                                      {
+                                        id,
+                                        title:
+                                          current.label || text("section.new"),
+                                        beforeField: null,
+                                      },
+                                    ],
+                                  },
+                                  ids,
+                                ),
+                              );
+                              setSelected(id);
+                              return;
+                            }
                             editField(current.id, (field) => ({
                               ...field,
-                              configuration:
-                                field.configuration.kind === "relation"
-                                  ? {
-                                      ...field.configuration,
-                                      allowedTemplates: Array.from(
-                                        event.target.selectedOptions,
-                                        (option) => option.value,
-                                      ),
-                                    }
-                                  : field.configuration,
-                            }))
-                          }
+                              configuration: draftConfiguration(kind),
+                              default: { intent: "unset" },
+                            }));
+                          }}
                         >
-                          {templates.map((template) => (
-                            <option key={template.id} value={template.id}>
-                              {template.name}
+                          {(
+                            [
+                              ...Object.values(kinds),
+                              "group",
+                              "section",
+                            ] as const
+                          ).map((kind) => (
+                            <option key={kind} value={kind}>
+                              {text(`whole.kind.${kind}`)}
                             </option>
                           ))}
                         </Select>
-                        <HelpText>{text("relation.allowedHelp")}</HelpText>
+                        {!newField(current.id) && (
+                          <HelpText>{text("field.kindLocked")}</HelpText>
+                        )}
                       </PropertyRow>
-                      <PropertyRow label={text("relation.reciprocalNotice")}>
-                        <Checkbox
-                          aria-label={text("relation.reciprocalNotice")}
-                          disabled={blocked}
-                          checked={current.configuration.reciprocalNotice}
-                          onChange={(_, data) =>
-                            editField(current.id, (field) => ({
-                              ...field,
-                              configuration:
-                                field.configuration.kind === "relation"
-                                  ? {
-                                      ...field.configuration,
-                                      reciprocalNotice: data.checked === true,
-                                    }
-                                  : field.configuration,
-                            }))
-                          }
-                        />
-                      </PropertyRow>
-                    </>
-                  )}
-                  {current.configuration.kind === "number" &&
-                    (["minimum", "maximum"] as const).map((bound) => (
-                      <PropertyRow
-                        key={bound}
-                        label={text(`field.${bound}`)}
-                        htmlFor={`whole-${bound}-${current.id}`}
-                      >
-                        <Input
-                          id={`whole-${bound}-${current.id}`}
-                          type="text"
-                          value={
-                            current.configuration.kind === "number"
-                              ? (current.configuration[bound] ?? "")
-                              : ""
-                          }
-                          aria-invalid={
-                            current.configuration.kind === "number" &&
+                    </div>
+                    <PropertyRow
+                      label={text(
+                        current.configuration.kind === "group"
+                          ? "group.writingGuide"
+                          : "field.writingGuide",
+                      )}
+                      htmlFor={"whole-guide-" + current.id}
+                      complex
+                    >
+                      <Input
+                        id={"whole-guide-" + current.id}
+                        value={token(
+                          current.writingGuide ?? { intent: "keep" },
+                          original?.writingGuide ?? null,
+                        )}
+                        placeholder={text("field.writingGuideHelp")}
+                        aria-description={text("field.writingGuideHelp")}
+                        onChange={(e) =>
+                          editField(current.id, (f) => ({
+                            ...f,
+                            writingGuide:
+                              e.target.value === ""
+                                ? { intent: "unset" }
+                                : { intent: "set", value: e.target.value },
+                          }))
+                        }
+                      />
+                    </PropertyRow>
+                    {current.configuration.kind === "group" && (
+                      <GroupDefinition
+                        key={current.id}
+                        members={current.configuration.members}
+                        cardTitleField={
+                          current.configuration.cardTitleField?.intent === "set"
+                            ? current.configuration.cardTitleField.value
+                            : current.configuration.cardTitleField?.intent ===
+                                "unset"
+                              ? null
+                              : original?.cardTitleField
+                        }
+                        changeTitle={(cardTitleField) =>
+                          editField(current.id, (f) => ({
+                            ...f,
+                            archiveTitle: undefined,
+                            configuration:
+                              f.configuration.kind === "group"
+                                ? {
+                                    ...f.configuration,
+                                    cardTitleField: cardTitleField
+                                      ? {
+                                          intent: "set" as const,
+                                          value: cardTitleField,
+                                        }
+                                      : { intent: "unset" as const },
+                                  }
+                                : f.configuration,
+                          }))
+                        }
+                        original={original}
+                        owner={draft.status.owner}
+                        generation={draft.generation}
+                        savedGeneration={draft.status.savedGeneration}
+                        composing={draft.body.composing}
+                        disabled={blocked}
+                        canonical={canonical}
+                        templates={templates}
+                        change={(members) =>
+                          editField(current.id, (f) => {
+                            return changeGroupMembers(
+                              f,
+                              members,
+                              original?.cardTitleField,
+                              canonical,
+                            );
+                          })
+                        }
+                      />
+                    )}
+                    {current.configuration.kind === "relation" && (
+                      <>
+                        <PropertyRow label={text("relation.multiple")}>
+                          <Checkbox
+                            aria-label={text("relation.multiple")}
+                            disabled={blocked}
+                            checked={current.configuration.multiple}
+                            onChange={(_, data) =>
+                              editField(current.id, (field) => ({
+                                ...field,
+                                configuration:
+                                  field.configuration.kind === "relation"
+                                    ? {
+                                        ...field.configuration,
+                                        multiple: data.checked === true,
+                                      }
+                                    : field.configuration,
+                              }))
+                            }
+                          />
+                        </PropertyRow>
+                        <PropertyRow
+                          label={text("relation.allowedTemplates")}
+                          htmlFor={"whole-relation-templates-" + current.id}
+                        >
+                          <Select
+                            id={"whole-relation-templates-" + current.id}
+                            multiple
+                            disabled={blocked}
+                            value={current.configuration.allowedTemplates}
+                            onChange={(event) =>
+                              editField(current.id, (field) => ({
+                                ...field,
+                                configuration:
+                                  field.configuration.kind === "relation"
+                                    ? {
+                                        ...field.configuration,
+                                        allowedTemplates: Array.from(
+                                          event.target.selectedOptions,
+                                          (option) => option.value,
+                                        ),
+                                      }
+                                    : field.configuration,
+                              }))
+                            }
+                          >
+                            {templates.map((template) => (
+                              <option key={template.id} value={template.id}>
+                                {template.name}
+                              </option>
+                            ))}
+                          </Select>
+                          <HelpText>{text("relation.allowedHelp")}</HelpText>
+                        </PropertyRow>
+                        <PropertyRow label={text("relation.reciprocalNotice")}>
+                          <Checkbox
+                            aria-label={text("relation.reciprocalNotice")}
+                            disabled={blocked}
+                            checked={current.configuration.reciprocalNotice}
+                            onChange={(_, data) =>
+                              editField(current.id, (field) => ({
+                                ...field,
+                                configuration:
+                                  field.configuration.kind === "relation"
+                                    ? {
+                                        ...field.configuration,
+                                        reciprocalNotice: data.checked === true,
+                                      }
+                                    : field.configuration,
+                              }))
+                            }
+                          />
+                        </PropertyRow>
+                      </>
+                    )}
+                    {current.configuration.kind === "number" &&
+                      (["minimum", "maximum"] as const).map((bound) => (
+                        <PropertyRow
+                          key={bound}
+                          label={text(`field.${bound}`)}
+                          htmlFor={`whole-${bound}-${current.id}`}
+                        >
+                          <Input
+                            id={`whole-${bound}-${current.id}`}
+                            type="text"
+                            value={
+                              current.configuration.kind === "number"
+                                ? (current.configuration[bound] ?? "")
+                                : ""
+                            }
+                            aria-invalid={
+                              current.configuration.kind === "number" &&
+                              boundsProblem(
+                                current.configuration.minimum,
+                                current.configuration.maximum,
+                              ) === bound
+                            }
+                            onChange={(event) =>
+                              editField(current.id, (f) => ({
+                                ...f,
+                                configuration:
+                                  f.configuration.kind === "number"
+                                    ? {
+                                        ...f.configuration,
+                                        [bound]: event.target.value,
+                                      }
+                                    : f.configuration,
+                              }))
+                            }
+                          />
+                          {current.configuration.kind === "number" &&
                             boundsProblem(
                               current.configuration.minimum,
                               current.configuration.maximum,
-                            ) === bound
-                          }
-                          onChange={(event) =>
-                            editField(current.id, (f) => ({
-                              ...f,
-                              configuration:
-                                f.configuration.kind === "number"
-                                  ? {
-                                      ...f.configuration,
-                                      [bound]: event.target.value,
-                                    }
-                                  : f.configuration,
-                            }))
-                          }
-                        />
-                        {current.configuration.kind === "number" &&
-                          boundsProblem(
-                            current.configuration.minimum,
-                            current.configuration.maximum,
-                          ) === bound && (
-                            <InlineNotice kind="error">
-                              {text("field.invalidBounds")}
-                            </InlineNotice>
-                          )}
-                      </PropertyRow>
-                    ))}
-                  {"options" in current.configuration && (
-                    <>
-                      <h4>{text("whole.value")}</h4>
-                      <div className="whole-options">
-                        {current.configuration.options.map((option) => (
-                          <div
-                            key={option.id}
-                            {...reorder.card(
-                              current.id,
-                              option.id,
-                              ("options" in current.configuration
-                                ? current.configuration.options
-                                : []
-                              )
-                                .filter((o) => !o.archived)
-                                .map((o) => o.id),
-                              option.archived,
+                            ) === bound && (
+                              <InlineNotice kind="error">
+                                {text("field.invalidBounds")}
+                              </InlineNotice>
                             )}
-                            className={
-                              "whole-option " +
-                              reorder.card(current.id, option.id, []).className
-                            }
-                          >
-                            <PropertyRow
-                              label={
-                                <span className="whole-option-label">
-                                  {!blocked &&
-                                    !draft.body.composing &&
-                                    !option.archived &&
-                                    ("options" in current.configuration
-                                      ? current.configuration.options.filter(
-                                          (candidate) => !candidate.archived,
-                                        ).length
-                                      : 0) > 1 && (
-                                      <span
-                                        className="whole-field-grip"
-                                        aria-hidden="true"
-                                      >
-                                        <ReOrderDotsVertical20Regular />
-                                      </span>
-                                    )}
-                                  {text("option.label")}
-                                </span>
-                              }
-                              htmlFor={"whole-option-" + option.id}
-                              complex
-                            >
-                              <Input
-                                id={"whole-option-" + option.id}
-                                aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
-                                aria-description={text(
-                                  "whole.fieldReorderHelp",
-                                )}
-                                title={text("whole.fieldReorderHelp")}
-                                onKeyDown={(event) => {
-                                  if (
-                                    blocked ||
-                                    draft.body.composing ||
-                                    option.archived ||
-                                    !event.altKey ||
-                                    event.ctrlKey ||
-                                    event.metaKey ||
-                                    event.shiftKey ||
-                                    !["ArrowUp", "ArrowDown"].includes(
-                                      event.key,
-                                    )
-                                  )
-                                    return;
-                                  event.preventDefault();
-                                  const delta =
-                                    event.key === "ArrowUp" ? -1 : 1;
-                                  editField(current.id, (f) =>
-                                    "options" in f.configuration
-                                      ? {
-                                          ...f,
-                                          configuration: {
-                                            ...f.configuration,
-                                            options: move(
-                                              f.configuration.options,
-                                              option.id,
-                                              delta,
-                                            ),
-                                          },
-                                        }
-                                      : f,
-                                  );
-                                }}
-                                value={option.label}
-                                disabled={option.archived}
-                                onChange={(e) =>
-                                  editField(current.id, (f) =>
-                                    "options" in f.configuration
-                                      ? {
-                                          ...f,
-                                          configuration: {
-                                            ...f.configuration,
-                                            options:
-                                              f.configuration.options.map(
-                                                (o) =>
-                                                  o.id === option.id
-                                                    ? {
-                                                        ...o,
-                                                        label: e.target.value,
-                                                      }
-                                                    : o,
-                                              ),
-                                          },
-                                        }
-                                      : f,
-                                  )
-                                }
-                              />
-                              {problems
-                                .filter(
-                                  (p) =>
-                                    p.field === canonical(current.id) &&
-                                    p.option === canonical(option.id) &&
-                                    p.property === "option",
+                        </PropertyRow>
+                      ))}
+                    {"options" in current.configuration && (
+                      <>
+                        <h4>{text("whole.value")}</h4>
+                        <div className="whole-options">
+                          {current.configuration.options.map((option) => (
+                            <div
+                              key={option.id}
+                              {...reorder.card(
+                                current.id,
+                                option.id,
+                                ("options" in current.configuration
+                                  ? current.configuration.options
+                                  : []
                                 )
-                                .map((p, i) => (
-                                  <InlineNotice key={i} kind="error">
-                                    {problemHelp(p)} ({p.category})
-                                  </InlineNotice>
-                                ))}
-                            </PropertyRow>
-                            {option.archived ? (
-                              <Button
-                                type="button"
-                                disabled={actionBlocked || draft.body.composing}
-                                onClick={() => {
-                                  editField(current.id, (f) =>
-                                    "options" in f.configuration
-                                      ? {
-                                          ...f,
-                                          configuration: {
-                                            ...f.configuration,
-                                            options: restoreDefinition(
-                                              f.configuration.options,
-                                              option.id,
-                                              original?.options.find(
-                                                (o) =>
-                                                  o.id === canonical(option.id),
-                                              )?.lifecycle === "Archived",
-                                            ),
-                                          },
-                                        }
-                                      : f,
-                                  );
-                                  setNotice(text("archive.restoredDraft"));
-                                }}
+                                  .filter((o) => !o.archived)
+                                  .map((o) => o.id),
+                                option.archived,
+                              )}
+                              className={
+                                "whole-option " +
+                                reorder.card(current.id, option.id, [])
+                                  .className
+                              }
+                            >
+                              <PropertyRow
+                                label={
+                                  <span className="whole-option-label">
+                                    {!blocked &&
+                                      !draft.body.composing &&
+                                      !option.archived &&
+                                      ("options" in current.configuration
+                                        ? current.configuration.options.filter(
+                                            (candidate) => !candidate.archived,
+                                          ).length
+                                        : 0) > 1 && (
+                                        <span
+                                          className="whole-field-grip"
+                                          aria-hidden="true"
+                                        >
+                                          <ReOrderDotsVertical20Regular />
+                                        </span>
+                                      )}
+                                    {text("option.label")}
+                                  </span>
+                                }
+                                htmlFor={"whole-option-" + option.id}
+                                complex
                               >
-                                {text(
-                                  original?.options.find(
-                                    (o) => o.id === canonical(option.id),
-                                  )?.lifecycle === "Archived"
-                                    ? "archive.restore"
-                                    : "archive.undo",
-                                )}
-                              </Button>
-                            ) : (
-                              <div className="actions">
-                                <Button
-                                  type="button"
-                                  danger
-                                  onClick={() => {
-                                    setNotice("");
+                                <Input
+                                  id={"whole-option-" + option.id}
+                                  aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                                  aria-description={text(
+                                    "whole.fieldReorderHelp",
+                                  )}
+                                  title={text("whole.fieldReorderHelp")}
+                                  onKeyDown={(event) => {
+                                    if (
+                                      blocked ||
+                                      draft.body.composing ||
+                                      option.archived ||
+                                      !event.altKey ||
+                                      event.ctrlKey ||
+                                      event.metaKey ||
+                                      event.shiftKey ||
+                                      !["ArrowUp", "ArrowDown"].includes(
+                                        event.key,
+                                      )
+                                    )
+                                      return;
+                                    event.preventDefault();
+                                    const delta =
+                                      event.key === "ArrowUp" ? -1 : 1;
                                     editField(current.id, (f) =>
                                       "options" in f.configuration
                                         ? {
                                             ...f,
                                             configuration: {
                                               ...f.configuration,
-                                              options: newOption(option.id)
-                                                ? f.configuration.options.filter(
-                                                    (o) => o.id !== option.id,
-                                                  )
-                                                : archiveDefinition(
-                                                    f.configuration.options,
-                                                    option.id,
-                                                  ),
+                                              options: move(
+                                                f.configuration.options,
+                                                option.id,
+                                                delta,
+                                              ),
                                             },
                                           }
                                         : f,
                                     );
                                   }}
+                                  value={option.label}
+                                  disabled={option.archived}
+                                  onChange={(e) =>
+                                    editField(current.id, (f) =>
+                                      "options" in f.configuration
+                                        ? {
+                                            ...f,
+                                            configuration: {
+                                              ...f.configuration,
+                                              options:
+                                                f.configuration.options.map(
+                                                  (o) =>
+                                                    o.id === option.id
+                                                      ? {
+                                                          ...o,
+                                                          label: e.target.value,
+                                                        }
+                                                      : o,
+                                                ),
+                                            },
+                                          }
+                                        : f,
+                                    )
+                                  }
+                                />
+                                {problems
+                                  .filter(
+                                    (p) =>
+                                      p.field === canonical(current.id) &&
+                                      p.option === canonical(option.id) &&
+                                      p.property === "option",
+                                  )
+                                  .map((p, i) => (
+                                    <InlineNotice key={i} kind="error">
+                                      {problemHelp(p)}
+                                    </InlineNotice>
+                                  ))}
+                              </PropertyRow>
+                              {option.archived ? (
+                                <Button
+                                  type="button"
+                                  disabled={
+                                    actionBlocked || draft.body.composing
+                                  }
+                                  onClick={() => {
+                                    editField(current.id, (f) =>
+                                      "options" in f.configuration
+                                        ? {
+                                            ...f,
+                                            configuration: {
+                                              ...f.configuration,
+                                              options: restoreDefinition(
+                                                f.configuration.options,
+                                                option.id,
+                                                original?.options.find(
+                                                  (o) =>
+                                                    o.id ===
+                                                    canonical(option.id),
+                                                )?.lifecycle === "Archived",
+                                              ),
+                                            },
+                                          }
+                                        : f,
+                                    );
+                                    setNotice(text("archive.restoredDraft"));
+                                  }}
                                 >
                                   {text(
-                                    newOption(option.id)
-                                      ? "whole.removeNew"
-                                      : "whole.archive",
+                                    original?.options.find(
+                                      (o) => o.id === canonical(option.id),
+                                    )?.lifecycle === "Archived"
+                                      ? "archive.restore"
+                                      : "archive.undo",
                                   )}
                                 </Button>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                        <Button
-                          type="button"
-                          onClick={() =>
-                            editField(current.id, (f) =>
-                              "options" in f.configuration
-                                ? {
-                                    ...f,
-                                    configuration: {
-                                      ...f.configuration,
-                                      options: [
-                                        ...f.configuration.options,
-                                        {
-                                          id: "new:" + crypto.randomUUID(),
-                                          label: "",
-                                          archived: false,
-                                        },
-                                      ],
-                                    },
-                                  }
-                                : f,
-                            )
-                          }
-                        >
-                          {text("whole.newOption")}
-                        </Button>
-                      </div>
-                    </>
-                  )}
-                  <details>
-                    <summary>{text("whole.history")}</summary>
+                              ) : (
+                                <div className="actions">
+                                  <Button
+                                    type="button"
+                                    danger
+                                    onClick={() => {
+                                      setNotice("");
+                                      editField(current.id, (f) =>
+                                        "options" in f.configuration
+                                          ? {
+                                              ...f,
+                                              configuration: {
+                                                ...f.configuration,
+                                                options: newOption(option.id)
+                                                  ? f.configuration.options.filter(
+                                                      (o) => o.id !== option.id,
+                                                    )
+                                                  : archiveDefinition(
+                                                      f.configuration.options,
+                                                      option.id,
+                                                    ),
+                                              },
+                                            }
+                                          : f,
+                                      );
+                                    }}
+                                  >
+                                    {text(
+                                      newOption(option.id)
+                                        ? "whole.removeNew"
+                                        : "whole.archive",
+                                    )}
+                                  </Button>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                          <Button
+                            type="button"
+                            onClick={() =>
+                              editField(current.id, (f) =>
+                                "options" in f.configuration
+                                  ? {
+                                      ...f,
+                                      configuration: {
+                                        ...f.configuration,
+                                        options: [
+                                          ...f.configuration.options,
+                                          {
+                                            id: "new:" + crypto.randomUUID(),
+                                            label: "",
+                                            archived: false,
+                                          },
+                                        ],
+                                      },
+                                    }
+                                  : f,
+                              )
+                            }
+                          >
+                            {text("whole.newOption")}
+                          </Button>
+                        </div>
+                      </>
+                    )}
                     {original && current.configuration.kind !== "group" && (
-                      <details>
-                        <summary>{text("field.legacyDefault")}</summary>
+                      <>
                         <HelpText>{text("field.legacyDefaultHelp")}</HelpText>
                         <PropertyRow
                           label={text("field.default")}
@@ -1183,156 +1227,131 @@ export function WholeTemplate({
                             )
                             .map((p, i) => (
                               <InlineNotice key={i} kind="error">
-                                {problemHelp(p)} ({p.category})
+                                {problemHelp(p)}
                               </InlineNotice>
                             ))}
                         </PropertyRow>
-                      </details>
-                    )}
-                    {original && (
-                      <>
-                        <p>
-                          {text("field.introduced", {
-                            revision: original.introducedRevision,
-                          })}
-                        </p>
-                        <ValueRead
-                          value={original.initialDefault}
-                          options={original.options}
-                        />
                       </>
                     )}
-                  </details>
-                  <div className="whole-detail-actions">
+                    <div className="whole-detail-actions">
+                      <Button
+                        type="button"
+                        danger
+                        onClick={() => {
+                          if (newField(current.id))
+                            changed((b) => ({
+                              ...b,
+                              fields: b.fields.filter(
+                                (f) => f.id !== current.id,
+                              ),
+                            }));
+                          else
+                            changed((b) => ({
+                              ...b,
+                              fields: archiveDefinition(b.fields, current.id),
+                            }));
+                          setSelected(null);
+                          setNotice("");
+                        }}
+                      >
+                        {text(
+                          newField(current.id)
+                            ? "whole.removeNew"
+                            : "archive.field",
+                        )}
+                      </Button>
+                    </div>
+                  </>
+                ) : (
+                  <p>{text("whole.chooseField")}</p>
+                )}
+              </div>
+            </div>
+          </section>
+          {!!archived.length && (
+            <details open ref={archiveRoot} className="archive-definitions">
+              <summary>
+                {text("whole.archived")} ({archived.length})
+              </summary>
+              <HelpText>{text("archive.restoreHelp")}</HelpText>
+              {archived.map((f) => (
+                <section key={f.id} className="archive-definition-row">
+                  <div className="archive-definition-heading">
+                    <h4>{f.label || text("field.emptyLabel")}</h4>
+                    <p>{text(`whole.kind.${f.configuration.kind}`)}</p>
+                  </div>
+                  <div className="actions">
+                    <ArchivedDefinitionActions
+                      canonical={canonical}
+                      field={f}
+                      original={draft.base.fields.find(
+                        (s) => s.id === canonical(f.id),
+                      )}
+                      disabled={actionBlocked || draft.body.composing}
+                      change={(value) => {
+                        changed((b) => ({
+                          ...b,
+                          fields: restoreDefinition(
+                            b.fields,
+                            f.id,
+                            draft.base.fields.find(
+                              (s) => s.id === canonical(f.id),
+                            )?.lifecycle === "Archived",
+                          ).map((item) =>
+                            item.id === f.id
+                              ? {
+                                  ...value,
+                                  archiveIndex: item.archiveIndex,
+                                  archiveOrder: item.archiveOrder,
+                                }
+                              : item,
+                          ),
+                        }));
+                        setSelected(f.id);
+                        setNotice(text("archive.restoredDraft"));
+                      }}
+                    />
                     <Button
                       type="button"
-                      danger
+                      disabled={actionBlocked || draft.body.composing}
                       onClick={() => {
-                        if (newField(current.id))
-                          changed((b) => ({
-                            ...b,
-                            fields: b.fields.filter((f) => f.id !== current.id),
-                          }));
-                        else
-                          changed((b) => ({
-                            ...b,
-                            fields: archiveDefinition(b.fields, current.id),
-                          }));
-                        setSelected(null);
-                        setNotice("");
+                        changed((b) => ({
+                          ...b,
+                          fields: restoreDefinition(
+                            b.fields,
+                            f.id,
+                            draft.base.fields.find(
+                              (s) => s.id === canonical(f.id),
+                            )?.lifecycle === "Archived",
+                          ),
+                        }));
+                        setSelected(f.id);
+                        setNotice(text("archive.restoredDraft"));
                       }}
                     >
                       {text(
-                        newField(current.id)
-                          ? "whole.removeNew"
-                          : "archive.field",
+                        draft.base.fields.find((s) => s.id === canonical(f.id))
+                          ?.lifecycle === "Archived"
+                          ? "archive.restore"
+                          : "archive.undo",
                       )}
                     </Button>
                   </div>
-                </>
-              ) : (
-                <p>{text("whole.chooseField")}</p>
-              )}
-            </div>
-          </div>
-        </section>
-        {!!archived.length && (
-          <details open ref={archiveRoot} className="archive-definitions">
-            <summary>
-              {text("whole.archived")} ({archived.length})
-            </summary>
-            <HelpText>{text("archive.restoreHelp")}</HelpText>
-            {archived.map((f) => (
-              <section key={f.id} className="archive-definition-row">
-                <div className="archive-definition-heading">
-                  <h4>{f.label || text("field.emptyLabel")}</h4>
-                  <p>{text(`whole.kind.${f.configuration.kind}`)}</p>
-                </div>
-                <div className="actions">
-                  <ArchivedDefinitionActions
-                    canonical={canonical}
-                    field={f}
-                    original={draft.base.fields.find(
-                      (s) => s.id === canonical(f.id),
-                    )}
-                    disabled={actionBlocked || draft.body.composing}
-                    change={(value) => {
-                      changed((b) => ({
-                        ...b,
-                        fields: restoreDefinition(
-                          b.fields,
-                          f.id,
-                          draft.base.fields.find(
-                            (s) => s.id === canonical(f.id),
-                          )?.lifecycle === "Archived",
-                        ).map((item) =>
-                          item.id === f.id
-                            ? {
-                                ...value,
-                                archiveIndex: item.archiveIndex,
-                                archiveOrder: item.archiveOrder,
-                              }
-                            : item,
-                        ),
-                      }));
-                      setSelected(f.id);
-                      setNotice(text("archive.restoredDraft"));
-                    }}
-                  />
-                  <Button
-                    type="button"
-                    disabled={actionBlocked || draft.body.composing}
-                    onClick={() => {
-                      changed((b) => ({
-                        ...b,
-                        fields: restoreDefinition(
-                          b.fields,
-                          f.id,
-                          draft.base.fields.find(
-                            (s) => s.id === canonical(f.id),
-                          )?.lifecycle === "Archived",
-                        ),
-                      }));
-                      setSelected(f.id);
-                      setNotice(text("archive.restoredDraft"));
-                    }}
-                  >
-                    {text(
-                      draft.base.fields.find((s) => s.id === canonical(f.id))
-                        ?.lifecycle === "Archived"
-                        ? "archive.restore"
-                        : "archive.undo",
-                    )}
-                  </Button>
-                </div>
-                {draft.base.fields.find((s) => s.id === canonical(f.id)) && (
-                  <details className="archive-definition-history">
-                    <summary>{text("archive.initialValue")}</summary>
-                    <ValueRead
-                      value={
-                        draft.base.fields.find((s) => s.id === canonical(f.id))!
-                          .initialDefault
-                      }
-                      options={
-                        draft.base.fields.find((s) => s.id === canonical(f.id))!
-                          .options
-                      }
-                    />
-                  </details>
-                )}
-              </section>
-            ))}
-          </details>
-        )}
-      </Fieldset>
-      <p role="status" aria-live="polite">
-        {notice === text("archive.restoredDraft") &&
-        draft.status.savedGeneration !== null &&
-        BigInt(draft.status.savedGeneration) >= BigInt(announcement.generation)
-          ? text("archive.restoredSaved")
-          : notice}
-      </p>
-    </section>
+                </section>
+              ))}
+            </details>
+          )}
+        </Fieldset>
+        <p role="status" aria-live="polite">
+          {notice === text("archive.restoredDraft") &&
+          draft.status.savedGeneration !== null &&
+          BigInt(draft.status.savedGeneration) >=
+            BigInt(announcement.generation)
+            ? text("archive.restoredSaved")
+            : notice}
+        </p>
+      </section>
+    </MediaTargetContext.Provider>
   );
 }
 

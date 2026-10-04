@@ -56,6 +56,8 @@ fn m273_atomic_archive_repair_preserves_exact_owners_and_documents() {
         let template =
             format!("{}{}{}", &original[..start], replacement, &original[end..]).into_bytes();
         artifact::decode_template(&template).unwrap();
+        let template = current_policy_fixture(&template, &format!("templates/{TEMPLATE}.json"));
+        let document = current_policy_fixture(&document, &format!("documents/{}.json", field(200)));
         fs::create_dir(h.root.join("templates")).unwrap();
         fs::create_dir(h.root.join("documents")).unwrap();
         let path = h.root.join("templates").join(format!("{TEMPLATE}.json"));
@@ -255,6 +257,8 @@ fn m272_lossless_field_owners_keep_fresh_history_and_document_bytes() {
     assert_eq!(text.matches(&old).count(), 1);
     let template = text.replacen(&old, &replacement, 1).into_bytes();
     artifact::decode_template(&template).unwrap();
+    let template = current_policy_fixture(&template, &format!("templates/{TEMPLATE}.json"));
+    let document = current_policy_fixture(&document, &format!("documents/{}.json", field(200)));
     fs::create_dir(h.root.join("templates")).unwrap();
     fs::create_dir(h.root.join("documents")).unwrap();
     let path = h.root.join("templates").join(format!("{TEMPLATE}.json"));

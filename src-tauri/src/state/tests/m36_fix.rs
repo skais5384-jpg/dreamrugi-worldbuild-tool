@@ -61,22 +61,8 @@ fn m36_fix_rollback_diagnostic_deposit_retry_and_next_save() {
         .clone();
     assert_eq!(deposited["deposited"], true);
     assert_eq!(deposited["outcome"]["diagnostic"], *diagnostic);
-    let rows = h.work(json!({"kind":"recovery_page","cursor":null}));
-    let store = h.state.recovery.connect().unwrap();
-    let rows = rows["page"]["entries"].as_array().unwrap();
-    let row = &rows
-        .iter()
-        .find(|r| r["row"]["key"]["generation"] == "16")
-        .unwrap()["row"];
-    let key: Key = serde_json::from_value(row["key"].clone()).unwrap();
-    let bytes = store
-        .lock()
-        .unwrap()
-        .read(&key, row["depositId"].as_str().unwrap())
-        .unwrap()
-        .bytes()
-        .to_vec();
-    let envelope: Value = serde_json::from_slice(&bytes).unwrap();
+    let record = latest_target_deposit(&h, "document", &id);
+    let envelope: Value = serde_json::from_slice(record.bytes()).unwrap();
     let e = &envelope["envelope"];
     assert_eq!(e["draft"]["name"]["value"], "PRIVATE_LATEST_16");
     assert_eq!(e["attempt"]["submittedGeneration"], "15");

@@ -109,6 +109,7 @@ pub(crate) struct WorkerContext<P, R> {
     // 현재 프로젝트의 저장 집합이 런타임 밖에서 교체된 뒤에는 새 접근권을 발급하지 않는다.
     // 정상 종료 정리 슬롯만 이 표시를 소비해 새 저장 집합을 재검증하고 lock을 닫는다.
     pub(super) runtime_invalidated: bool,
+    input_epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub(super) sessions: Vec<Entry<P, R>>,
     marker: Arc<()>,
     next_registration: u64,
@@ -127,6 +128,7 @@ impl<P, R> WorkerContext<P, R> {
         Self {
             runtime: Some(runtime),
             runtime_invalidated: false,
+            input_epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             sessions: Vec::new(),
             marker,
             next_registration: 0,
@@ -241,6 +243,57 @@ impl<P, R> WorkerContext<P, R> {
         Ok(read(&ready))
     }
 
+    pub(crate) fn preserve_latest_input(
+        &self,
+        envelope: crate::data::edit_recovery::model::Envelope,
+    ) -> std::io::Result<crate::data::repository::drafts::Checkpoint> {
+        if self.runtime_invalidated {
+            return Err(std::io::Error::other("project access invalidated"));
+        }
+        self.runtime
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("project closed"))?
+            .preserve_latest_input(envelope)
+    }
+
+    /// A new owner may resume an old unknown save only after actual runtime
+    /// recovery and when no other session/caller retains work on that target.
+    pub(crate) fn can_recheck_latest_input(
+        &mut self,
+        own: &Registration,
+        target: &ProjectRelativePath,
+    ) -> bool {
+        if self.runtime_invalidated || self.caller_custody != 0 {
+            return false;
+        }
+        let Some(current) = self
+            .sessions
+            .iter()
+            .find(|entry| &entry.registration == own)
+        else {
+            return false;
+        };
+        if current.draft.is_some()
+            || current.service.snapshot().state()
+                != crate::data::edit_session::EditSessionState::Editing
+            || !current.service.snapshot().targets().contains(target)
+        {
+            return false;
+        }
+        if !self.retained_failure_owners.is_empty()
+            || self.sessions.iter().any(|entry| {
+                &entry.registration != own
+                    && (entry.draft.is_some()
+                        || entry.service.snapshot().targets().contains(target))
+            })
+        {
+            return false;
+        }
+        self.runtime
+            .as_mut()
+            .is_some_and(|runtime| runtime.ready().is_ok())
+    }
+
     pub(crate) fn has_project_owners(&self) -> bool {
         !self.sessions.is_empty() || self.caller_custody != 0
     }
@@ -287,6 +340,8 @@ impl<P, R> WorkerContext<P, R> {
             })?
             .invalidate_recovery();
         self.runtime_invalidated = true;
+        self.input_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         Ok(())
     }
     pub(super) fn revalidate(
@@ -502,6 +557,84 @@ fn acknowledge<P, R>(
 /// 일반 admission을 닫은 뒤 별도 한 칸으로 요청한다. end/인수/반환은 모두 명시적 호출이다.
 pub(crate) struct CleanupContext<'a, P, R>(pub(super) &'a mut WorkerContext<P, R>);
 impl<P, R> CleanupContext<'_, P, R> {
+    /// Read-only proof for cancelling an unresolved comparison. An active
+    /// worker payload must use its normal custody/release path instead.
+    pub(crate) fn hold_comparison_input(
+        &mut self,
+        registration: &Registration,
+        checkpoint: &crate::data::repository::drafts::Checkpoint,
+    ) -> std::io::Result<crate::data::repository::drafts::VerifiedCheckpoint> {
+        let session = self
+            .0
+            .sessions
+            .iter()
+            .find(|entry| entry.registration == *registration)
+            .ok_or_else(|| std::io::Error::other("comparison session unavailable"))?;
+        if session.draft.is_some() {
+            return Err(std::io::Error::other("comparison retains active work"));
+        }
+        self.0
+            .read(|ready| {
+                let repository = crate::data::repository::ArtifactRepository::new(ready)
+                    .map_err(std::io::Error::other)?;
+                checkpoint.hold_current(&repository)
+            })
+            .map_err(std::io::Error::other)?
+    }
+    pub(crate) fn preserve_latest_input(
+        &self,
+        envelope: crate::data::edit_recovery::model::Envelope,
+    ) -> std::io::Result<crate::data::repository::drafts::Checkpoint> {
+        self.0.preserve_latest_input(envelope)
+    }
+
+    pub(crate) fn latest_input_sink(
+        &self,
+    ) -> std::io::Result<crate::data::repository::drafts::InputSink> {
+        if self.0.runtime_invalidated {
+            return Err(std::io::Error::other("project access invalidated"));
+        }
+        self.0
+            .runtime
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("project closed"))?
+            .latest_input_sink(self.0.input_epoch.clone())
+    }
+
+    /// A confirmed content version is cleanup metadata, never a canonical write.
+    /// The editing session must already have ended successfully.
+    pub(crate) fn confirm_content_version(
+        &mut self,
+        registration: &Registration,
+        id: crate::data::repository::ArtifactSourceId,
+        timestamp: &str,
+        expected: &str,
+    ) -> std::io::Result<u64> {
+        let entry = self
+            .0
+            .sessions
+            .iter()
+            .find(|entry| entry.registration == *registration)
+            .ok_or_else(|| std::io::Error::other("version session unavailable"))?;
+        if entry.service.snapshot().state() != crate::data::edit_session::EditSessionState::ReadOnly
+        {
+            return Err(std::io::Error::other(
+                "version requires a completed editing session",
+            ));
+        }
+        self.0
+            .read(|ready| {
+                let repository = crate::data::repository::ArtifactRepository::new(ready)
+                    .map_err(std::io::Error::other)?;
+                crate::data::repository::versions::confirm_source(
+                    &repository,
+                    id,
+                    timestamp,
+                    Some(expected),
+                )
+            })
+            .map_err(std::io::Error::other)?
+    }
     pub(in crate::data::application) fn shutdown_sessions(
         &self,
     ) -> Vec<super::super::shutdown::SessionOwner> {

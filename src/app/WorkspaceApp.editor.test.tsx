@@ -22,6 +22,49 @@ beforeEach(() => {
 });
 
 describe("whole template workspace", () => {
+  it("현재 기본값과 보관 복원은 유지하되 최초 기본값의 별도 이력 화면은 없다", async () => {
+    const { controller, base } = await setup();
+    const before = structuredClone(base.fields[0].initialDefault);
+    fireEvent.click(screen.getByRole("button", { name: "숫자 필드" }));
+    expect(screen.getByLabelText(text("field.default"))).toBeVisible();
+    expect(screen.queryByText(text("whole.history"))).toBeNull();
+    expect(screen.queryByText(text("archive.initialValue"))).toBeNull();
+    expect(
+      screen.queryByText(text("field.introduced", { revision: "1" })),
+    ).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", { name: text("archive.field") }),
+    );
+    expect(
+      await screen.findByRole("button", { name: text("archive.undo") }),
+    ).toBeEnabled();
+    expect(screen.queryByText(text("archive.initialValue"))).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: text("archive.undo") }));
+    expect(screen.getByRole("button", { name: "숫자 필드" })).toBeVisible();
+    expect(controller.snapshot().draft?.base.fields[0].initialDefault).toEqual(
+      before,
+    );
+  });
+
+  it("버전 복원으로 이름이 바뀌면 정상 목록과 읽기 제목을 함께 갱신한다", async () => {
+    const { controller, shell, transport, base } = await setup();
+    transport.templates.set(base.id, structuredClone(base));
+    await act(() => controller.navigate({ kind: "browse" }));
+    await act(() => controller.navigate({ kind: "format", id: base.id }));
+    expect(shell.snapshot().rows.find((row) => row.id === base.id)?.name).toBe(
+      base.name,
+    );
+    const restored = { ...base, name: "이전 템플릿 이름", revision: "5" };
+    transport.templates.set(base.id, restored);
+    await act(() => controller.navigate({ kind: "format", id: base.id }));
+    expect(shell.snapshot().rows.find((row) => row.id === base.id)?.name).toBe(
+      restored.name,
+    );
+    expect(shell.snapshot().selection?.content.name).toBe(restored.name);
+    expect(controller.snapshot().draft).toBeNull();
+    expect(screen.getByRole("heading", { name: restored.name })).toBeVisible();
+  });
+
   it.each([false, true])(
     "초안 읽기 진행은 실패 경고가 아니며 완료 실패=%s일 때만 경고한다",
     async (reject) => {
@@ -62,7 +105,7 @@ describe("whole template workspace", () => {
       }
     },
   );
-  it("선택 기능 등록 실패를 안전한 지원 진단으로 표시한다", async () => {
+  it("선택 기능 등록 실패의 기술 코드를 일반 점검 화면에 노출하지 않는다", async () => {
     const { transport } = await setup();
     transport.supportDiagnosticChanged([
       {
@@ -78,10 +121,10 @@ describe("whole template workspace", () => {
       await screen.findByRole("menuitem", { name: text("health.menu") }),
     );
     fireEvent.click(screen.getByText(text("health.diagnostics")));
-    expect(screen.getByText(/request_filter/)).toHaveTextContent("0x80070005");
-    expect(screen.getByText(/request_filter/)).not.toHaveTextContent(
-      "https://",
-    );
+    expect(screen.queryByText(/request_filter/)).toBeNull();
+    expect(screen.queryByText(/0x80070005/)).toBeNull();
+    expect(screen.queryByText(/webview2_com/)).toBeNull();
+    expect(screen.getByText(text("health.diagnosticsHelp"))).toBeVisible();
   });
   it("Template 카드는 삭제된 항목을 숨기고 알 수 없는 상태는 읽기 전용으로 유지한다", async () => {
     const { transport, base, shell } = await setup();
@@ -117,16 +160,21 @@ describe("whole template workspace", () => {
     const cards = within(list).getAllByRole("listitem");
     expect(
       cards.map((card) => card.querySelector("strong")?.textContent),
-    ).toEqual(["사용 정의 A", "확인할 정의", "사용 정의 B"]);
+    ).toEqual(["새 템플릿", "사용 정의 A", "확인할 정의", "사용 정의 B"]);
     expect(within(list).queryByText("삭제 정의 A")).toBeNull();
     expect(within(list).queryByText("삭제 정의 B")).toBeNull();
     expect(list).not.toHaveTextContent("revision");
     expect(
       within(list).getByText(text("template.unknown")),
     ).toBeInTheDocument();
-    expect(shell.snapshot().rows.map((row) => row.id)).toEqual(
-      definitions.map((row) => row.id),
-    );
+    expect(
+      shell
+        .snapshot()
+        .rows.filter((row) =>
+          definitions.some((definition) => definition.id === row.id),
+        )
+        .map((row) => row.id),
+    ).toEqual(definitions.map((row) => row.id));
     const unknown = within(list).getByRole("button", {
       name: /확인할 정의.*확인 필요/,
     });
@@ -139,7 +187,7 @@ describe("whole template workspace", () => {
       screen.getByRole("region", { name: text("app.message20") }),
     ).toHaveTextContent("상태 확인 필요");
     expect(screen.getByText(text("field.label"))).toBeInTheDocument();
-    expect(screen.getByText(text("field.initial"))).toBeInTheDocument();
+    expect(screen.queryByText(text("field.initial"))).toBeNull();
     expect(screen.getAllByText("숫자 필드").length).toBeGreaterThan(1);
     expect(
       screen.queryByLabelText(text("app.message23")),
@@ -270,7 +318,7 @@ describe("whole template workspace", () => {
     fireEvent.change(input, { target: { value: "미저장 원문" } });
     fireEvent.click(screen.getByRole("button", { name: "fixture" }));
     fireEvent.click(
-      screen.getByRole("menuitem", { name: text("whole.center") }),
+      screen.getByRole("menuitem", { name: text("app.message10") }),
     );
     const dialog = await screen.findByRole("alertdialog");
     expect(
@@ -293,18 +341,17 @@ describe("whole template workspace", () => {
     // 사용자에게 메뉴가 다시 접근 가능해진 뒤 다음 전환을 시작한다.
     fireEvent.click(await screen.findByRole("button", { name: "fixture" }));
     fireEvent.click(
-      screen.getByRole("menuitem", { name: text("whole.center") }),
+      screen.getByRole("menuitem", { name: text("app.message10") }),
     );
     fireEvent.click(
       within(await screen.findByRole("alertdialog")).getByRole("button", {
         name: text("whole.deposit"),
       }),
     );
-    await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { name: text("whole.center") }),
-      ).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(controller.shell.snapshot().project).toBeNull());
+    expect(
+      screen.queryByRole("heading", { name: text("whole.center") }),
+    ).toBeNull();
     expect(controller.snapshot().draft).toBeNull();
   }, 15_000);
 
@@ -384,25 +431,18 @@ describe("whole template workspace", () => {
     });
     expect(submitted).toHaveLength(1);
   });
-  it("복구 센터는 분리된 목록·내용 대화상자에서 닫으면 원래 탐색으로 돌아온다", async () => {
-    const { controller } = await setup();
-    await act(async () => {
-      await controller.showCenter();
-    });
-    const dialog = screen.getByRole("dialog", { name: text("whole.center") });
+  it("프로젝트에서 공용 복구 목록 대신 실제 항목을 사용한다", async () => {
+    await setup();
+    fireEvent.click(screen.getByRole("button", { name: "fixture" }));
     expect(
-      within(dialog).getByRole("region", { name: text("recovery.listTitle") }),
-    ).toBeInTheDocument();
+      screen.queryByRole("menuitem", { name: text("whole.center") }),
+    ).toBeNull();
     expect(
-      within(dialog).getByRole("region", { name: text("whole.recoveryDraft") }),
+      screen.queryByRole("heading", { name: text("whole.center") }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("menuitem", { name: text("backup.manage") }),
     ).toBeInTheDocument();
-    fireEvent.click(within(dialog).getByRole("button", { name: "닫기" }));
-    await waitFor(() => expect(controller.snapshot().center).toBe(false));
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: text("app.message14") }),
-      ).toBeEnabled(),
-    );
   });
   it("u64 세대의 상위 값도 Number로 바꾸지 않고 overflow를 거부한다", () => {
     expect(nextGeneration("9007199254740993")).toBe("9007199254740994");

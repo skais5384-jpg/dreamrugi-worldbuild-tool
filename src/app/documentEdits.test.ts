@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DocumentEdits, editDirty } from "./documentEdits";
+import {
+  DocumentEdits,
+  editDirty,
+  currentInputCheckpointed,
+} from "./documentEdits";
 import type {
   DocumentEditing,
   DocumentRequest,
@@ -66,6 +70,7 @@ function setup(
 ) {
   const states = new Map<string, DocumentEditing>();
   const requests: DocumentRequest[] = [];
+  const checkpoints: DocumentRequest[] = [];
   let hold: ((r: DocumentResponse) => void) | null = null;
   let delay = false;
   let submitted: DocumentEditing | null = null;
@@ -102,7 +107,20 @@ function setup(
     throw new Error(q.action);
   });
   const edits = new DocumentEdits(
-    work,
+    async (request) => {
+      if (request.action === "edit_draft" && !request.save) {
+        checkpoints.push(structuredClone(request));
+        const old = states.get(request.owner)!;
+        const input = {
+          ...old,
+          generation: request.generation,
+          body: structuredClone(request.body),
+        };
+        states.set(request.owner, input);
+        return structuredClone(input);
+      }
+      return work(request);
+    },
     () => {},
     () => {},
     () => manualSave,
@@ -110,6 +128,7 @@ function setup(
   return {
     edits,
     requests,
+    checkpoints,
     work,
     delay: () => {
       delay = true;
@@ -121,6 +140,195 @@ function setup(
   };
 }
 afterEach(() => vi.useRealTimers());
+it("acknowledges only exact current raw checkpoints without changing failed-save receipts", async () => {
+  vi.useFakeTimers();
+  const h = setup("SaveFailed", true);
+  await h.edits.begin("a");
+  h.edits.update("a", (b) => ({ ...b, name: { intent: "set", value: "B" } }));
+  const failedStatus = structuredClone(h.edits.entries.a.status);
+  await vi.advanceTimersByTimeAsync(250);
+  expect(currentInputCheckpointed(h.edits.entries.a)).toBe(true);
+  expect(h.edits.entries.a.status).toEqual(failedStatus);
+  expect(h.edits.entries.a.paused).toBe(true);
+  expect(h.edits.entries.a.status.deposited).toBe(false);
+  h.edits.update("a", (b) => ({ ...b, name: { intent: "set", value: "C" } }));
+  expect(currentInputCheckpointed(h.edits.entries.a)).toBe(false);
+  await vi.advanceTimersByTimeAsync(250);
+  expect(currentInputCheckpointed(h.edits.entries.a)).toBe(true);
+  const rebased = structuredClone(h.edits.entries.a);
+  rebased.body.name = { intent: "keep" };
+  expect(currentInputCheckpointed(rebased)).toBe(false);
+  rebased.body = structuredClone(h.edits.entries.a.body);
+  rebased.status.owner = "replacement";
+  expect(currentInputCheckpointed(rebased)).toBe(false);
+  // Display confirmation does not authorize close without a terminal save/deposit.
+  expect(await h.edits.close("a")).toBe(false);
+  expect(h.requests.some((r) => r.action === "edit_release")).toBe(false);
+});
+it("invalidates an exact checkpoint when a queued recheck fails without weakening save protection", async () => {
+  vi.useFakeTimers();
+  let finishFirst!: () => void;
+  const checks: string[] = [];
+  const base = { ...fixture("a"), problem: "SaveFailed" };
+  const edits = new DocumentEdits(
+    async (q) => {
+      if (q.action === "edit_begin") return structuredClone(base);
+      if (q.action !== "edit_draft" || q.save) throw Error("checkpoint only");
+      checks.push(q.generation);
+      const response = {
+        ...base,
+        body: structuredClone(q.body),
+        generation: q.generation,
+      };
+      if (checks.length === 1)
+        return new Promise((resolve) => {
+          finishFirst = () => resolve(response);
+        });
+      if (checks.length === 2) return response;
+      throw Error("current checkpoint recheck failed");
+    },
+    () => {},
+    () => {},
+    () => true,
+  );
+  await edits.begin("a");
+  for (const value of ["B", "C", "D"]) {
+    edits.update("a", (b) => ({ ...b, name: { intent: "set", value } }));
+    await vi.advanceTimersByTimeAsync(250);
+  }
+  finishFirst();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(checks).toEqual(["2", "4", "4"]);
+  expect(currentInputCheckpointed(edits.entries.a)).toBe(false);
+  expect(edits.entries.a.body.name).toEqual({ intent: "set", value: "D" });
+  expect(edits.entries.a.status).toEqual(base);
+  expect(edits.entries.a.paused).toBe(true);
+  expect(edits.entries.a.error).not.toBeNull();
+});
+it("does not acknowledge conflict no-op checkpoints", async () => {
+  vi.useFakeTimers();
+  const h = setup("DraftConflict", true);
+  await h.edits.begin("a");
+  h.edits.update("a", (b) => ({
+    ...b,
+    name: { intent: "set", value: "not applied" },
+  }));
+  await vi.advanceTimersByTimeAsync(250);
+  expect(currentInputCheckpointed(h.edits.entries.a)).toBe(false);
+});
+it("matches serialized checkpoint bodies without confusing wire key order or omitted keep intents with changed input", async () => {
+  vi.useFakeTimers();
+  let wrongValue = false;
+  const base = { ...fixture("a"), problem: "SaveFailed" };
+  const edits = new DocumentEdits(
+    async (q) => {
+      if (q.action === "edit_begin") return structuredClone(base);
+      if (q.action !== "edit_draft" || q.save) throw Error("checkpoint only");
+      const body = JSON.parse(JSON.stringify(q.body)) as typeof q.body;
+      // Native serialization omits optional keep intents and orders keys independently.
+      delete body.englishName;
+      delete body.glossaryExcluded;
+      if (wrongValue) body.glossarySummary = { intent: "set", value: "other" };
+      return {
+        ...base,
+        generation: q.generation,
+        body: JSON.parse(
+          JSON.stringify(body, (_key, value: unknown) =>
+            value && typeof value === "object" && !Array.isArray(value)
+              ? Object.fromEntries(Object.entries(value).reverse())
+              : value,
+          ),
+        ),
+      };
+    },
+    () => {},
+    () => {},
+    () => true,
+  );
+  await edits.begin("a");
+  const update = (value: string) =>
+    edits.update("a", (b) => ({
+      ...b,
+      englishName: { intent: "keep" },
+      glossaryExcluded: { intent: "keep" },
+      glossarySummary: { intent: "set", value },
+    }));
+  update("exact current");
+  await vi.advanceTimersByTimeAsync(250);
+  expect(currentInputCheckpointed(edits.entries.a)).toBe(true);
+  expect(edits.entries.a.status).toEqual(base);
+  wrongValue = true;
+  update("new input");
+  await vi.advanceTimersByTimeAsync(250);
+  expect(currentInputCheckpointed(edits.entries.a)).toBe(false);
+  expect(await edits.close("a")).toBe(false);
+});
+it("cancels an unresolved comparison without submitting the shown current body", async () => {
+  const conflict = {
+    ...fixture("a"),
+    generation: "3",
+    saved_generation: null,
+    problem: "DraftConflict",
+    comparison: [
+      {
+        id: "choice",
+        path: ["name"],
+        status: "conflict" as const,
+        current: "current",
+        preserved: "draft",
+        original: "base",
+      },
+    ],
+  };
+  const work = vi.fn(
+    async (request: DocumentRequest): Promise<DocumentResponse> => {
+      if (request.action === "edit_begin") return structuredClone(conflict);
+      if (request.action === "edit_release") return { kind: "released" };
+      throw new Error("comparison must never submit a body");
+    },
+  );
+  const edits = new DocumentEdits(
+    work,
+    () => {},
+    () => {},
+  );
+  for (const preserve of [false, true]) {
+    await edits.begin("a");
+    expect(await edits.close("a", preserve)).toBe(true);
+    expect(edits.entries.a).toBeUndefined();
+  }
+  expect(work.mock.calls.map(([request]) => request.action)).toEqual([
+    "edit_begin",
+    "edit_release",
+    "edit_begin",
+    "edit_release",
+  ]);
+});
+it("keeps the comparison and owner when its release cannot be proved", async () => {
+  const work = vi.fn(
+    async (request: DocumentRequest): Promise<DocumentResponse> => {
+      if (request.action === "edit_begin")
+        return {
+          ...fixture("a"),
+          generation: "3",
+          saved_generation: null,
+          problem: "DraftConflict",
+          comparison: [],
+        };
+      throw new Error("release proof unavailable");
+    },
+  );
+  const edits = new DocumentEdits(
+    work,
+    () => {},
+    () => {},
+  );
+  await edits.begin("a");
+  expect(await edits.close("a")).toBe(false);
+  expect(edits.entries.a.status.owner).toBe("owner-a");
+  expect(edits.entries.a.status.comparison).toEqual([]);
+  expect(edits.entries.a.error).toBeTruthy();
+});
 it("collaborative input saves the canonical document automatically and preserves uncommitted work", async () => {
   vi.useFakeTimers();
   const h = setup(null, true);
@@ -409,6 +617,19 @@ describe("Document whole autosave", () => {
       ...body,
       name: { intent: "set", value: "close once" },
     }));
+    h.work.mockImplementationOnce(async (request) => {
+      h.requests.push(request);
+      if (request.action !== "edit_draft")
+        throw Error("expected resumed close save");
+      const saved = fixture("a");
+      return {
+        ...saved,
+        body: request.body,
+        generation: request.generation,
+        saved_generation: request.generation,
+        read: { ...saved.read, name: "close once" },
+      };
+    });
     const closing = h.edits.close("a");
     resolve(fixture("a"));
     await waiting;
@@ -744,4 +965,60 @@ it("group S acknowledgement preserves S+1 raw, order and native clone provenance
   ]);
   expect(h.edits.entries.a.generation).toBe("3");
   expect(editDirty(h.edits.entries.a)).toBe(true);
+});
+
+it("a latest deposited failed save cannot finish normal editing", async () => {
+  const h = setup();
+  await h.edits.begin("a");
+  h.edits.update("a", (body) => ({
+    ...body,
+    name: { intent: "set", value: "unsaved" },
+  }));
+  h.work.mockImplementationOnce(async (request) => {
+    if (request.action !== "edit_draft") throw Error("expected save");
+    return {
+      ...fixture("a"),
+      generation: request.generation,
+      body: request.body,
+      problem: "SaveFailed",
+      saved_generation: "1",
+      deposited: true,
+    };
+  });
+  await h.edits.submit("a");
+  expect(await h.edits.close("a")).toBe(false);
+  expect(h.requests.some((request) => request.action === "edit_release")).toBe(
+    false,
+  );
+  expect(h.edits.entries.a.status.deposited).toBe(true);
+  expect(await h.edits.close("a", true)).toBe(true);
+});
+
+it("checkpoints invalid and composing raw independently of canonical save and keeps the save-failure pause", async () => {
+  vi.useFakeTimers();
+  const h = setup("SaveFailed");
+  await h.edits.begin("a");
+  h.edits.update("a", (body) => ({
+    ...body,
+    composing: true,
+    fields: [
+      {
+        field: "n",
+        value: { intent: "set", value: { kind: "number", value: "-" } },
+      },
+    ],
+  }));
+  await vi.advanceTimersByTimeAsync(250);
+  expect(h.checkpoints).toHaveLength(1);
+  expect(h.checkpoints[0]).toMatchObject({
+    action: "edit_draft",
+    save: false,
+    body: { composing: true, fields: [{ value: { value: { value: "-" } } }] },
+  });
+  expect(
+    h.requests.filter((request) => request.action === "edit_draft"),
+  ).toHaveLength(0);
+  expect(h.edits.entries.a.paused).toBe(true);
+  expect(editDirty(h.edits.entries.a)).toBe(true);
+  expect(h.edits.entries.a.status.saved_generation).toBe("1");
 });

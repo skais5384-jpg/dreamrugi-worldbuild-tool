@@ -15,7 +15,7 @@ use super::value::{
 };
 use super::{
     ArtifactScalarValueLocation, ArtifactValidationError, CurrentDefaultFieldValueProvenance,
-    FieldKind, InitialDefaultFieldValueProvenance, ARTIFACT_PROVENANCE_AUTHORITY,
+    FieldKind, InitialDefaultFieldValueProvenance, TemplateArtifact, ARTIFACT_PROVENANCE_AUTHORITY,
 };
 use crate::data::{
     field_engine::scalar::validate_optional_single_line_text,
@@ -400,7 +400,7 @@ impl DocumentArtifact {
     }
 
     pub(super) fn validate_structure(&self) -> Result<(), ArtifactValidationError> {
-        if ![1, 2, 3, 4, 5, DOCUMENT_SCHEMA_VERSION.get()].contains(&self.schema_version.get())
+        if ![1, 2, 3, 4, 5, 6, DOCUMENT_SCHEMA_VERSION.get()].contains(&self.schema_version.get())
             || (self.schema_version.get() == 1
                 && self.field_values.values().any(|v| {
                     matches!(
@@ -663,4 +663,82 @@ impl From<&DocumentArtifact> for DocumentWire {
             extra: artifact.extra.clone(),
         }
     }
+}
+
+/// Restore content on the same item and reconcile it with the current Template.
+/// The historical Template interprets values but is never written to disk.
+pub(crate) fn prepare_version_restore(
+    source: &DocumentArtifact,
+    historical: &DocumentArtifact,
+    historical_template: &TemplateArtifact,
+    current_template: &TemplateArtifact,
+    timestamp: &str,
+) -> Result<DocumentArtifact, Box<dyn std::error::Error + Send + Sync>> {
+    if source.document_id != historical.document_id
+        || source.template_id != historical.template_id
+        || historical.template_id != historical_template.template_id()
+        || historical.template_id != current_template.template_id()
+    {
+        return Err(std::io::Error::other("version target binding mismatch").into());
+    }
+    validate_timestamps(&source.created_at_utc, timestamp)?;
+    if timestamp < source.updated_at_utc.as_str() {
+        return Err(std::io::Error::other("version timestamp regression").into());
+    }
+    let mut candidate = historical.clone();
+    candidate.created_at_utc = source.created_at_utc.clone();
+    candidate.updated_at_utc = timestamp.to_owned();
+    for (id, value) in &candidate.field_values {
+        let Some(definition) = historical_template.fields().get(id) else {
+            continue;
+        };
+        if current_template
+            .fields()
+            .get(id)
+            .is_some_and(|field| field.lifecycle() == super::FieldLifecycle::Active)
+        {
+            continue;
+        }
+        if candidate.orphaned_field_definitions.contains_key(id) {
+            continue;
+        }
+        let options = document_snapshot::selected_options(value)
+            .into_iter()
+            .map(|option_id| {
+                let option = definition
+                    .configuration()
+                    .options()
+                    .and_then(|options| options.get(&option_id))
+                    .ok_or_else(|| std::io::Error::other("historical option metadata missing"))?;
+                Ok((
+                    option_id,
+                    OrphanedOptionDefinition {
+                        label: option.label().to_owned(),
+                        extra: BTreeMap::new(),
+                    },
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, std::io::Error>>()?;
+        candidate.orphaned_field_definitions.insert(
+            *id,
+            OrphanedFieldDefinition {
+                label: definition.label().to_owned(),
+                kind: definition.kind(),
+                options,
+                extra: BTreeMap::new(),
+            },
+        );
+    }
+    candidate.rebase_lossless_source()?;
+    let outcome = document_materialization::materialize_document(
+        current_template,
+        current_template.revision(),
+        &candidate,
+        timestamp.to_owned(),
+    )?;
+    if let Some(materialized) = outcome.document() {
+        candidate = materialized.clone();
+    }
+    candidate.validate_storage()?;
+    Ok(candidate)
 }

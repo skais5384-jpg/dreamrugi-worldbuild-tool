@@ -5,6 +5,7 @@ mod document_edit;
 mod document_replace;
 mod document_search;
 mod document_workspace;
+mod transition;
 #[cfg(test)]
 pub(crate) use document_workspace::install_issue_snapshot_hook;
 pub(crate) mod project_backup;
@@ -254,6 +255,8 @@ mod diagnostic_tests {
     #[test]
     fn rejected_template_draft_is_not_logged_as_a_completed_write() {
         let mut status = crate::commands::workspace::DraftStatus {
+            comparison: None,
+            remaining_input: false,
             owner: Id::new(),
             draft_id: "draft".into(),
             project_fingerprint: "fixture".into(),
@@ -350,6 +353,20 @@ fn timestamp() -> Reply<String> {
             "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
         ))
         .map_err(|_| Code::Unavailable.into())
+}
+fn creation_baseline(
+    ctx: &mut Context,
+    id: ArtifactSourceId,
+    bytes: Result<Vec<u8>, artifact::ArtifactCodecError>,
+    time: &str,
+) -> std::io::Result<u64> {
+    let bytes = bytes.map_err(std::io::Error::other)?;
+    let expected = crate::data::edit_recovery::model::digest(&bytes);
+    ctx.read(|ready| {
+        let repository = ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+        crate::data::repository::versions::confirm_source(&repository, id, time, Some(&expected))
+    })
+    .map_err(std::io::Error::other)?
 }
 fn write(
     session: Id,
@@ -693,6 +710,33 @@ fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             return Err(error);
         }
     }
+    // Startup/list refresh is the automatic transition boundary, before ordinary
+    // items become editable. Active owners keep their current input untouched.
+    if matches!(
+        &*job.input,
+        Work::ListTemplates { .. }
+            | Work::CreateTemplate { .. }
+            | Work::ReadTemplate { .. }
+            | Work::ReadDocument { .. }
+            | Work::BeginTemplateDraft { .. }
+            | Work::DocumentWorkspace {
+                request: crate::commands::document_workspace::Request::List { .. }
+                    | crate::commands::document_workspace::Request::Read { .. }
+                    | crate::commands::document_workspace::Request::EditBegin { .. }
+                    | crate::commands::document_workspace::Request::VersionRestore { .. }
+                    | crate::commands::document_workspace::Request::VersionsList { .. }
+                    | crate::commands::document_workspace::Request::VersionPreview { .. }
+                    | crate::commands::document_workspace::Request::Begin { .. },
+                ..
+            }
+    ) {
+        if let Some(failure) = transition::run(ctx, job)? {
+            return Ok(failure);
+        }
+        if let Some(failure) = transition::policy(ctx, job)? {
+            return Ok(failure);
+        }
+    }
     match &*job.input {
         Work::DocumentWorkspace { project, request } => {
             document_workspace::execute(ctx, job, *project, request)
@@ -702,6 +746,7 @@ fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
         | Work::TemplateDraft { .. }
         | Work::TemplateDraftContent { .. }
         | Work::RefreshTemplateDraft { .. }
+        | Work::ResumeTemplateDraft { .. }
         | Work::ReleaseTemplateDraft { .. } => workspace::execute(ctx, job),
         Work::ProjectCopy { .. }
         | Work::BackupCreate { .. }
@@ -783,6 +828,45 @@ fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             };
             match result {
                 Ok(scan) => {
+                    let ids = ctx
+                        .read(|ready| {
+                            let repository =
+                                ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                            crate::data::repository::versions::targets(&repository)
+                        })
+                        .map_err(|_| Code::RuntimeRejected)?
+                        .map_err(|_| Code::RepositoryRejected)?;
+                    if ids.iter().any(|id| {
+                        matches!(id, ArtifactSourceId::Template(_))
+                            && !scan
+                                .records()
+                                .iter()
+                                .any(|record| record.source().id() == *id)
+                    }) {
+                        let display = ctx
+                            .read(|ready| {
+                                let repository = ArtifactRepository::new(ready)
+                                    .map_err(std::io::Error::other)?;
+                                repository.display_templates()
+                            })
+                            .map_err(|_| Code::RuntimeRejected)?
+                            .map_err(|_| Code::RepositoryRejected)?;
+                        return Ok(Completed::new(
+                            scan,
+                            Ok(ResultDto::Templates {
+                                templates: display
+                                    .iter()
+                                    .map(|template| TemplateSummary {
+                                        id: template.id.clone(),
+                                        name: template.name.clone(),
+                                        revision: template.revision.clone(),
+                                        lifecycle: template.lifecycle.clone(),
+                                        glossary_excluded: template.glossary_excluded,
+                                    })
+                                    .collect(),
+                            }),
+                        ));
+                    }
                     let rows = scan
                         .records()
                         .iter()
@@ -809,7 +893,34 @@ fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                         Ok(ResultDto::Templates { templates: rows }),
                     ))
                 }
-                Err(e) => Ok(Completed::reject(e, Code::RepositoryRejected.into())),
+                Err(e) => {
+                    let fallback = ctx.read(|ready| {
+                        let repository =
+                            ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                        repository.display_templates()
+                    });
+                    match fallback {
+                        Ok(Ok(rows)) if !rows.is_empty() => Ok(Completed::new(
+                            e,
+                            Ok(ResultDto::Templates {
+                                templates: rows
+                                    .iter()
+                                    .map(|template| TemplateSummary {
+                                        id: template.id.clone(),
+                                        name: template.name.clone(),
+                                        revision: template.revision.clone(),
+                                        lifecycle: template.lifecycle.clone(),
+                                        glossary_excluded: template.glossary_excluded,
+                                    })
+                                    .collect(),
+                            }),
+                        )),
+                        original => Ok(Completed::reject(
+                            (e, original),
+                            Code::RepositoryRejected.into(),
+                        )),
+                    }
+                }
             }
         }
         Work::ReadTemplate { template, .. } => {
@@ -928,14 +1039,33 @@ fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             } else {
                 session.create_template(&mut prepared)
             };
+            drop(session);
+            let baseline = if execution.diagnostic().disk == DiskState::Committed {
+                Some(creation_baseline(
+                    ctx,
+                    ArtifactSourceId::Template(prepared.template_id()),
+                    artifact::encode_template(prepared.candidate()),
+                    &timestamp()?,
+                ))
+            } else {
+                None
+            };
+            let warnings = if baseline.as_ref().is_some_and(|result| result.is_err()) {
+                vec![WarningDto {
+                    category: "content_version_unavailable".into(),
+                    field: None,
+                }]
+            } else {
+                vec![]
+            };
             let dto = write(
                 binding.id,
                 Some(prepared.template_id().to_string()),
                 execution.diagnostic(),
                 Some(true),
-                vec![],
+                warnings,
             );
-            let mut result = Completed::new((prepared, registration, execution), Ok(dto));
+            let mut result = Completed::new((prepared, registration, execution, baseline), Ok(dto));
             result.binding = Some(binding);
             Ok(result)
         }
@@ -960,14 +1090,32 @@ fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                 .session(key)
                 .map_err(|_| Code::SessionRejected)?
                 .create_document(&mut prepared);
+            let baseline = if execution.diagnostic().disk == DiskState::Committed {
+                Some(creation_baseline(
+                    ctx,
+                    ArtifactSourceId::Document(prepared.document_id()),
+                    artifact::encode_document(prepared.candidate()),
+                    &timestamp()?,
+                ))
+            } else {
+                None
+            };
+            let warnings = if baseline.as_ref().is_some_and(|result| result.is_err()) {
+                vec![WarningDto {
+                    category: "content_version_unavailable".into(),
+                    field: None,
+                }]
+            } else {
+                vec![]
+            };
             let dto = write(
                 binding.id,
                 Some(prepared.document_id().to_string()),
                 execution.diagnostic(),
                 Some(true),
-                vec![],
+                warnings,
             );
-            let mut result = Completed::new((prepared, registration, execution), Ok(dto));
+            let mut result = Completed::new((prepared, registration, execution, baseline), Ok(dto));
             result.binding = Some(binding);
             Ok(result)
         }

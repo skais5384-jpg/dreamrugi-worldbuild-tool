@@ -32,6 +32,13 @@ export const MediaContext = createContext<Pick<
 // 편집 DOM은 유지하되 숨은 화면의 플레이어만 해제한다.
 export const MediaActiveContext = createContext(true);
 export const MediaPreviewContext = createContext(true);
+export const ExternalMediaPreviewContext = createContext(true);
+export const MediaTargetContext = createContext<
+  { kind: "document" | "template"; artifact: string } | undefined
+>(undefined);
+export const AssetNamesContext = createContext<
+  Readonly<Record<string, string>>
+>({});
 const YOUTUBE_APP_ORIGIN = "https://com.dreamrugi.worldbuildtool";
 function mediaUrl(raw: string): URL | null {
   if (
@@ -128,10 +135,15 @@ export function mediaKind(raw: string): "image" | "video" | "youtube" | null {
 }
 export function UrlRead({ value }: { value: string }) {
   const active = useContext(MediaActiveContext);
+  const externalPreview = useContext(ExternalMediaPreviewContext);
   const kind = mediaKind(value);
   // 정지 이미지의 크기/로드 상태는 편집 DOM과 함께 보존한다.
   const player = kind === "video" || kind === "youtube";
-  return !player || active ? <UrlAttempt key={value} value={value} /> : null;
+  return !externalPreview ? (
+    <span className="media-url-address">{value}</span>
+  ) : !player || active ? (
+    <UrlAttempt key={value} value={value} />
+  ) : null;
 }
 function UrlAttempt({ value }: { value: string }) {
   const controller = useContext(MediaContext);
@@ -233,6 +245,10 @@ function Asset({
 }) {
   const controller = useContext(MediaContext);
   const previewAllowed = useContext(MediaPreviewContext);
+  const historicName = useContext(AssetNamesContext)[id];
+  const target = useContext(MediaTargetContext);
+  const targetKind = target?.kind;
+  const targetArtifact = target?.artifact;
   const [meta, setMeta] = useState<AssetMetadata | null>(null);
   const [src, setSrc] = useState<string | null>(null);
   const [failure, setFailure] = useState<{
@@ -247,7 +263,13 @@ function Asset({
     if (controller && previewAllowed)
       void (async () => {
         try {
-          const r = await controller.media({ action: "asset_read", asset: id });
+          const r = await controller.media({
+            action: "asset_read",
+            asset: id,
+            ...(targetKind && targetArtifact
+              ? { target: { kind: targetKind, artifact: targetArtifact } }
+              : {}),
+          });
           if (r.kind === "asset_error") {
             if (!alive) return;
             setFailure({ name: r.assetName, state: r.assetState });
@@ -293,7 +315,15 @@ function Asset({
       alive = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [controller, id, image, retry, previewAllowed]);
+  }, [
+    controller,
+    id,
+    image,
+    retry,
+    previewAllowed,
+    targetKind,
+    targetArtifact,
+  ]);
   return (
     <>
       <div className="media-item-body">
@@ -311,6 +341,7 @@ function Asset({
         <span className="media-filename">
           {meta?.name ??
             failure?.name ??
+            historicName ??
             (failure ? text("media.unknownAttachment") : text("media.loading"))}
         </span>
         {meta && (
@@ -323,7 +354,10 @@ function Asset({
             <InlineNotice kind="warning" className="media-failure">
               <strong>
                 {text("media.failedNamed", {
-                  name: failure.name ?? text("media.unknownAttachment"),
+                  name:
+                    failure.name ??
+                    historicName ??
+                    text("media.unknownAttachment"),
                 })}
               </strong>
               <small>{mediaFailureText(failure.state)}</small>

@@ -47,6 +47,136 @@ pub(crate) fn prepare_template_draft(
     finish_candidate_with_restorations(source, candidate, timestamp, false, &restoring)
 }
 
+/// A confirmed version is an ordinary change to this Template. Definitions
+/// introduced afterwards remain archived so existing document values keep their
+/// owners. Historical identity and internal revision are never rolled back.
+pub(crate) fn prepare_version_restore(
+    source: &TemplateArtifact,
+    historical: &TemplateArtifact,
+    timestamp: &str,
+) -> Result<TemplateMutationOutcome, TemplateMutationError> {
+    admit(source, source.revision, timestamp)?;
+    if historical.template_id != source.template_id {
+        return Err(TemplateMutationError::immutable_template_identity_changed());
+    }
+    historical
+        .validate_storage()
+        .map_err(TemplateMutationError::invalid_candidate)?;
+    let mut candidate = source.clone();
+    candidate.name = historical.name.clone();
+    candidate.glossary_excluded = historical.glossary_excluded;
+    candidate.presentation.token = historical.presentation.token.clone();
+    candidate.sections = historical.sections.clone();
+    candidate.field_order = historical.field_order.clone();
+    let mut restoring = Restorations::default();
+    candidate.fields = restore_definitions(&source.fields, &historical.fields, &mut restoring)?;
+    finish_candidate_with_restorations(source, candidate, timestamp, false, &restoring)
+}
+
+fn restore_definitions(
+    current: &BTreeMap<FieldId, FieldDefinition>,
+    historical: &BTreeMap<FieldId, FieldDefinition>,
+    restoring: &mut Restorations,
+) -> Result<BTreeMap<FieldId, FieldDefinition>, TemplateMutationError> {
+    let mut result = current.clone();
+    for (id, field) in &mut result {
+        let Some(old) = historical.get(id) else {
+            field.lifecycle = FieldLifecycle::Archived;
+            continue;
+        };
+        if field.kind != old.kind {
+            return Err(TemplateMutationError::immutable_field_changed(*id));
+        }
+        // An archived definition that stays archived is immutable. Its last
+        // definition still interprets values written after the chosen version.
+        if field.lifecycle == FieldLifecycle::Archived && old.lifecycle == FieldLifecycle::Archived
+        {
+            continue;
+        }
+        if field.lifecycle == FieldLifecycle::Archived && old.lifecycle == FieldLifecycle::Active {
+            restoring.fields.insert(*id);
+        }
+        field.lifecycle = old.lifecycle;
+        field.label = old.label.clone();
+        field.required = old.required;
+        field.writing_guide = old.writing_guide.clone();
+        field.presentation.token = old.presentation.token.clone();
+        if field.kind == FieldKind::Group {
+            field
+                .presentation
+                .set_card_title_field(old.presentation.card_title_field());
+        }
+        field.default_value = old
+            .default_value
+            .clone()
+            .preserve_outer_storage_extra_from(&field.default_value);
+        match (&mut field.configuration.variant, &old.configuration.variant) {
+            (
+                FieldConfigurationVariant::Group {
+                    member_order,
+                    members,
+                },
+                FieldConfigurationVariant::Group {
+                    member_order: old_order,
+                    members: old_members,
+                },
+            ) => {
+                *member_order = old_order.clone();
+                *members = restore_definitions(members, old_members, restoring)?;
+            }
+            (
+                FieldConfigurationVariant::SingleChoice {
+                    option_order,
+                    options,
+                },
+                FieldConfigurationVariant::SingleChoice {
+                    option_order: old_order,
+                    options: old_options,
+                },
+            )
+            | (
+                FieldConfigurationVariant::MultiChoice {
+                    option_order,
+                    options,
+                },
+                FieldConfigurationVariant::MultiChoice {
+                    option_order: old_order,
+                    options: old_options,
+                },
+            ) => {
+                *option_order = old_order.clone();
+                for (option_id, option) in options.iter_mut() {
+                    match old_options.get(option_id) {
+                        Some(old_option) => {
+                            if option.lifecycle == OptionLifecycle::Archived
+                                && old_option.lifecycle == OptionLifecycle::Archived
+                            {
+                                continue;
+                            }
+                            if option.lifecycle == OptionLifecycle::Archived
+                                && old_option.lifecycle == OptionLifecycle::Active
+                            {
+                                restoring.options.insert((*id, *option_id));
+                            }
+                            option.lifecycle = old_option.lifecycle;
+                            option.label = old_option.label.clone();
+                        }
+                        None => option.lifecycle = OptionLifecycle::Archived,
+                    }
+                }
+                if old_options.keys().any(|id| !options.contains_key(id)) {
+                    return Err(TemplateMutationError::invalid_option_order(*id));
+                }
+            }
+            (_, old_configuration) => field.configuration.variant = old_configuration.clone(),
+        }
+    }
+    if historical.keys().any(|id| !current.contains_key(id)) {
+        return Err(TemplateMutationError::invalid_field_order());
+    }
+    Ok(result)
+}
+
 pub(crate) fn unpublished_seed(
     issued_id: crate::data::artifact::TemplateId,
     timestamp: String,

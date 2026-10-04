@@ -4,6 +4,8 @@
 mod b003_connection;
 #[path = "write_contract_tests.rs"]
 mod contracts;
+#[path = "policy_format_tests.rs"]
+mod policy_formats;
 use super::*;
 use crate::data::{
     collaboration_lock::{LockCoordinator, LockService, LockSessionId, NoLockService},
@@ -547,10 +549,7 @@ fn stale_same_length_revision_and_lexical_only_sources_fail_before_allocation() 
             plan.prepare(&repo, permit).unwrap_err()
         });
         checked_error(&error, ArtifactWriteCategory::SourceMismatch);
-        assert_eq!(
-            error.diagnostic().prepare_stage,
-            Some(PrepareStage::ValidateSchemaTransition)
-        );
+        assert_eq!(error.diagnostic().prepare_stage, None);
         assert_eq!(error.diagnostic().transaction_id, None);
         assert_eq!(inventory(&fixture.root), before);
     }
@@ -619,7 +618,7 @@ fn newly_corrupt_future_and_zero_schema_replacements_fail_codec_admission() -> T
         b"{broken".to_vec(),
         raw(&{
             let mut v = template_value();
-            v["schemaVersion"] = json!(8);
+            v["schemaVersion"] = json!(crate::data::artifact::TEMPLATE_SCHEMA_VERSION.get() + 1);
             v
         }),
         raw(&{
@@ -1123,6 +1122,12 @@ fn m36_format_transition_preserves_exact_history_and_explicit_restore() -> TestR
         ArtifactSourceId::Document(document_id()),
     ] {
         let fixture = Fixture::new();
+        if matches!(id, ArtifactSourceId::Document(_)) {
+            fixture.write(
+                ArtifactSourceId::Template(template_id()),
+                &raw(&template_value()),
+            );
+        }
         let value = match id {
             ArtifactSourceId::Template(_) => template_value(),
             _ => document_value(),
@@ -1146,22 +1151,33 @@ fn m36_format_transition_preserves_exact_history_and_explicit_restore() -> TestR
             Ok(())
         })?;
         let upgraded = fs::read(fixture.path(id))?;
-        assert!(String::from_utf8(upgraded.clone())?.contains("1E100"));
-        assert!(String::from_utf8(upgraded.clone())?.contains("0.12345678901234567890123456789"));
-        let (_, new_hash, history) = super::super::format::inspect(&repo, id)?;
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].digest, hash);
-        assert!(super::super::format::build(&repo, id, &hash, Some(&hash)).is_err());
-        let plan = super::super::format::build(&repo, id, &new_hash, Some(&hash))?;
-        with_plan(plan, &repo, |plan, permit| -> TestResult {
-            assert_eq!(
-                plan.prepare(&repo, permit)?.commit()?.result_state(),
-                CommitResultState::Committed
-            );
-            Ok(())
-        })?;
-        assert_eq!(fs::read(fixture.path(id))?, old);
-        assert_eq!(super::super::format::history(&repo, id)?.len(), 2);
+        assert!(String::from_utf8(upgraded)?.contains("1E100"));
+        assert!(super::super::format::history(&repo, id)?.is_empty());
+        let rows = super::super::versions::list(&repo, id)?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(super::super::versions::snapshot(&repo, id, 1)?.0, old);
+        let expected = super::super::versions::observation(&repo, id)?;
+        let plan = super::super::versions::restore_plan(
+            &repo,
+            id,
+            1,
+            &expected,
+            "2026-10-04T01:02:03.004Z",
+        )?;
+        if let Some(plan) = plan {
+            with_plan(plan, &repo, |plan, permit| -> TestResult {
+                assert_eq!(
+                    plan.prepare(&repo, permit)?.commit()?.result_state(),
+                    CommitResultState::Committed
+                );
+                Ok(())
+            })?;
+        }
+        // A forward restore preserves data but need not downgrade its format/revision.
+        let restored = String::from_utf8(fs::read(fixture.path(id))?)?;
+        assert!(restored.contains("1E100"));
+        assert!(restored.contains("0.12345678901234567890123456789"));
+        assert!(super::super::format::history(&repo, id)?.is_empty());
     }
     Ok(())
 }
@@ -1172,6 +1188,10 @@ fn m36_format_prepared_and_pending_recovery_keep_original_and_archive() -> TestR
         let id = ArtifactSourceId::Document(document_id());
         let old = raw(&document_value());
         fixture.write(id, &old);
+        fixture.write(
+            ArtifactSourceId::Template(template_id()),
+            &raw(&template_value()),
+        );
         let mut runtime = fixture.runtime();
         {
             let ready = runtime.ready()?;
@@ -1185,7 +1205,8 @@ fn m36_format_prepared_and_pending_recovery_keep_original_and_archive() -> TestR
                 } // 미완료 journal은 기존 runtime recovery가 회수한다.
                 Ok(())
             })?;
-            assert_eq!(super::super::format::history(&repo, id)?.len(), 1);
+            assert!(super::super::format::history(&repo, id)?.is_empty());
+            assert_eq!(super::super::versions::list(&repo, id)?.len(), 1);
         }
         if !committed {
             assert_eq!(runtime.recover()?.rolled_back_transactions, 1);
@@ -1224,14 +1245,208 @@ fn m36_format_disk_admission_failures_preserve_exact_original_and_history() -> T
         let (schema, unchanged_hash, history) = super::super::format::inspect(&repo, id)?;
         assert_eq!(schema, 1);
         assert_eq!(unchanged_hash, hash);
-        assert_eq!(history.len(), 1);
-        assert_eq!(history[0].digest, hash);
+        assert!(history.is_empty());
+        assert_eq!(super::super::versions::list(&repo, id)?.len(), 1);
         let pending = match fs::read_dir(repo.write_project().transactions_root()) {
             Ok(entries) => entries.count(),
             Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
             Err(e) => return Err(e.into()),
         };
         assert_eq!(pending, 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn verified_content_version_restores_missing_and_raw_corrupt_items_with_exact_backup() -> TestResult
+{
+    for state in ["corrupt", "missing"] {
+        let fixture = Fixture::new();
+        let id = ArtifactSourceId::Template(template_id());
+        let good = raw(&template_value());
+        fixture.write(id, &good);
+        let mut runtime = fixture.runtime();
+        let ready = runtime.ready()?;
+        let repo = ArtifactRepository::new(&ready)?;
+        super::super::versions::confirm(&repo, id, TIME)?;
+        let corrupt = b"broken original\0 with an unfinished write";
+        if state == "corrupt" {
+            fixture.write(id, corrupt);
+        } else {
+            fs::remove_file(fixture.path(id))?;
+        }
+        assert_eq!(super::super::versions::list(&repo, id)?.len(), 1);
+        let source = super::super::versions::observation(&repo, id)?;
+        let plan = super::super::versions::restore_plan(
+            &repo,
+            id,
+            1,
+            &source,
+            "2026-10-04T01:00:00.000Z",
+        )?
+        .unwrap();
+        with_plan(plan, &repo, |plan, permit| -> TestResult {
+            let prepared = plan.prepare(&repo, permit)?;
+            let inner = prepared.inner_for_test();
+            let operation = &inner.manifest().operations[0];
+            assert_eq!(operation.original_existed, state == "corrupt");
+            assert_eq!(operation.original_raw, state == "corrupt");
+            if state == "corrupt" {
+                assert_eq!(
+                    fs::read(
+                        inner
+                            .transaction_directory()
+                            .join(operation.backup_path.as_ref().unwrap())
+                    )?,
+                    corrupt
+                );
+            }
+            assert_eq!(
+                prepared.commit()?.result_state(),
+                CommitResultState::Committed
+            );
+            Ok(())
+        })?;
+        let restored = repo.load_template(template_id())?;
+        assert_eq!(
+            restored.artifact().schema_version(),
+            artifact::TEMPLATE_SCHEMA_VERSION
+        );
+        assert_eq!(restored.artifact().template_id(), template_id());
+        assert_eq!(restored.artifact().name(), template().name());
+        assert!(super::super::versions::restore_plan(
+            &repo,
+            id,
+            1,
+            &source,
+            "2026-10-04T01:00:00.000Z"
+        )
+        .is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn version_repair_never_replaces_a_readable_foreign_target() -> TestResult {
+    let fixture = Fixture::new();
+    let id = ArtifactSourceId::Template(template_id());
+    fixture.write(id, &raw(&template_value()));
+    let mut runtime = fixture.runtime();
+    let ready = runtime.ready()?;
+    let repo = ArtifactRepository::new(&ready)?;
+    super::super::versions::confirm(&repo, id, TIME)?;
+    let mut foreign = template_value();
+    foreign["templateId"] = json!("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    let bytes = raw(&foreign);
+    fixture.write(id, &bytes);
+    let before = inventory(&fixture.root);
+    let observed = super::super::versions::observation(&repo, id)?;
+    assert!(super::super::versions::restore_plan(
+        &repo,
+        id,
+        1,
+        &observed,
+        "2026-10-04T01:00:00.000Z"
+    )
+    .is_err());
+    assert_eq!(before, inventory(&fixture.root));
+    Ok(())
+}
+
+#[test]
+fn version_restore_rejects_source_replaced_between_preview_observation_and_load() -> TestResult {
+    for kind in ["template", "document"] {
+        let fixture = Fixture::new();
+        fixture.write(
+            ArtifactSourceId::Template(template_id()),
+            &raw(&template_value()),
+        );
+        fixture.write(
+            ArtifactSourceId::Document(document_id()),
+            &raw(&document_value()),
+        );
+        let id = if kind == "template" {
+            ArtifactSourceId::Template(template_id())
+        } else {
+            ArtifactSourceId::Document(document_id())
+        };
+        let mut runtime = fixture.runtime();
+        let ready = runtime.ready()?;
+        let repo = ArtifactRepository::new(&ready)?;
+        super::super::versions::confirm(&repo, id, TIME)?;
+        let source = super::super::versions::observation(&repo, id)?;
+        let mut changed = if kind == "template" {
+            template_value()
+        } else {
+            document_value()
+        };
+        changed["name"] = json!("外部 변경 B");
+        let bytes = raw(&changed);
+        let path = fixture.path(id);
+        let replacement = bytes.clone();
+        super::super::versions::install_restore_hook(Box::new(move || {
+            fs::write(path, replacement).unwrap()
+        }));
+        assert!(super::super::versions::restore_plan(
+            &repo,
+            id,
+            1,
+            &source,
+            "2026-10-04T01:00:00.000Z"
+        )
+        .is_err());
+        assert_eq!(fs::read(fixture.path(id))?, bytes);
+        assert_eq!(super::super::versions::list(&repo, id)?.len(), 1);
+    }
+    Ok(())
+}
+
+#[test]
+fn version_repair_prepared_but_interrupted_rolls_back_exact_corrupt_or_missing_source() -> TestResult
+{
+    for corrupt in [false, true] {
+        let fixture = Fixture::new();
+        let id = ArtifactSourceId::Template(template_id());
+        fixture.write(id, &raw(&template_value()));
+        let mut runtime = fixture.runtime();
+        {
+            let ready = runtime.ready()?;
+            let repo = ArtifactRepository::new(&ready)?;
+            super::super::versions::confirm(&repo, id, TIME)?;
+            if corrupt {
+                fixture.write(id, b"raw original  corrupted");
+            } else {
+                fs::remove_file(fixture.path(id))?;
+            }
+            let source = super::super::versions::observation(&repo, id)?;
+            let plan = super::super::versions::restore_plan(&repo, id, 1, &source, TIME)?.unwrap();
+            with_plan(plan, &repo, |plan, permit| -> TestResult {
+                let prepared = plan.prepare(&repo, permit)?;
+                let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    crate::data::transaction::test_support::with_commit_io_factory(
+                        |point, _| {
+                            if point == Some(crate::data::transaction::test_support::CommitTestPoint::ProgressState) {
+                            panic!("controlled crash after actual guarded replacement");
+                        }
+                            Ok(())
+                        },
+                        || prepared.commit(),
+                    )
+                }));
+                assert!(interrupted.is_err());
+                Ok(())
+            })?;
+            let recovered =
+                crate::data::transaction::recover_pending_transactions(repo.write_project())
+                    .unwrap_or_else(|error| panic!("raw repair recovery: {error:?}"));
+            assert_eq!(recovered.rolled_back_transactions, 1);
+        }
+        assert_eq!(runtime.recover()?.rolled_back_transactions, 0);
+        if corrupt {
+            assert_eq!(fs::read(fixture.path(id))?, b"raw original  corrupted");
+        } else {
+            assert!(!fixture.path(id).exists());
+        }
     }
     Ok(())
 }

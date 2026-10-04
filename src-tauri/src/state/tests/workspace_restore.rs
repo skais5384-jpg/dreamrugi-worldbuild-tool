@@ -300,6 +300,7 @@ fn concurrent_restore_and_acquire_release_failures_preserve_owner_and_canonical(
     let mut body = content(&h, &p, &s)["body"].clone();
     body["name"] = "복원 중 원문".into();
     let deposited = submit(&h, &p, &s, "7", &body, "deposit");
+    stage_latest_as_legacy_archive(&h, &deposited["draftId"]);
     let bytes = deposited_bytes(&h, &deposited);
     assert_eq!(release(&h, &p, &deposited, false)["kind"], "control");
     let snapshot = select(&h, &deposited);
@@ -332,6 +333,7 @@ fn concurrent_restore_and_acquire_release_failures_preserve_owner_and_canonical(
     assert_eq!(owners(&h), 1);
     assert_eq!(content(&h, &p, &first["status"])["body"], body);
     let again = submit(&h, &p, &first["status"], "8", &body, "deposit");
+    stage_latest_as_legacy_archive(&h, &again["draftId"]);
     deposited_bytes(&h, &again);
     provider.fail_release.store(true, Ordering::Release);
     let failed_release = release(&h, &p, &again, false);
@@ -359,10 +361,12 @@ fn distinct_drafts_and_same_draft_id_in_another_project_restore_independently() 
     let s = begin(&h, &p, Value::Null);
     let body = invalid_body(&h, &p, &s);
     let first = submit(&h, &p, &s, "7", &body, "deposit");
-    assert_eq!(release(&h, &p, &first, false)["kind"], "control");
     let s2 = begin(&h, &p, Value::Null);
     let body2 = invalid_body(&h, &p, &s2);
     let second = submit(&h, &p, &s2, "30", &body2, "deposit");
+    // Keep the first owner until both legacy namespace fixtures exist; a
+    // normal owner-free begin would correctly migrate and retire the first.
+    assert_eq!(release(&h, &p, &first, false)["kind"], "control");
     assert_eq!(release(&h, &p, &second, false)["kind"], "control");
     let root2 = h.base.join("other-project");
     fs::create_dir(&root2).unwrap();

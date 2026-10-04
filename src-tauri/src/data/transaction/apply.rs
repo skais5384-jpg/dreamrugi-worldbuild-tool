@@ -572,6 +572,7 @@ where
             operation.staged_size,
             &operation.staged_sha256,
             operation.staged_schema_version,
+            false,
         )
         .map_err(|failure| with_target(failure, &operation.target_path))?;
         if operation.original_existed {
@@ -589,6 +590,7 @@ where
                     .as_deref()
                     .ok_or_else(|| invalid("original hash is missing"))?,
                 operation.original_schema_version,
+                operation.original_raw,
             )
             .map_err(|failure| with_target(failure, &operation.target_path))?;
         }
@@ -638,6 +640,7 @@ where
                 operation.staged_size,
                 &operation.staged_sha256,
                 operation.staged_schema_version,
+                false,
             )
         })
         .map_err(|mut failure| {
@@ -775,6 +778,7 @@ where
                     operation.staged_size,
                     &operation.staged_sha256,
                     operation.staged_schema_version,
+                    false,
                 )
             }
         })
@@ -1100,6 +1104,7 @@ fn verify_artifact(
     expected_size: u64,
     expected_hash: &str,
     expected_schema_version: Option<SchemaVersion>,
+    raw: bool,
 ) -> Result<(), PendingFailure> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|source| pending(CommitStage::RevalidatePrepared, source))?;
@@ -1110,6 +1115,9 @@ fn verify_artifact(
         fs::read(path).map_err(|source| pending(CommitStage::RevalidatePrepared, source))?;
     if bytes.len() as u64 != expected_size || sha256(&bytes) != expected_hash {
         return Err(invalid("artifact size or SHA-256 differs from manifest"));
+    }
+    if raw {
+        return Ok(());
     }
     let schema_version = managed_schema_version(&bytes).map_err(|source| {
         pending(

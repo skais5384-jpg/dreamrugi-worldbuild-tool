@@ -35,6 +35,78 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+it("refreshes cached trash when entering after a template lifecycle change", async () => {
+  const f = await setup();
+  const shell = f.controller.shell;
+  shell.showFileManager("trash");
+  await waitFor(() =>
+    expect(shell.snapshot().assetInspection?.deletedTemplates).toEqual([]),
+  );
+  shell.closeHealth();
+  f.transport.assetInspection.deletedTemplates = [
+    {
+      id: "deleted",
+      name: "삭제한 템플릿",
+      size: 3,
+      removable: true,
+      reason: null,
+    },
+  ];
+  shell.showFileManager("trash");
+  await waitFor(() =>
+    expect(shell.snapshot().health?.inspection?.deletedTemplates).toEqual([
+      {
+        id: "deleted",
+        name: "삭제한 템플릿",
+        size: 3,
+        removable: true,
+        reason: null,
+      },
+    ]),
+  );
+});
+
+it("keeps missing layout rows addressable without exposing target or ancestor IDs", async () => {
+  const f = await setup();
+  const missing = "87b5e397-a70f-47f3-ae99-34978ec2dd80";
+  f.list.documents = f.list.documents.filter((item) => item.id !== "a");
+  f.list.layout.rootOrder = [missing];
+  f.list.layout.nodes = {
+    [missing]: {
+      parentId: null,
+      childOrder: ["b"],
+      state: "active",
+      trash: null,
+    },
+    b: { parentId: missing, childOrder: [], state: "active", trash: null },
+  };
+  f.list.problem = "membership";
+  await f.controller.load();
+  const open = vi.fn();
+  const view = render(
+    <DocumentTree
+      controller={f.controller}
+      locked={false}
+      structureLocked
+      createChild={() => {}}
+      openDocument={open}
+      viewportHeight={640}
+    />,
+  );
+  const row = document.getElementById("tree-name-" + missing)!;
+  expect(row).toHaveTextContent(text("documents.unknownName"));
+  expect(view.container.textContent).not.toContain(missing);
+  fireEvent.click(row);
+  expect(open).toHaveBeenCalledWith(missing);
+  fireEvent.click(
+    screen.getByRole("button", { name: text("documents.collapse") }),
+  );
+  expect(document.getElementById("tree-name-b")).toHaveAccessibleName(
+    text("documents.unknownName") + " / 둘째 문서",
+  );
+  expect(view.container.textContent).not.toContain(missing);
+});
+
 it("resumes an owner-protected inspection after confirmed editor release without opening health", async () => {
   const f = await setup();
   await f.controller.open("a");
@@ -262,6 +334,41 @@ async function setup(kind: "Number" | "Url" = "Number") {
     const q = input.request;
     let value: DocumentResponse;
     switch (q.action) {
+      case "versions_list":
+        value = {
+          kind: "versions",
+          versions: [
+            {
+              version: "7",
+              recorded_at_utc: "2026-10-03T00:00:00.000Z",
+              available: true,
+            },
+          ],
+        };
+        break;
+      case "version_preview":
+        value = {
+          kind: "version_preview",
+          version: q.version,
+          source: "opaque-preview-source",
+          template: null,
+          document: {
+            kind: "read",
+            id: q.artifact,
+            name: "이전 문서 이름",
+            template,
+            fields: [
+              {
+                id: "n",
+                label: "필수 숫자",
+                state: "Active",
+                value: { kind: "number", value: "42" },
+              },
+            ],
+            warnings: [],
+          },
+        };
+        break;
       case "format_inspect":
         value = {
           kind: "format",
@@ -276,6 +383,7 @@ async function setup(kind: "Number" | "Url" = "Number") {
           ],
         };
         break;
+      case "version_restore":
       case "format_change":
         return {
           kind: "write",
@@ -914,32 +1022,141 @@ it("이전 열린 세대의 늦은 목록 응답이 현재 문서 경고를 덮�
   expect(f.controller.snapshot().list?.issues).toEqual([]);
 });
 
-it("버전 기록은 문서 헤더에서 현재 형식과 보존본을 팝업으로 보여주고 선택 복원을 실행한다", async () => {
+it.each([false, true])(
+  "읽지 못한 정상 목록 문서는 이전 문서 대신 자신의 버전 기록을 연다 (이전 선택 %s)",
+  async (previousSelection) => {
+    const f = await setup();
+    if (previousSelection) await f.controller.open("b");
+    const original = f.transport.workspaceResult!;
+    f.transport.workspaceResult = (input) =>
+      input.kind === "document_workspace" &&
+      input.request.action === "read" &&
+      input.request.document === "a"
+        ? {
+            kind: "rejected",
+            error: { code: "unavailable", nextAction: "" },
+            input_retained: false,
+          }
+        : original(input);
+    await f.controller.open("a");
+    expect(f.controller.snapshot().read).toBeNull();
+    expect(f.controller.snapshot().ui.active).toBe("a");
+    expect(f.controller.snapshot().ui.tabs).toContain("a");
+    render(<DocumentWorkspace controller={f.controller} />);
+    expect(
+      await screen.findByText(text("format.sourceUnavailable")),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: text("format.title") }));
+    const dialog = await screen.findByRole("dialog", {
+      name: text("format.title"),
+    });
+    expect(await within(dialog).findByText("42")).toBeVisible();
+    expect(
+      within(dialog).getByRole("button", { name: text("format.restore") }),
+    ).toBeEnabled();
+    expect(
+      f.transport.commands.some(
+        (command) =>
+          command.action === "submit" &&
+          command.input.kind === "document_workspace" &&
+          command.input.request.action === "version_restore",
+      ),
+    ).toBe(false);
+  },
+);
+
+it.each(["rejected", "read"])(
+  "선택 대기 중 같은 프로젝트의 재열기 경계가 바뀌면 옛 응답 %s를 게시하지 않는다",
+  async (result) => {
+    const f = await setup();
+    await f.controller.open("b");
+    const before = f.controller.snapshot();
+    const original = f.transport.workspaceResult!;
+    if (result === "rejected") {
+      f.transport.workspaceResult = (input) =>
+        input.kind === "document_workspace" &&
+        input.request.action === "read" &&
+        input.request.document === "a"
+          ? {
+              kind: "rejected",
+              error: { code: "unavailable", nextAction: "" },
+              input_retained: false,
+            }
+          : original(input);
+    }
+    f.transport.hold = "document_workspace";
+    const pending = f.controller.open("a");
+    await waitFor(() =>
+      expect(
+        [...f.transport.results.values()].some((r) => r.state === "pending"),
+      ).toBe(true),
+    );
+    const shell = f.controller.shell as unknown as {
+      projectRequestGeneration: number;
+    };
+    shell.projectRequestGeneration += 1;
+    f.transport.hold = null;
+    f.transport.completeHeld();
+    await pending;
+    expect(f.controller.snapshot().read).toBe(before.read);
+    expect(f.controller.snapshot().ui.active).toBe("b");
+    expect(f.controller.snapshot().ui.tabs).toEqual(before.ui.tabs);
+    expect(f.controller.snapshot().error).toBeNull();
+  },
+);
+
+it("목록에 없는 읽기 실패 대상은 현재 문서와 탭을 바꾸지 않는다", async () => {
+  const f = await setup();
+  await f.controller.open("b");
+  const before = f.controller.snapshot();
+  const original = f.transport.workspaceResult!;
+  f.transport.workspaceResult = (input) =>
+    input.kind === "document_workspace" &&
+    input.request.action === "read" &&
+    input.request.document === "unknown"
+      ? {
+          kind: "rejected",
+          error: { code: "unavailable", nextAction: "" },
+          input_retained: false,
+        }
+      : original(input);
+  await f.controller.open("unknown");
+  expect(f.controller.snapshot().read).toBe(before.read);
+  expect(f.controller.snapshot().ui.active).toBe("b");
+  expect(f.controller.snapshot().ui.tabs).toEqual(before.ui.tabs);
+});
+
+it("버전 기록은 번호와 GUI 미리보기를 보여주고 확인 뒤 같은 문서를 복원한다", async () => {
   const f = await setup();
   await f.controller.open("a");
   render(<DocumentWorkspace controller={f.controller} />);
-
   fireEvent.click(
     await screen.findByRole("button", { name: text("format.title") }),
   );
   const dialog = await screen.findByRole("dialog", {
     name: text("format.title"),
   });
+  const row = await within(dialog).findByRole("option", { name: /버전 7/ });
+  expect(row).toHaveAttribute("aria-selected", "true");
   expect(
-    within(dialog).getByRole("heading", { name: text("format.current") }),
-  ).toBeInTheDocument();
-  expect(
-    within(dialog).getByRole("heading", {
-      name: text("format.savedVersions"),
-    }),
-  ).toBeInTheDocument();
-
-  fireEvent.change(
-    within(dialog).getByRole("combobox", { name: text("format.restore") }),
-    { target: { value: "format-history-one" } },
-  );
+    await within(dialog).findByRole("heading", { name: "이전 문서 이름" }),
+  ).toBeVisible();
+  expect(within(dialog).getByText("42")).toBeVisible();
+  expect(dialog).not.toHaveTextContent("opaque-preview-source");
+  expect(within(dialog).queryByRole("combobox")).not.toBeInTheDocument();
   fireEvent.click(
     within(dialog).getByRole("button", { name: text("format.restore") }),
+  );
+  expect(
+    f.transport.commands.some(
+      (command) =>
+        command.action === "submit" &&
+        command.input.kind === "document_workspace" &&
+        command.input.request.action === "version_restore",
+    ),
+  ).toBe(false);
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: text("format.confirmRestore") }),
   );
   await waitFor(() =>
     expect(
@@ -951,8 +1168,10 @@ it("버전 기록은 문서 헤더에서 현재 형식과 보존본을 팝업으
       (command) =>
         command.action === "submit" &&
         command.input.kind === "document_workspace" &&
-        command.input.request.action === "format_change" &&
-        command.input.request.restore === "format-history-one",
+        command.input.request.action === "version_restore" &&
+        command.input.request.artifact === "a" &&
+        command.input.request.version === "7" &&
+        command.input.request.source === "opaque-preview-source",
     ),
   ).toBe(true);
 });
@@ -2273,6 +2492,43 @@ it("imports again after autosave without resending the cleaned body at the saved
   await controller.endEdit("a");
 });
 
+it("binds shared template media to a newly opened project while the document pane is hidden", async () => {
+  const { controller, transport } = await setup();
+  const shell = controller.shell;
+  const before = shell.snapshot();
+  vi.spyOn(shell, "snapshot").mockReturnValue({
+    ...before,
+    projectId: "template-project",
+    project: { ...before.project!, project: "template-project" },
+  });
+  expect(controller.mediaProjectIsCurrent()).toBe(false);
+  const original = transport.workspaceResult!;
+  transport.workspaceResult = (input) =>
+    input.kind === "document_workspace" && input.request.action === "asset_read"
+      ? {
+          kind: "document_workspace",
+          value: {
+            kind: "asset_error",
+            error: { category: "missing", stage: "read", nextAction: "" },
+            assetName: "과거 첨부.png",
+            assetState: "missing",
+          },
+        }
+      : original(input);
+  render(<DocumentWorkspace controller={controller} hidden />);
+  await waitFor(() => expect(controller.mediaProjectIsCurrent()).toBe(true));
+  await expect(
+    controller.media({
+      action: "asset_read",
+      asset: "missing-image",
+      target: { kind: "template", artifact: "template-one" },
+    }),
+  ).resolves.toMatchObject({ kind: "asset_error", assetState: "missing" });
+  expect(
+    transport.commands.filter((c) => c.action === "submit").slice(-1)[0],
+  ).toMatchObject({ input: { project: "template-project" } });
+});
+
 it("rejects stale previews before reserving work when the project is reopened", async () => {
   const { controller, transport } = await setup();
   const shell = controller.shell;
@@ -2317,79 +2573,106 @@ it("rejects stale previews before reserving work when the project is reopened", 
   snapshot.mockRestore();
 });
 
-it("keeps rollback protection with short guidance and leaves technical details for the log", async () => {
-  const { controller } = await setup();
-  await controller.open("a");
-  await controller.beginEdit("a");
-  const entry = structuredClone(controller.edits.entries.a);
-  entry.paused = true;
-  entry.status.problem = "SaveFailed";
-  entry.status.outcome = {
-    kind: "write",
-    session: "s",
-    artifact: "a",
-    disk: "rolled_back",
-    changed: null,
-    warnings: [],
-    cleanup_failed: false,
-    recovery_required: false,
-    error: { code: "save_rejected", nextAction: "" },
-    diagnostic: {
-      stage: "Commit",
-      category: null,
-      sessionState: "Editing",
-      lockCategory: null,
-      nextAction: "",
-      operationId: "op-fixture",
-      observedAtUtc: "2026-09-16T00:00:00.000Z",
-      failures: [
-        {
-          role: "Primary",
-          stage: "Commit(WriteCommittedMarker)",
-          category: "Io",
-          transactionId: "txn-fixture",
-          ioKind: "PermissionDenied",
-          osCode: 5,
-          context: "[]",
-          secondary: [],
-        },
-      ],
-    },
-  };
-  render(
-    <DocumentEditor
-      controller={controller}
-      id="a"
-      entry={entry}
-      hidden={false}
-      locked={false}
-    />,
-  );
-  expect(
-    screen.getByRole("button", { name: text("documentEdit.save") }),
-  ).toBeDisabled();
-  expect(
-    screen.getByRole("button", { name: text("documentEdit.retry") }),
-  ).toBeEnabled();
-  expect(
-    screen.queryByText(text("documentEdit.diagnostic")),
-  ).not.toBeInTheDocument();
-  expect(screen.queryByText("txn-fixture")).not.toBeInTheDocument();
-  expect(
-    screen.queryByText(/Commit\(WriteCommittedMarker\)/),
-  ).not.toBeInTheDocument();
-  expect(
-    screen
-      .getAllByText(text("documentEdit.saveStopped"))
-      .some((node) => node.closest('[role="alert"]')),
-  ).toBe(true);
-  expect(
-    screen.getByText(text("documentEdit.inputNotDeposited")),
-  ).toBeVisible();
-  expect(
-    screen.queryByText(text("documentEdit.deposited")),
-  ).not.toBeInTheDocument();
-});
+it.each([false, true])(
+  "keeps rollback protection and exact checkpoint guidance: %s",
+  async (checkpointed) => {
+    const { controller } = await setup();
+    await controller.open("a");
+    await controller.beginEdit("a");
+    controller.edits.entries.a.paused = true;
+    controller.edits.entries.a.status.problem = "SaveFailed";
+    if (checkpointed) {
+      controller.edits.update("a", (body) => ({
+        ...body,
+        name: { intent: "set", value: "현재 보관 입력" },
+      }));
+      await waitFor(() =>
+        expect(controller.edits.entries.a.checkpoint).toBeDefined(),
+      );
+    }
+    const entry = structuredClone(controller.edits.entries.a);
+    entry.status.outcome = {
+      kind: "write",
+      session: "s",
+      artifact: "a",
+      disk: "rolled_back",
+      changed: null,
+      warnings: [],
+      cleanup_failed: false,
+      recovery_required: false,
+      error: { code: "save_rejected", nextAction: "" },
+      diagnostic: {
+        stage: "Commit",
+        category: null,
+        sessionState: "Editing",
+        lockCategory: null,
+        nextAction: "",
+        operationId: "op-fixture",
+        observedAtUtc: "2026-09-16T00:00:00.000Z",
+        failures: [
+          {
+            role: "Primary",
+            stage: "Commit(WriteCommittedMarker)",
+            category: "Io",
+            transactionId: "txn-fixture",
+            ioKind: "PermissionDenied",
+            osCode: 5,
+            context: "[]",
+            secondary: [],
+          },
+        ],
+      },
+    };
+    render(
+      <DocumentEditor
+        controller={controller}
+        id="a"
+        entry={entry}
+        hidden={false}
+        locked={false}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: text("documentEdit.save") }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: text("documentEdit.retry") }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByText(text("documentEdit.diagnostic")),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("txn-fixture")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Commit\(WriteCommittedMarker\)/),
+    ).not.toBeInTheDocument();
+    expect(
+      screen
+        .getAllByText(text("documentEdit.saveStopped"))
+        .some((node) => node.closest('[role="alert"]')),
+    ).toBe(true);
+    expect(
+      screen.getByText(
+        text(
+          checkpointed
+            ? "documentEdit.checkpointed"
+            : "documentEdit.inputNotDeposited",
+        ),
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByText(
+        text(
+          checkpointed
+            ? "documentEdit.inputNotDeposited"
+            : "documentEdit.checkpointed",
+        ),
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(text("documentEdit.deposited")),
+    ).not.toBeInTheDocument();
+  },
+);
 
 it.each([
   "success",
@@ -3156,7 +3439,7 @@ describe("document workspace", () => {
           f.list.documents.push({
             id: "created",
             template: "t",
-            name: "즉시 공개",
+            name: input.request.body.name,
           });
           f.list.layout.rootOrder.push("created");
           f.list.layout.nodes.created = {
@@ -3170,8 +3453,6 @@ describe("document workspace", () => {
         }
         return result;
       };
-      await f.controller.begin("t");
-      f.controller.edit((body) => ({ ...body, name: "즉시 공개" }));
       f.setOutcome({
         kind: "write",
         session: "session",
@@ -3225,7 +3506,10 @@ describe("document workspace", () => {
                 }
                 return run(...args);
               });
-      await f.controller.submit();
+      await f.controller.begin("t");
+      expect(f.saves).toBe(1);
+      expect(f.controller.snapshot().draft).toBeNull();
+      expect(f.controller.edits.entries.created).toBeDefined();
       if (failing) {
         expect(f.controller.snapshot().list?.issueStatus).toBe("partial");
         expect(f.controller.snapshot().list?.unverifiedDocuments).toContain(
@@ -3234,6 +3518,7 @@ describe("document workspace", () => {
         expect(f.controller.snapshot().read?.id).toBe("created");
         expect(f.controller.snapshot().ui.active).toBe("created");
         expect(f.controller.snapshot().error).toBeNull();
+        await f.controller.edits.close("created");
         failing.mockRestore();
         if (recovery === "reload") await f.controller.load();
         else expect(await f.controller.refreshForHealth()).toBe(true);
@@ -3246,15 +3531,20 @@ describe("document workspace", () => {
             ? [command.input.request.action]
             : [],
         );
-      expect(requests).toEqual(
-        recovery === "unavailable"
-          ? ["draft", "release", "list", "list"]
-          : recovery === "retry"
-            ? ["draft", "release", "list"]
-            : ["draft", "release", "list", "read"],
+      expect(requests.slice(0, 3)).toEqual(["begin", "draft", "release"]);
+      expect(requests).toContain("edit_begin");
+      expect(requests).toContain("list");
+      expect(requests.filter((request) => request === "draft")).toHaveLength(1);
+      expect(requests.filter((request) => request === "release")).toHaveLength(
+        1,
       );
       const documents = f.controller.snapshot().list?.documents ?? [];
-      expect(documents[documents.length - 1]?.id).toBe("created");
+      expect(
+        documents.filter((document) => document.id === "created"),
+      ).toHaveLength(1);
+      expect(
+        documents.find((document) => document.id === "created")?.name,
+      ).toBe(text("documents.newDocumentName"));
       expect(f.controller.snapshot().read?.id).toBe("created");
       expect(f.controller.snapshot().ui.active).toBe("created");
       expect(f.controller.snapshot().list?.issueStatus).toBe("complete");
@@ -3780,7 +4070,7 @@ describe("document workspace", () => {
     await waitFor(() => expect(f.controller.snapshot().busy).toBe(false));
     await act(() => f.controller.open("a"));
     expect(screen.getByText("빈 숫자")).toBeInTheDocument();
-    expect(screen.getByText(text("field.unsetValue"))).toBeInTheDocument();
+    expect(screen.getByText(text("required.unwritten"))).toBeInTheDocument();
     expect(screen.getByText(text("field.archived"))).toBeInTheDocument();
     expect(screen.getByText(text("documents.orphan"))).toBeInTheDocument();
     expect(screen.getByText("보존 원문")).toBeInTheDocument();
@@ -3860,104 +4150,95 @@ describe("document workspace", () => {
     expect(screen.getByText("보존 원문")).toBeVisible();
     expect(screen.queryByText("MissingKnownFieldValue")).toBeNull();
   });
-  it("조합·Enter는 생성하지 않고 raw 값과 오류 focus·닫기 취소 원문을 보존한다", async () => {
+  it("먼저 생성한 문서에서 조합·Enter가 추가 생성/저장을 하지 않고 닫기 취소가 raw 입력을 보존한다", async () => {
     const f = await setup();
+    f.setOutcome({
+      kind: "write",
+      session: "session",
+      artifact: "created",
+      disk: "committed",
+      recovery_required: false,
+      cleanup_failed: false,
+      error: null,
+      diagnostic: {
+        stage: "complete",
+        category: null,
+        sessionState: "ReadOnly",
+        lockCategory: null,
+        nextAction: "",
+      },
+      changed: true,
+      warnings: [],
+    });
+    const original = f.transport.workspaceResult!;
+    f.transport.workspaceResult = (input) => {
+      const result = original(input);
+      if (
+        input.kind === "document_workspace" &&
+        input.request.action === "draft"
+      ) {
+        f.list.documents.push({
+          id: "created",
+          template: "t",
+          name: input.request.body.name,
+        });
+        f.list.layout.rootOrder.push("created");
+        f.list.layout.nodes.created = {
+          parentId: null,
+          childOrder: [],
+          state: "active",
+          trash: null,
+        };
+      }
+      return result;
+    };
     render(<DocumentWorkspace controller={f.controller} />);
     await waitFor(() => expect(f.controller.snapshot().busy).toBe(false));
     await act(() => f.controller.begin("t"));
-    const name = screen.getByLabelText(text("documents.name") + " *");
+    expect(f.saves).toBe(1);
+    expect(f.controller.snapshot().draft).toBeNull();
+    expect(f.controller.edits.entries.created).toBeDefined();
+    const name = screen.getByLabelText(text("documentEdit.name"));
+    const saved = () =>
+      f.transport.commands.filter(
+        (command) =>
+          command.action === "submit" &&
+          command.input.kind === "document_workspace" &&
+          command.input.request.action === "edit_draft" &&
+          command.input.request.save,
+      );
     fireEvent.compositionStart(name);
     fireEvent.change(name, { target: { value: "한글" } });
     fireEvent.keyDown(name, { key: "Enter" });
-    expect(f.saves).toBe(0);
-    expect(
-      screen.getByRole("button", { name: text("documents.create") }),
-    ).toBeDisabled();
+    expect(f.controller.edits.entries.created.body.composing).toBe(true);
+    expect(saved()).toHaveLength(0);
+    expect(f.saves).toBe(1);
     fireEvent.compositionEnd(name);
-    fireEvent.click(
-      screen.getByRole("button", { name: text("documents.create") }),
+    await act(() =>
+      f.controller.edits.update("created", (body) => ({
+        ...body,
+        fields: [
+          {
+            field: "n",
+            value: { intent: "set", value: { kind: "number", value: "-" } },
+          },
+        ],
+      })),
     );
-    await waitFor(() => expect(f.saves).toBe(1));
-    await waitFor(() =>
-      expect(document.activeElement).toHaveAttribute("id", "creation-n"),
-    );
-    fireEvent.change(document.getElementById("creation-n")!, {
-      target: { value: "-" },
+    await act(() => f.controller.endEdit("created"));
+    act(() => f.controller.cancelEditClose());
+    expect(f.controller.edits.entries.created.body.name).toEqual({
+      intent: "set",
+      value: "한글",
     });
-    expect(f.controller.snapshot().draft?.body.fields[0].value).toEqual({
+    expect(f.controller.edits.entries.created.body.fields[0].value).toEqual({
       intent: "set",
       value: { kind: "number", value: "-" },
     });
-    fireEvent.click(
-      screen.getByRole("button", { name: text("documents.closeDraft") }),
-    );
-    await act(() => f.controller.cancelClose());
-    expect(f.controller.snapshot().draft?.body.name).toBe("한글");
-    expect(f.controller.snapshot().draft?.body.fields[0].value).toEqual({
-      intent: "set",
-      value: { kind: "number", value: "-" },
-    });
+    expect(f.saves).toBe(1);
   });
-  it("용어 단일행 오류는 생성·편집의 정확한 입력을 표시하고 수정 원문을 보존한다", async () => {
-    const creation = await setup();
-    const creationView = render(
-      <DocumentWorkspace controller={creation.controller} />,
-    );
-    await waitFor(() =>
-      expect(creation.controller.snapshot().busy).toBe(false),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: text("documents.new") }),
-    );
-    fireEvent.change(await screen.findByLabelText(text("documents.template")), {
-      target: { value: "t" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: text("documents.begin") }),
-    );
-    const creationName = await screen.findByLabelText(
-      text("documents.name") + " *",
-    );
-    fireEvent.change(creationName, {
-      target: { value: "용어 문서" },
-    });
-    const creationEnglish = screen.getByLabelText(text("glossary.englishName"));
-    const creationSummary = screen.getByLabelText(text("glossary.summary"));
-    fireEvent.change(creationEnglish, {
-      target: { value: "line\u2028break" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: text("documents.create") }),
-    );
-    await waitFor(() => expect(creation.saves).toBe(1));
-    await waitFor(() => expect(document.activeElement).toBe(creationEnglish));
-    expect(creationEnglish).toHaveAttribute("aria-invalid", "true");
-    expect(creationEnglish).toHaveValue("line\u2028break");
 
-    fireEvent.change(creationEnglish, { target: { value: "Allowed" } });
-    fireEvent.change(creationSummary, {
-      target: { value: "앞\u2029뒤" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: text("documents.create") }),
-    );
-    await waitFor(() => expect(creation.saves).toBe(2));
-    await waitFor(() => expect(document.activeElement).toBe(creationSummary));
-    expect(creationSummary).toHaveAttribute("aria-invalid", "true");
-    expect(creationSummary).toHaveValue("앞\u2029뒤");
-
-    fireEvent.change(creationSummary, { target: { value: "정상 요약" } });
-    fireEvent.click(
-      screen.getByRole("button", { name: text("documents.create") }),
-    );
-    await waitFor(() => expect(creation.saves).toBe(3));
-    await waitFor(() =>
-      expect(document.activeElement).toHaveAttribute("id", "creation-n"),
-    );
-    expect(creationEnglish).toHaveAttribute("aria-invalid", "false");
-    expect(creationSummary).toHaveAttribute("aria-invalid", "false");
-    creationView.unmount();
-
+  it("용어 단일행 오류는 문서 편집에서 정확한 입력과 수정 원문을 보존한다", async () => {
     const editing = await setup();
     await editing.controller.open("a");
     await editing.controller.beginEdit("a");
@@ -4073,3 +4354,126 @@ it.each(["delete", "owner"])(
     controller.edits.entries.a.paused = true;
   },
 );
+
+it("asks once for all missing required editors and rechecks after cancellation", async () => {
+  const f = await setup();
+  await f.controller.beginEdit("a");
+  await f.controller.beginEdit("b");
+  for (const id of ["a", "b"])
+    f.controller.edits.field(id, "n", { intent: "unset" });
+  const completed = vi.fn();
+  expect(f.controller.requestClose(completed)).toBe(false);
+  expect(f.controller.snapshot().requiredPrompt).toEqual(["a", "b"]);
+  f.controller.cancelEditClose();
+  expect(f.controller.requestClose(completed)).toBe(false);
+  expect(f.controller.snapshot().requiredPrompt).toEqual(["a", "b"]);
+  f.controller.cancelEditClose();
+  expect(completed).not.toHaveBeenCalled();
+  for (const entry of Object.values(f.controller.edits.entries))
+    entry.paused = true;
+});
+
+it("required close cancellation never renders an unrelated unsaved-input dialog", async () => {
+  const f = await setup();
+  await act(async () => {
+    render(<DocumentWorkspace controller={f.controller} />);
+  });
+  await act(async () => {
+    await f.controller.open("a");
+    await f.controller.beginEdit("a");
+  });
+  await act(async () => {
+    f.controller.edits.field("a", "n", { intent: "unset" });
+    f.controller.requestClose();
+  });
+  expect(f.controller.snapshot().requiredPrompt).toEqual(["a"]);
+  expect(
+    screen.getByRole("alertdialog", { name: text("required.closeTitle") }),
+  ).toBeInTheDocument();
+  const visibleTexts: string[] = [];
+  const observer = new MutationObserver(() =>
+    visibleTexts.push(document.body.textContent ?? ""),
+  );
+  observer.observe(document.body, {
+    childList: true,
+    characterData: true,
+    subtree: true,
+  });
+  const observed: ReturnType<typeof f.controller.snapshot>[] = [];
+  const stop = f.controller.subscribe(() =>
+    observed.push(f.controller.snapshot()),
+  );
+  await act(async () => {
+    fireEvent.click(
+      screen.getByRole("button", { name: text("required.write") }),
+    );
+  });
+  await waitFor(() =>
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+  );
+  observer.disconnect();
+  stop();
+  expect(
+    observed.some((s) => !!s.editPrompt && s.requiredPrompt.length === 0),
+  ).toBe(false);
+  expect(
+    visibleTexts.some(
+      (value) =>
+        value.includes(text("documentEdit.closeTitle")) ||
+        value.includes(text("documentEdit.closeHelp")),
+    ),
+  ).toBe(false);
+  expect(f.controller.snapshot().editPromptKind).toBe("required");
+  expect(f.controller.snapshot().editPrompt).toBeNull();
+  expect(f.controller.edits.entries.a).toBeDefined();
+});
+
+it("consumes required focus after moving to the first rich text input", async () => {
+  const f = await setup();
+  f.template.fields[0].kind = "RichText";
+  await f.controller.open("a");
+  await f.controller.beginEdit("a");
+  f.controller.edits.field("a", "n", { intent: "unset" });
+  function Editor() {
+    const state = useSyncExternalStore(
+      f.controller.subscribe,
+      f.controller.snapshot,
+    );
+    return state.editors.a ? (
+      <DocumentEditor
+        id="a"
+        entry={state.editors.a}
+        controller={f.controller}
+        locked={false}
+        hidden={false}
+      />
+    ) : null;
+  }
+  render(<Editor />);
+  await f.controller.endEdit("a");
+  await act(() => f.controller.writeRequired());
+  await waitFor(() =>
+    expect(document.activeElement?.getAttribute("contenteditable")).toBe(
+      "true",
+    ),
+  );
+  expect(f.controller.snapshot().requiredFocus).toBeNull();
+  f.controller.edits.entries.a.paused = true;
+});
+
+it("creation close cancellation clears the accepted required-warning decision", async () => {
+  const f = await setup();
+  await f.controller.begin("t");
+  await f.controller.beginEdit("a");
+  f.controller.edits.field("a", "n", { intent: "unset" });
+  f.controller.requestClose();
+  f.controller.leaveRequiredClose();
+  await waitFor(() => expect(f.controller.snapshot().prompt).toBe(true));
+  f.controller.cancelClose();
+  await f.controller.beginEdit("b");
+  f.controller.edits.field("b", "n", { intent: "unset" });
+  f.controller.requestClose();
+  expect(f.controller.snapshot().requiredPrompt).toEqual(["b"]);
+  f.controller.cancelEditClose();
+  f.controller.edits.entries.b.paused = true;
+});

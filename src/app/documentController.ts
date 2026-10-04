@@ -1,3 +1,4 @@
+import { requiredWarnings } from "./requiredWarnings";
 import type { TemplateController } from "./controller";
 import {
   NAVIGATION_DEFAULT,
@@ -170,6 +171,9 @@ interface State {
     entry?: SvnStatusEntry;
   } | null;
   editPrompt: string | null;
+  requiredPrompt: string[];
+  editPromptKind: "required" | "preserve";
+  requiredFocus: { document: string; field: string; request: number } | null;
   list: DocumentList | null;
   validationIssues: DocumentValidationIssues;
   read: DocumentRead | null;
@@ -249,6 +253,9 @@ export class DocumentController {
     editors: {},
     svnLocalObservation: null,
     editPrompt: null,
+    requiredPrompt: [],
+    editPromptKind: "preserve",
+    requiredFocus: null,
     list: null,
     validationIssues: [],
     read: null,
@@ -275,6 +282,9 @@ export class DocumentController {
     referencesError: null,
     referenceFocus: null,
   };
+  private requiredAction: (() => void) | null = null;
+  private requiredCloseAccepted = false;
+  private requiredFocusRequest = 0;
   private listeners = new Set<() => void>();
   private project: string | null = null;
   private projectGeneration = -1;
@@ -402,20 +412,69 @@ export class DocumentController {
   acknowledgeBlockedEdit() {
     this.publish({ error: null });
   }
-  async endEdit(id: string, closeTab = false) {
+  async endEdit(id: string, closeTab = false, accepted = false) {
+    const entry = this.edits.entries[id];
+    if (
+      !accepted &&
+      entry &&
+      requiredWarnings(entry.status.read, entry).length
+    ) {
+      this.requiredAction = () => void this.endEdit(id, closeTab, true);
+      this.publish({
+        editPrompt: id,
+        requiredPrompt: [id],
+        editPromptKind: "required",
+      });
+      return;
+    }
     if (await this.edits.close(id)) {
       this.observeSvnLocal(id);
       if (closeTab) await this.removeTab(id);
     } else {
       this.closeAction = closeTab ? () => void this.removeTab(id) : null;
-      this.publish({ editPrompt: id });
+      this.publish({
+        editPrompt: id,
+        requiredPrompt: [],
+        editPromptKind: "preserve",
+      });
     }
   }
   cancelEditClose() {
+    this.requiredAction = null;
+    this.requiredCloseAccepted = false;
+    this.publish({ editPrompt: null, requiredPrompt: [] });
     this.closeAction = null;
     this.cancelAction?.();
     this.cancelAction = null;
-    this.publish({ editPrompt: null });
+  }
+  leaveRequiredClose() {
+    const action = this.requiredAction;
+    this.requiredAction = null;
+    this.publish({ editPrompt: null, requiredPrompt: [] });
+    action?.();
+  }
+  async writeRequired() {
+    const id = this.state.requiredPrompt[0];
+    const entry = this.edits.entries[id];
+    const warning = entry && requiredWarnings(entry.status.read, entry)[0];
+    this.cancelEditClose();
+    this.resumePreviews();
+    if (!warning) return;
+    await this.open(id);
+    this.publish({
+      requiredFocus: {
+        document: id,
+        field: warning.field,
+        request: ++this.requiredFocusRequest,
+      },
+    });
+  }
+  consumeRequiredFocus(document: string, request: number) {
+    if (
+      this.state.requiredFocus?.document === document &&
+      this.state.requiredFocus.request === request
+    )
+      this.publish({ requiredFocus: null });
   }
   async depositEditClose() {
     const id = this.state.editPrompt;
@@ -455,6 +514,18 @@ export class DocumentController {
     } catch {
       this.publish({ uiError: true });
     }
+  }
+  mediaProjectIsCurrent() {
+    const app = this.shell.snapshot();
+    return (
+      this.project !== null &&
+      this.project === app.projectId &&
+      this.projectGeneration === this.shell.projectGeneration() &&
+      app.project?.project === this.project &&
+      app.project.status === "Ready" &&
+      app.project.runtime === "Ready" &&
+      !app.closing
+    );
   }
   async media(request: DocumentRequest) {
     const project = this.project;
@@ -1391,14 +1462,14 @@ export class DocumentController {
       }),
     );
   }
-  private async read(id: string) {
+  private async read(id: string, current: () => boolean = () => true) {
     if (this.edits.entries[id]) {
-      this.publish({ read: this.edits.entries[id].status.read });
+      if (current()) this.publish({ read: this.edits.entries[id].status.read });
       return;
     }
     const result = await this.work({ action: "read", document: id });
     if (result.kind !== "read") throw new BridgeFailure("protocol");
-    this.publish({ read: result });
+    if (current()) this.publish({ read: result });
   }
   async loadReferences(id: string) {
     const project = this.project;
@@ -1437,7 +1508,15 @@ export class DocumentController {
     }, true);
   }
   async open(id: string) {
-    ++this.selectionRequest;
+    const selection = ++this.selectionRequest;
+    const project = this.project;
+    const generation = this.shell.projectGeneration();
+    const current = () =>
+      project === this.project &&
+      project === this.shell.snapshot().projectId &&
+      generation === this.shell.projectGeneration() &&
+      selection === this.selectionRequest &&
+      !this.state.previewClosing;
     if (this.state.ui.active !== id) this.edits.flush(this.state.ui.active);
     await this.action(async () => {
       if (
@@ -1447,7 +1526,30 @@ export class DocumentController {
         this.publish({ error: text("documents.tabLimit") });
         return;
       }
-      await this.read(id);
+      try {
+        await this.read(id, current);
+      } catch (error) {
+        if (!current()) return;
+        // A known normal-list target remains reachable through its versions
+        // even when its current file cannot be decoded or is missing.
+        if (this.state.list?.documents.some((document) => document.id === id)) {
+          this.publish({
+            read: null,
+            references: null,
+            referencesBusy: false,
+            referencesError: null,
+          });
+          this.persist({
+            ...this.state.ui,
+            active: id,
+            tabs: this.state.ui.tabs.includes(id)
+              ? this.state.ui.tabs
+              : [...this.state.ui.tabs, id],
+          });
+        }
+        throw error;
+      }
+      if (!current()) return;
       this.persist({
         ...this.state.ui,
         active: id,
@@ -1762,8 +1864,30 @@ export class DocumentController {
       });
       if (r.kind !== "draft") throw new BridgeFailure("protocol");
       this.publish({ draft: r, restoredOwner: null });
-      if (parent !== null) this.edit((b) => ({ ...b, parent }));
+      this.edit((b) => ({
+        ...b,
+        parent,
+        name: text("documents.newDocumentName"),
+      }));
     });
+    // The creation operation owns the canonical file and list update. Only
+    // its confirmed outcome can advance to the ordinary document editor.
+    if (this.state.draft && !this.state.error) {
+      await this.retryCreation();
+    }
+  }
+  async retryCreation() {
+    const draft = this.state.draft;
+    if (
+      !draft ||
+      this.state.busy ||
+      (draft.outcome?.kind === "write" &&
+        ["committed", "uncertain"].includes(draft.outcome.disk))
+    )
+      return;
+    await this.submit();
+    if (!this.state.draft && this.state.read && !this.state.error)
+      await this.beginEdit(this.state.read.id);
   }
   edit(change: (b: CreationBody) => CreationBody) {
     const d = this.state.draft;
@@ -1969,6 +2093,22 @@ export class DocumentController {
       this.resumePreviews();
       return false;
     }
+    const missing = Object.entries(this.edits.entries)
+      .filter(([, e]) => requiredWarnings(e.status.read, e).length)
+      .map(([id]) => id);
+    if (missing.length && !this.requiredCloseAccepted) {
+      this.cancelAction = cancel;
+      this.requiredAction = () => {
+        this.requiredCloseAccepted = true;
+        this.requestClose(action, cancel);
+      };
+      this.publish({
+        editPrompt: missing[0],
+        requiredPrompt: missing,
+        editPromptKind: "required",
+      });
+      return false;
+    }
     this.suspendPreviews();
     const id = Object.keys(this.edits.entries)[0];
     if (id) {
@@ -1977,7 +2117,11 @@ export class DocumentController {
         if (closed) this.requestClose(action, cancel);
         else {
           this.closeAction = () => this.requestClose(action, cancel);
-          this.publish({ editPrompt: id });
+          this.publish({
+            editPrompt: id,
+            requiredPrompt: [],
+            editPromptKind: "preserve",
+          });
         }
       });
       return false;
@@ -1988,6 +2132,7 @@ export class DocumentController {
     if (this.state.busy) return false;
     if (!this.state.draft) {
       this.cancelAction = null;
+      this.requiredCloseAccepted = false;
       action();
       return true;
     }
@@ -2000,6 +2145,8 @@ export class DocumentController {
     const cancel = this.cancelAction;
     this.cancelAction = null;
     this.closeAction = null;
+    this.requiredAction = null;
+    this.requiredCloseAccepted = false;
     this.publish({ prompt: false });
     cancel?.();
   }

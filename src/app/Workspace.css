@@ -545,14 +545,16 @@
     grid-template-columns: 1fr;
   }
   .whole-field-list {
-    display: flex;
-    flex-direction: row;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
     gap: 8px;
-    flex-wrap: wrap;
-    max-height: min(320px, 40dvh);
+    min-height: 0;
+    max-height: min(240px, 32dvh);
+    border-right: 0;
+    border-bottom: 1px solid var(--background-modifier-border);
   }
   .whole-field-list li {
-    flex: 1 1 150px;
+    min-width: 0;
   }
 }
 @media (max-width: 640px) {

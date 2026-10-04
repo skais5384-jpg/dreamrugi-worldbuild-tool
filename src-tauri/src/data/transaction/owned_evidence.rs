@@ -31,11 +31,12 @@ pub(in crate::data::transaction) fn verify_original_targets(
                     .read_to_end(&mut bytes)?;
                 if bytes.len() as u64 != size
                     || target.original_sha256.as_deref() != Some(sha256(&bytes).as_str())
-                    || target.original_schema_version
-                        != Some(
-                            super::super::prepare::managed_schema_version(&bytes)
-                                .map_err(|_| invalid("target schema differs"))?,
-                        )
+                    || (!target.original_raw
+                        && target.original_schema_version
+                            != Some(
+                                super::super::prepare::managed_schema_version(&bytes)
+                                    .map_err(|_| invalid("target schema differs"))?,
+                            ))
                 {
                     return Err(invalid("actual target contradicts cleanup evidence"));
                 }
@@ -78,6 +79,7 @@ pub(in crate::data::transaction) fn verify_completed_targets(
                 original_size: Some(op.staged_size),
                 original_sha256: Some(op.staged_sha256.clone()),
                 original_schema_version: op.staged_schema_version,
+                original_raw: false,
             })
             .collect()
     } else {

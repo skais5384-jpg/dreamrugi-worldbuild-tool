@@ -3,6 +3,7 @@ use crate::data::edit_recovery::model::Key;
 mod archive_recovery;
 mod fix;
 mod groups;
+mod policy_formats;
 mod replace_m44;
 mod scale;
 mod search_fix002;
@@ -87,8 +88,7 @@ fn document_edit_failed_proof_keeps_owner_then_lock_retry_acquires_new_session()
         .store(true, std::sync::atomic::Ordering::SeqCst);
     let failed = edit_save(&h, &p, &d, "2", body.clone());
     assert!(!failed["problem"].is_null(), "{failed}");
-    let store = h.state.recovery.connect().unwrap();
-    store.lock().unwrap().fault = Some(crate::data::edit_recovery::error::Stage::Reopen);
+    let canary = block_latest_target(&h, "document", &id);
     let deposit = json!({"action":"edit_deposit","owner":d["owner"],"generation":"3","body":body});
     let rejected = request(&h, &p, deposit.clone());
     assert!(!rejected["error"].is_null(), "{rejected}");
@@ -98,9 +98,9 @@ fn document_edit_failed_proof_keeps_owner_then_lock_retry_acquires_new_session()
             &p,
             json!({"action":"edit_release","owner":d["owner"],"generation":"3"})
         )["error"]["code"],
-        "no_receipt"
+        "wrong_binding"
     );
-    store.lock().unwrap().fault = None;
+    unblock_latest_target(&canary);
     let kept = request(&h, &p, deposit);
     assert_eq!(kept["value"]["deposited"], true, "{kept}");
     provider
@@ -155,13 +155,17 @@ fn document_edit_admitted_and_composite_recovery_preserve_both_intents() {
         provider
             .lose
             .store(false, std::sync::atomic::Ordering::SeqCst);
-        let rows = h.work(json!({"kind":"recovery_page","cursor":null}));
-        let row = &rows["page"]["entries"][0]["row"];
-        let restored = request(
-            &h,
-            &p,
-            json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]}),
-        );
+        let restored = if composite {
+            let rows = h.work(json!({"kind":"recovery_page","cursor":null}));
+            let row = &rows["page"]["entries"][0]["row"];
+            request(
+                &h,
+                &p,
+                json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]}),
+            )
+        } else {
+            request(&h, &p, json!({"action":"edit_begin","document":id}))
+        };
         if composite && !unchanged {
             assert_eq!(
                 restored["error"]["code"], "composite_intent_pending",
@@ -172,7 +176,7 @@ fn document_edit_admitted_and_composite_recovery_preserve_both_intents() {
                 &h,
                 &p,
                 &restored["value"],
-                "2",
+                restored["value"]["generation"].as_str().unwrap(),
                 restored["value"]["body"].clone(),
             );
             assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
@@ -189,8 +193,9 @@ fn document_edit_admitted_and_composite_recovery_preserve_both_intents() {
                 .unwrap()
                 .entries
                 .len(),
-            1
+            usize::from(composite)
         );
+        assert_eq!(list(&h, &p)["documents"].as_array().unwrap().len(), 1);
         h.close_clean();
     }
 }
@@ -535,23 +540,9 @@ fn m39_fix005_deposited_generation_release_restore_preserves_lineage() {
     );
     let recovered = h.control(json!({"kind":"recover","project":p}));
     assert!(recovered["error"].is_null(), "{recovered}");
-    let rows = h.work(json!({"kind":"recovery_page","cursor":null}));
-    let entries = rows["page"]["entries"].as_array().unwrap();
-    let row = entries
-        .iter()
-        .map(|entry| &entry["row"])
-        .find(|row| row["key"]["generation"] == "3")
-        .unwrap()
-        .clone();
     edit_release(&h, &p, &deposited);
-
-    let restored = request(
-        &h,
-        &p,
-        json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]}),
-    )["value"]
-        .clone();
-    assert_eq!(restored["body"], deposited["body"]);
+    let restored = edit_begin(&h, &p, &existing);
+    assert_eq!(restored["body"], deposited["body"], "{restored}");
     assert_eq!(restored["read"]["name"], "committed S");
     let generation = restored["generation"].as_str().unwrap().to_owned();
     let saved = edit_save(&h, &p, &restored, &generation, restored["body"].clone());
@@ -881,18 +872,8 @@ fn m39_fix004_restore_of_same_committed_proof_advances_snapshot() {
     )["value"]
         .clone();
     assert_eq!(deposited["deposited"], true, "{deposited}");
-    let rows = h.work(json!({"kind":"recovery_page","cursor":null}));
-    let entries = rows["page"]["entries"].as_array().unwrap();
-    assert_eq!(entries.len(), 1, "{rows}");
-    let row = entries[0]["row"].clone();
-
     edit_release(&h, &p, &deposited);
-    let restored = request(
-        &h,
-        &p,
-        json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]}),
-    )["value"]
-        .clone();
+    let restored = edit_begin(&h, &p, &existing);
     assert_eq!(
         restored["read"]["name"], "after restored proof",
         "{restored}"
@@ -1071,8 +1052,6 @@ fn document_edit_store_restart_composing_and_generations_resume_save() {
     )["value"]
         .clone();
     assert_eq!(deposited["deposited"], true, "{deposited}");
-    let rows = h.work(json!({"kind":"recovery_page","cursor":null}));
-    let row = rows["page"]["entries"][0]["row"].clone();
     body["name"] = json!({"intent":"set","value":"later generation"});
     let later = request(
         &h,
@@ -1086,14 +1065,19 @@ fn document_edit_store_restart_composing_and_generations_resume_save() {
     drop(h);
     let h = Harness::at(base, backend::provider(), true);
     let p = h.open();
-    let restore = json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]});
-    let restored = request(&h, &p, restore.clone())["value"].clone();
+    let restored = edit_begin(&h, &p, &id);
+    assert_eq!(restored["document"], id);
     assert_eq!(restored["generation"], "8", "{restored}");
     assert_eq!(restored["body"]["composing"], false);
-    assert_eq!(restored["body"]["name"]["value"], "raw recovery");
+    assert_eq!(restored["body"]["name"]["value"], "later generation");
     assert_eq!(
-        request(&h, &p, restore)["error"]["code"],
-        "duplicate_conflict"
+        fs::read_dir(
+            h.root
+                .join(format!(".worldbuild/latest-drafts/document-{id}"))
+        )
+        .unwrap()
+        .count(),
+        1
     );
     let saved = edit_save(&h, &p, &restored, "8", restored["body"].clone());
     assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
@@ -1101,7 +1085,7 @@ fn document_edit_store_restart_composing_and_generations_resume_save() {
     let actual: Value =
         serde_json::from_slice(&fs::read(h.root.join(format!("documents/{id}.json"))).unwrap())
             .unwrap();
-    assert_eq!(actual["name"], "raw recovery");
+    assert_eq!(actual["name"], "later generation");
     assert_eq!(list(&h, &p)["documents"].as_array().unwrap().len(), 1);
     h.close_clean();
 }
@@ -1255,10 +1239,6 @@ fn document_creation_guides_empty_values_required_validation_and_raw_recovery() 
         .zip(empty)
         .map(|(id, value)| json!({"field":id,"value":{"intent":"set","value":value}}))
         .collect::<Vec<_>>());
-    let rejected = save(&h, &p, &d, "2", body.clone());
-    assert_eq!(rejected["problem"], "RequiredValueUnset");
-    assert_eq!(rejected["body"], body);
-    assert!(!h.root.join("workspace/document-layout.json").exists());
     body["fields"][2]["value"]["value"]["value"] = "-".into();
     let invalid = save(&h, &p, &d, "3", body.clone());
     assert!(invalid["outcome"].is_null());
@@ -1312,8 +1292,20 @@ fn document_creation_guides_empty_values_required_validation_and_raw_recovery() 
             }
         );
     }
-    assert_eq!(fs::read(path).unwrap(), before);
+    assert_eq!(fs::read(&path).unwrap(), before);
     release(&h, &p, &saved, false);
+    let empty_draft = begin(&h, &p, &t);
+    let mut empty_body = empty_draft["body"].clone();
+    empty_body["name"] = "필수 항목 미작성 문서".into();
+    let empty_saved = save(&h, &p, &empty_draft, "2", empty_body);
+    assert_eq!(empty_saved["outcome"]["disk"], "committed", "{empty_saved}");
+    assert!(empty_saved["problem"].is_null());
+    assert_eq!(
+        empty_saved["commit"]["read"]["fields"][2]["value"],
+        json!({"kind":"unset"})
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    release(&h, &p, &empty_saved, false);
     h.close_clean();
 }
 fn request(h: &Harness, p: &str, request: Value) -> Value {
@@ -2328,27 +2320,42 @@ fn document_workspace_deposit_restart_old_generation_duplicate_and_close_guard()
     drop(h);
     let h = Harness::at(base, backend::provider(), true);
     let p = h.open();
-    let r = &row["row"];
-    let restore = json!({"action":"restore","key":r["key"],"deposit_id":r["depositId"],"digest":r["payloadDigest"]});
-    let restored = request(&h, &p, restore.clone())["value"].clone();
-    assert_eq!(restored["generation"], "8");
-    assert_eq!(restored["body"]["name"], "재시작 원문");
-    assert_eq!(restored["body"]["composing"], false, "{restored}");
-    assert_eq!(
-        request(&h, &p, restore)["error"]["code"],
-        "duplicate_conflict"
-    );
-    let saved = save(&h, &p, &restored, "9", restored["body"].clone());
-    assert_eq!(saved["outcome"]["disk"], "committed");
-    release(&h, &p, &saved, false);
+    // Startup list performs the verified legacy transition before normal target resume.
     assert_eq!(list(&h, &p)["documents"].as_array().unwrap().len(), 1);
-    assert!(
-        h.work(json!({"kind":"recovery_page","cursor":null}))["page"]["entries"]
-            .as_array()
-            .unwrap()
-            .len()
-            >= 2
-    );
+    let paths = fs::read_dir(h.root.join("documents"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(paths.len(), 1);
+    let canonical: Value = serde_json::from_slice(&fs::read(&paths[0]).unwrap()).unwrap();
+    let id = canonical["documentId"].as_str().unwrap();
+    let restored = edit_begin(&h, &p, id);
+    assert_eq!(restored["document"], id);
+    assert_eq!(canonical["name"], "최신 세대");
+    if restored["body"]["name"]["intent"] == "set" {
+        assert_eq!(restored["body"]["name"]["value"], "최신 세대");
+    } else {
+        assert_eq!(restored["body"]["name"]["intent"], "keep", "{restored}");
+    }
+    assert_eq!(restored["body"]["composing"], false, "{restored}");
+    let mut next = restored["body"].clone();
+    next["name"] = json!({"intent":"set","value":"최신 세대 이어서 저장"});
+    let generation = (restored["generation"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        + 1)
+    .to_string();
+    let saved = edit_save(&h, &p, &restored, &generation, next);
+    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+    edit_release(&h, &p, &saved);
+    for _ in 0..3 {
+        assert_eq!(list(&h, &p)["documents"].as_array().unwrap().len(), 1);
+    }
+    let actual: Value = serde_json::from_slice(&fs::read(&paths[0]).unwrap()).unwrap();
+    assert_eq!(actual["documentId"], id);
+    assert_eq!(actual["name"], "최신 세대 이어서 저장");
     h.close_clean();
 }
 #[test]
@@ -2379,5 +2386,279 @@ fn document_workspace_cancel_signal_bypasses_queued_worker_and_terminal_is_reque
     assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
     release(&h, &p, &saved, false);
     assert_eq!(list(&h, &p)["documents"].as_array().unwrap().len(), 1);
+    h.close_clean();
+}
+
+#[test]
+fn latest_document_input_reopens_without_write_and_resolves_only_actual_conflict() {
+    let h = Harness::new();
+    let p = h.open();
+    let (template, _) = h.template(&p);
+    let id = create(&h, &p, &template, "저장 이름");
+    let editor = edit_begin(&h, &p, &id);
+    let mut body = editor["body"].clone();
+    body["name"] = json!({"intent":"set","value":"작성 중 이름"});
+    let checkpoint = request(
+        &h,
+        &p,
+        json!({"action":"edit_draft","owner":editor["owner"],"generation":"2","body":body,"save":false}),
+    );
+    assert_eq!(checkpoint["value"]["saved_generation"], "1");
+    let path = h.root.join(format!("documents/{id}.json"));
+    let before = fs::read(&path).unwrap();
+    let deposit = request(
+        &h,
+        &p,
+        json!({"action":"edit_deposit","owner":editor["owner"],"generation":"2","body":body}),
+    );
+    edit_release(&h, &p, &deposit["value"]);
+    let resumed = edit_begin(&h, &p, &id);
+    assert_eq!(resumed["body"]["name"]["value"], "작성 중 이름");
+    assert!(resumed["saved_generation"].is_null());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let deposit = request(
+        &h,
+        &p,
+        json!({"action":"edit_deposit","owner":resumed["owner"],"generation":resumed["generation"],"body":resumed["body"]}),
+    );
+    edit_release(&h, &p, &deposit["value"]);
+    let mut external: Value = serde_json::from_slice(&before).unwrap();
+    external["name"] = "다른 저장 이름".into();
+    fs::write(&path, serde_json::to_vec(&external).unwrap()).unwrap();
+    let before_choice = fs::read(&path).unwrap();
+    let conflict = edit_begin(&h, &p, &id);
+    assert_eq!(conflict["problem"], "DraftConflict");
+    let latest_path = h
+        .root
+        .join(format!(".worldbuild/latest-drafts/document-{id}"));
+    let input_path = fs::read_dir(&latest_path)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let original_input = fs::read(&input_path).unwrap();
+    fs::write(&input_path, b"invalid comparison checkpoint").unwrap();
+    let refused = request(
+        &h,
+        &p,
+        json!({"action":"edit_release","owner":conflict["owner"],"generation":conflict["generation"]}),
+    );
+    assert_ne!(refused["value"]["kind"], "released", "{refused}");
+    assert_eq!(fs::read(&path).unwrap(), before_choice);
+    fs::write(&input_path, &original_input).unwrap();
+    edit_release(&h, &p, &conflict);
+    assert_eq!(fs::read(&input_path).unwrap(), original_input);
+    assert_eq!(fs::read(&path).unwrap(), before_choice);
+    let conflict = edit_begin(&h, &p, &id);
+    assert_eq!(conflict["problem"], "DraftConflict");
+    let choices = conflict["comparison"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|change| change["status"] == "conflict")
+        .map(|change| change["id"].clone())
+        .collect::<Vec<_>>();
+    assert!(!choices.is_empty());
+    let selected = request(
+        &h,
+        &p,
+        json!({"action":"edit_resume","owner":conflict["owner"],"selected":choices}),
+    );
+    let selected = &selected["value"];
+    assert!(selected["problem"].is_null());
+    assert_eq!(selected["body"]["name"]["value"], "작성 중 이름");
+    assert_eq!(fs::read(&path).unwrap(), before_choice);
+    let saved = edit_save(
+        &h,
+        &p,
+        selected,
+        selected["generation"].as_str().unwrap(),
+        selected["body"].clone(),
+    );
+    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+    edit_release(&h, &p, &saved);
+    h.close_clean();
+}
+
+#[test]
+fn latest_unknown_attempt_rechecks_current_after_owner_release_without_claiming_old_outcome() {
+    for state in ["unknown", "uncertain"] {
+        let h = Harness::new();
+        let p = h.open();
+        let (template, _) = h.template(&p);
+        let id = create(&h, &p, &template, "현재 저장 이름");
+        let editor = edit_begin(&h, &p, &id);
+        let mut body = editor["body"].clone();
+        body["name"] = json!({"intent":"set","value":"이어서 작성할 이름"});
+        let checkpoint = request(
+            &h,
+            &p,
+            json!({"action":"edit_draft","owner":editor["owner"],"generation":"2","body":body,"save":false}),
+        );
+        assert_eq!(checkpoint["value"]["kind"], "editing");
+        let duplicate = request(&h, &p, json!({"action":"edit_begin","document":id}));
+        assert_eq!(duplicate["error"]["code"], "duplicate_conflict");
+        let deposited = request(
+            &h,
+            &p,
+            json!({"action":"edit_deposit","owner":editor["owner"],"generation":"2","body":body}),
+        );
+        edit_release(&h, &p, &deposited["value"]);
+        let dir = h
+            .root
+            .join(format!(".worldbuild/latest-drafts/document-{id}"));
+        let file = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with('d'))
+            .unwrap();
+        let mut record: Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        let operation = uuid::Uuid::new_v4().to_string();
+        record["envelope"]["attempt"] = json!({"submittedGeneration":"2","operationId":operation,"result":state,"candidateDigest":null,"transactionId":null});
+        let envelope: crate::data::edit_recovery::model::Envelope =
+            serde_json::from_value(record["envelope"].clone()).unwrap();
+        let deposit = crate::data::edit_recovery::model::Deposit::freeze(envelope).unwrap();
+        record["payloadDigest"] = deposit.payload_digest().into();
+        fs::write(&file, serde_json::to_vec(&record).unwrap()).unwrap();
+        let path = h.root.join(format!("documents/{id}.json"));
+        let before = fs::read(&path).unwrap();
+        let resumed = edit_begin(&h, &p, &id);
+        assert!(resumed["problem"].is_null(), "{resumed}");
+        assert_eq!(resumed["body"]["name"]["value"], "이어서 작성할 이름");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let raw = request(
+            &h,
+            &p,
+            json!({"action":"edit_draft","owner":resumed["owner"],"generation":resumed["generation"],"body":resumed["body"],"save":false}),
+        );
+        assert_eq!(raw["value"]["kind"], "editing", "{raw}");
+        let file = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().unwrap().to_string_lossy().starts_with('d'))
+            .unwrap();
+        let stored: Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+        assert_eq!(stored["envelope"]["attempt"]["result"], state);
+        assert_eq!(stored["envelope"]["attempt"]["operationId"], operation);
+        assert_eq!(stored["envelope"]["attempt"]["recoveryChecked"], true);
+        let saved = edit_save(
+            &h,
+            &p,
+            &resumed,
+            resumed["generation"].as_str().unwrap(),
+            resumed["body"].clone(),
+        );
+        assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+        edit_release(&h, &p, &saved);
+        h.close_clean();
+    }
+}
+
+#[test]
+fn failed_worker_payload_is_acknowledged_before_a_newer_raw_checkpoint_prunes_its_record() {
+    use crate::data::transaction::test_support::{boundary::Point, CommitTestPoint};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let h = Harness::new();
+    let armed = Arc::new(AtomicBool::new(false));
+    let gate = armed.clone();
+    gates::observe_io(
+        h.root.clone(),
+        Box::new(move |point, _| {
+            if point == Point::Commit(CommitTestPoint::Rename) && gate.swap(false, Ordering::SeqCst)
+            {
+                return Err(std::io::Error::other("controlled rolled-back save"));
+            }
+            Ok(())
+        }),
+    );
+    let p = h.open();
+    let (t, _) = h.template(&p);
+    let id = create(&h, &p, &t, "before failed save");
+    let original = fs::read(h.root.join(format!("documents/{id}.json"))).unwrap();
+    let e = edit_begin(&h, &p, &id);
+    let mut body = e["body"].clone();
+    body["name"] = json!({"intent":"set","value":"first failed raw"});
+    armed.store(true, Ordering::SeqCst);
+    let failed = edit_save(&h, &p, &e, "2", body.clone());
+    assert_ne!(failed["outcome"]["disk"], "committed", "{failed}");
+    assert_eq!(
+        fs::read(h.root.join(format!("documents/{id}.json"))).unwrap(),
+        original
+    );
+    body["name"] = json!({"intent":"set","value":"newer raw after failure"});
+    let checkpoint = request(
+        &h,
+        &p,
+        json!({"action":"edit_draft","owner":e["owner"],"generation":"3","body":body,"save":false}),
+    )["value"]
+        .clone();
+    assert_eq!(checkpoint["body"], body, "{checkpoint}");
+    let deposited = request(
+        &h,
+        &p,
+        json!({"action":"edit_deposit","owner":e["owner"],"generation":"3","body":body}),
+    )["value"]
+        .clone();
+    assert_eq!(deposited["deposited"], true, "{deposited}");
+    edit_release(&h, &p, &deposited);
+    let records = fs::read_dir(
+        h.root
+            .join(format!(".worldbuild/latest-drafts/document-{id}")),
+    )
+    .unwrap()
+    .filter_map(Result::ok)
+    .filter(|entry| entry.file_name().to_string_lossy().starts_with('d'))
+    .collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    let record: Value = serde_json::from_slice(&fs::read(records[0].path()).unwrap()).unwrap();
+    assert_eq!(
+        record["envelope"]["draft"]["name"]["value"],
+        "newer raw after failure"
+    );
+    assert_eq!(
+        fs::read(h.root.join(format!("documents/{id}.json"))).unwrap(),
+        original
+    );
+    h.close_clean();
+}
+
+#[test]
+fn target_input_validation_failure_can_retry_same_editor_without_reconnecting_backend() {
+    let h = Harness::new();
+    let p = h.open();
+    let (template, _) = h.template(&p);
+    let id = create(&h, &p, &template, "before temporary storage problem");
+    let editing = edit_begin(&h, &p, &id);
+    let path = h.root.join(format!("documents/{id}.json"));
+    let before = fs::read(&path).unwrap();
+    let canary = block_latest_target(&h, "document", &id);
+    let mut body = editing["body"].clone();
+    body["name"] = json!({"intent":"set","value":"saved after repairing owned fixture"});
+    let rejected = request(
+        &h,
+        &p,
+        json!({"action":"edit_draft","owner":editing["owner"],
+        "generation":"2","body":body,"save":true}),
+    );
+    assert!(!rejected["error"].is_null(), "{rejected}");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    unblock_latest_target(&canary);
+    let saved = edit_save(&h, &p, &editing, "2", body);
+    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+    assert_eq!(saved["owner"], editing["owner"]);
+    let kept = request(
+        &h,
+        &p,
+        json!({"action":"edit_deposit","owner":saved["owner"],
+        "generation":saved["generation"],"body":saved["body"]}),
+    )["value"]
+        .clone();
+    assert_eq!(kept["deposited"], true, "{kept}");
+    assert_eq!(
+        latest_target_deposit(&h, "document", &id).key().generation,
+        2
+    );
+    edit_release(&h, &p, &kept);
     h.close_clean();
 }

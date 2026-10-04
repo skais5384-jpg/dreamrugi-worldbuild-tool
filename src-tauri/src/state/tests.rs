@@ -14,6 +14,86 @@ use tauri::{
     webview::InvokeRequest,
 };
 
+// Operation-specific lossless tests start after policy admission. Historical
+// admission is tested separately against its original bytes and whole backup.
+fn current_policy_fixture(bytes: &[u8], path: &str) -> Vec<u8> {
+    artifact::transition_format(
+        bytes,
+        &crate::data::project_relative_path::ProjectRelativePath::parse(path).unwrap(),
+    )
+    .unwrap()
+}
+
+// These cases exercise legacy archive IPC compatibility. Explicitly
+// stage the exact synthetic latest checkpoint; normal latest-resume cases below
+// never use this adapter or fabricate a new original from current canonical bytes.
+fn stage_latest_as_legacy_archive(h: &Harness, owner: &Value) {
+    use crate::data::edit_recovery::model::{Deposit, Envelope};
+    let base = h.root.join(".worldbuild/latest-drafts");
+    let mut matches = Vec::new();
+    for directory in fs::read_dir(&base).unwrap() {
+        let directory = directory.unwrap().path();
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            let envelope: Envelope = serde_json::from_value(raw["envelope"].clone()).unwrap();
+            let deposit = Deposit::freeze(envelope).unwrap();
+            if json!(deposit.key().draft_id) == *owner {
+                assert_eq!(raw["payloadDigest"], json!(deposit.payload_digest()));
+                matches.push(deposit);
+            }
+        }
+    }
+    assert_eq!(matches.len(), 1, "exact target latest checkpoint required");
+    h.state
+        .recovery
+        .connect()
+        .unwrap()
+        .lock()
+        .unwrap()
+        .accept(&matches[0])
+        .unwrap();
+}
+fn latest_target_deposit(
+    h: &Harness,
+    kind: &str,
+    id: &str,
+) -> crate::data::edit_recovery::model::Deposit {
+    let dir = h
+        .root
+        .join(".worldbuild/latest-drafts")
+        .join(format!("{kind}-{id}"));
+    let files = fs::read_dir(dir)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(files.len(), 1, "exactly one target input survives");
+    let record: Value = serde_json::from_slice(&fs::read(files[0].path()).unwrap()).unwrap();
+    let envelope = serde_json::from_value(record["envelope"].clone()).unwrap();
+    let deposit = crate::data::edit_recovery::model::Deposit::freeze(envelope).unwrap();
+    assert_eq!(record["payloadDigest"], deposit.payload_digest());
+    deposit
+}
+// Real target-store admission failure: an unknown file must be preserved and
+// must prevent publication of a receipt. This never alters the global store.
+fn block_latest_target(h: &Harness, kind: &str, id: &str) -> PathBuf {
+    let dir = h
+        .root
+        .join(".worldbuild/latest-drafts")
+        .join(format!("{kind}-{id}"));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("foreign-canary.json");
+    assert!(!path.exists());
+    fs::write(&path, b"preserve this unknown target input").unwrap();
+    path
+}
+fn unblock_latest_target(path: &Path) {
+    assert_eq!(
+        fs::read(path).unwrap(),
+        b"preserve this unknown target input"
+    );
+    fs::remove_file(path).unwrap();
+}
 const LIMIT: Duration = Duration::from_secs(20);
 fn operation_limit() -> Duration {
     // 일반 회귀의 빠른 hang 검출은 유지하고, 명시적 규모 측정만 사전 선언한
@@ -905,7 +985,6 @@ fn g13_i3_g6_create_update_duplicate_tombstone_and_reference_block() {
 #[test]
 fn g13_i3_document_materialize_and_dirty_capability_retain_input() {
     let h = Harness::new();
-    recovery::unavailable(&h);
     let p = h.open();
     let (template, _) = h.template(&p);
     let t = h.read_template(&p, &template);
@@ -913,6 +992,7 @@ fn g13_i3_document_materialize_and_dirty_capability_retain_input() {
         h.work(json!({"kind":"create_document","project":p,"view":t["view"],"name":"document"}));
     let document = created["artifact"].as_str().unwrap();
     let d = h.work(json!({"kind":"read_document","project":p,"document":document}));
+    let _canary = block_latest_target(&h, "document", &document);
     let s = h.session(&p, vec![d["view"].clone(), t["view"].clone()], "document");
     let before = fs::read(h.root.join(format!("documents/{document}.json"))).unwrap();
     let materialized=h.work(json!({"kind":"materialize_document","project":p,"session":s,"document":d["view"],"template":t["view"],"revision":"1"}));
@@ -1402,11 +1482,11 @@ impl crate::data::edit_session::DurableRecoverySink<PendingEdit> for LimitedSink
 }
 fn r1_handoff(preserve_first: bool) {
     let h = Harness::new();
-    recovery::unavailable(&h);
     let (template, document) = seeded(&h);
     let p = h.open();
     let t = h.read_template(&p, &template);
     let d = h.work(json!({"kind":"read_document","project":p,"document":document}));
+    let _canary = block_latest_target(&h, "document", &document);
     let s = h.session(&p, vec![d["view"].clone(), t["view"].clone()], "document");
     let rejected=h.work(json!({"kind":"save_document","project":p,"session":s,"document":d["view"],"template":t["view"],"revision":"3","edits":[{"kind":"rename","name":"G13_R1_ORIGINAL"}]}));
     assert_eq!(rejected["error"]["code"], "sink_unavailable");
@@ -1445,7 +1525,9 @@ fn r1_handoff(preserve_first: bool) {
         thread::yield_now();
     }
     let obstacle = h.root.join(".worldbuild");
-    assert!(!obstacle.exists());
+    let preserved_local = h.root.join("owned-latest-input-during-runtime-obstacle");
+    assert!(!preserved_local.exists());
+    fs::rename(&obstacle, &preserved_local).unwrap();
     fs::write(&obstacle, b"test recovery obstacle").unwrap();
     let recovery = h.control(json!({"kind":"recover","project":p}));
     assert_eq!(recovery["error"]["code"], "recovery_rejected");
@@ -1503,6 +1585,7 @@ fn r1_handoff(preserve_first: bool) {
     assert!(!h.state.poll());
     h.ack(&ack);
     fs::remove_file(&obstacle).unwrap();
+    fs::rename(&preserved_local, &obstacle).unwrap();
     assert!(h.control(json!({"kind":"recover","project":p}))["error"].is_null());
     h.close_clean();
 }
@@ -1603,11 +1686,11 @@ fn g13_i7_native_resume_lock_loss_keeps_original_and_never_restores_editing() {
 #[test]
 fn g13_i3_composite_capability_rejection_owns_input_and_both_sources() {
     let h = Harness::new();
-    recovery::unavailable(&h);
     let (template, document) = seeded(&h);
     let p = h.open();
     let t = h.read_template(&p, &template);
     let d = h.work(json!({"kind":"read_document","project":p,"document":document}));
+    let _canary = block_latest_target(&h, "document", &document);
     let session = h.session(&p, vec![d["view"].clone(), t["view"].clone()], "composite");
     let paths = [
         h.root.join(format!("templates/{template}.json")),
@@ -1918,18 +2001,7 @@ fn m8_policy_rise_legacy_document_receipt_acknowledges_exact_input() {
         fs::read(h.root.join(format!("documents/{document}.json"))).unwrap()
     );
     assert_eq!(h.state.lock().retained.len(), 0);
-    let store = h.state.recovery.connect().unwrap();
-    let entries = store.lock().unwrap().list().unwrap();
-    assert_eq!(entries.entries.len(), 1);
-    let entry = &entries.entries[0];
-    let frozen = store
-        .lock()
-        .unwrap()
-        .read(
-            entry.key.as_ref().unwrap(),
-            entry.deposit_id.as_ref().unwrap(),
-        )
-        .unwrap();
+    let frozen = latest_target_deposit(&h, "document", &document);
     assert!(serde_json::to_string(frozen.envelope())
         .unwrap()
         .contains("정책 상승 전 실제 입력"));

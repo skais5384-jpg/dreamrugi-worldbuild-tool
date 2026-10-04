@@ -280,7 +280,7 @@ fn g8_domain_failures_retain_original_typed_error_without_partial_candidate() {
         ("duplicate-field", C::DuplicateFieldEdit, S::Preconditions),
         ("duplicate-name", C::DuplicateNameEdit, S::Preconditions),
         ("wrong-kind", C::InvalidEditValue, S::Edits),
-        ("required-unset", C::InvalidEditValue, S::Edits),
+        ("required-invalid-kind", C::InvalidEditValue, S::Edits),
         ("timestamp", C::InvalidTimestamp, S::Preconditions),
         ("regression", C::TimestampRegression, S::Preconditions),
         ("unknown-field", C::UnknownField, S::Preconditions),
@@ -315,9 +315,12 @@ fn g8_domain_failures_retain_original_typed_error_without_partial_candidate() {
                 field(1),
                 DocumentValueEdit::number("3".into()),
             )),
-            "required-unset" => {
+            "required-invalid-kind" => {
                 t["fields"][key(1)]["required"] = true.into();
-                edits.push(DocumentEdit::Unset(field(1)));
+                edits.push(DocumentEdit::SetValue(
+                    field(1),
+                    DocumentValueEdit::number("-".into()),
+                ));
             }
             "unknown-field" => edits.push(DocumentEdit::Unset(field(900))),
             "archived-field" => {

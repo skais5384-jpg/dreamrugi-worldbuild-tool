@@ -2,7 +2,10 @@
 mod assets;
 pub(crate) mod center;
 pub(crate) mod error;
+pub(crate) mod format_transition;
 mod legacy;
+pub(crate) mod policy_transition;
+pub(crate) mod transition;
 pub(crate) use legacy::HandoffStatus;
 pub(crate) mod model;
 pub(crate) mod native;
@@ -27,6 +30,24 @@ pub(crate) struct Proof {
     digest: String,
 }
 impl Proof {
+    /// Only a verified target-local checkpoint may issue this exact-payload receipt.
+    pub(crate) fn from_latest(
+        checkpoint: crate::data::repository::drafts::Checkpoint,
+        deposit: &Deposit,
+    ) -> Result<Self, RecoveryError> {
+        if !checkpoint.matches_deposit(deposit) {
+            return Err(RecoveryError::new(
+                Category::DigestMismatch,
+                Stage::Revalidate,
+            ));
+        }
+        Ok(Self {
+            key: deposit.key().clone(),
+            deposit_id: deposit.envelope().deposit_id.clone(),
+            digest: deposit.payload_digest().into(),
+        })
+    }
+
     #[allow(dead_code, reason = "2B 명시적 owner/generation 대조 API")]
     pub(crate) fn matches(&self, key: &Key, deposit_id: &str, digest: &str) -> bool {
         self.key == *key && self.deposit_id == deposit_id && self.digest == digest
@@ -597,6 +618,33 @@ impl Owner {
         // fixture 정리 전에 app owner만 해제한다. worker가 가진 owner는 해제하지 않는다.
         self.state.lock().unwrap().store = None;
     }
+    /// A missing unrelated global namespace must not block a fresh project's
+    /// target-local editor. Every probe is bounded, guarded, read-only and repeated
+    /// under the caller's actual project access; errors never mean absence.
+    pub(crate) fn transition_required(
+        &self,
+        repository: &crate::data::repository::ArtifactRepository<'_, '_>,
+    ) -> std::io::Result<bool> {
+        let project = repository.write_project();
+        let root = ProjectDirectory::open_root(project.canonical_root())?;
+        let mut required =
+            guarded_namespace_presence(&self.root.join(project.fingerprint()), || {})?;
+        if let Some(legacy) = &self.legacy_root {
+            required |= guarded_namespace_presence(&legacy.join(project.fingerprint()), || {})?;
+        }
+        for name in [
+            transition::DIRECTORY,
+            format_transition::DIRECTORY,
+            "format-history",
+        ] {
+            required |= guarded_namespace_presence(
+                &project.canonical_root().join(".worldbuild").join(name),
+                || {},
+            )?;
+        }
+        root.validate()?;
+        Ok(required)
+    }
     pub(crate) fn connect(&self) -> Result<Arc<Mutex<Store>>, Arc<RecoveryError>> {
         let mut state = self
             .state
@@ -618,5 +666,84 @@ impl Owner {
                 Err(e)
             }
         }
+    }
+}
+
+fn guarded_namespace_presence(
+    path: &Path,
+    after_first_absence: impl FnOnce(),
+) -> std::io::Result<bool> {
+    let mut anchor = path.to_path_buf();
+    let mut missing = false;
+    let mut observer = Some(after_first_absence);
+    loop {
+        match fs::symlink_metadata(&anchor) {
+            Ok(_) => {
+                let guard = ProjectDirectory::open_root(&anchor)?;
+                guard.validate()?;
+                if !missing {
+                    return Ok(true);
+                }
+                // The namespace may have appeared while its parent guard
+                // was being acquired. Absence must be checked again.
+                return match fs::symlink_metadata(path) {
+                    Ok(_) => {
+                        let target = ProjectDirectory::open_root(path)?;
+                        target.validate()?;
+                        guard.validate()?;
+                        Ok(true)
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        guard.validate()?;
+                        Ok(false)
+                    }
+                    Err(error) => Err(error),
+                };
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing = true;
+                if let Some(observer) = observer.take() {
+                    observer();
+                }
+                if !anchor.pop() {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod namespace_presence_tests {
+    use super::*;
+    #[test]
+    fn matching_namespace_published_during_absence_probe_is_not_skipped() {
+        let root = std::env::temp_dir().join(format!("wb-owned-presence-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        let target = root.join("matching-physical-project");
+        assert!(!guarded_namespace_presence(&target, || {}).unwrap());
+        let (go, ready) = std::sync::mpsc::channel();
+        let (published, seen) = std::sync::mpsc::channel();
+        let other = target.clone();
+        let publisher = std::thread::spawn(move || {
+            ready
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            fs::create_dir(&other).unwrap();
+            published.send(()).unwrap();
+        });
+        assert!(guarded_namespace_presence(&target, || {
+            go.send(()).unwrap();
+            seen.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+        })
+        .unwrap());
+        publisher.join().unwrap();
+        fs::remove_dir(&target).unwrap();
+        fs::write(&target, b"wrong namespace kind must never mean absent").unwrap();
+        assert!(guarded_namespace_presence(&target, || {}).is_err());
+        fs::remove_file(&target).unwrap();
+        fs::remove_dir(&root).unwrap();
     }
 }

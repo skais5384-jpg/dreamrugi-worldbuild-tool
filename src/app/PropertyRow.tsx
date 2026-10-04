@@ -13,8 +13,10 @@ export function PropertyRow({
   block = false,
   before,
   presentation = "",
+  requiredAnchor,
 }: {
   label: ReactNode;
+  requiredAnchor?: string;
   htmlFor?: string;
   children: ReactNode;
   /** 여러 입력과 동작이 함께 있는 내용은 아주 좁을 때만 위쪽 라벨로 전환한다. */
@@ -28,6 +30,7 @@ export function PropertyRow({
     <>
       {before}
       <div
+        data-required-field={requiredAnchor}
         className={
           "property-row " +
           presentation +

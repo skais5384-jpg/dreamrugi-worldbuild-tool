@@ -478,6 +478,19 @@ fn g7_source_target_and_context_rejections_preserve_owners() {
         let payload = CallerPayload::new(74);
         let payload_ptr = &*payload.0 as *const _;
         let drops = Arc::clone(&payload.1);
+        if case == "required-unset" {
+            let prepared = prepare_create_document(&mut rt, &input)
+                .expect("required unset prepares an actual document");
+            drop(prepared);
+            assert_eq!(fs::read(template_path(&f, tid)).unwrap(), original);
+            assert!(!f.root.join("documents").exists());
+            assert_eq!(drops.load(Ordering::SeqCst), 0);
+            drop(payload);
+            assert_eq!(drops.load(Ordering::SeqCst), 1);
+            foreign_rt.close().unwrap();
+            rt.close().unwrap();
+            continue;
+        }
         let ((error, counts, commits), hooks) = repo_hooks::scoped(
             Some((
                 RepositoryStage::Namespace,

@@ -20,6 +20,9 @@ fn recovery_real_adapter_keeps_exact_p_and_lossless_sources() {
     fs::write(root.join(format!("documents/{did}.json")), &db).unwrap();
     let mut runtime = ProjectRuntime::acquire(&root, &base.join("locks")).unwrap();
     runtime.recover().unwrap();
+    let local = runtime
+        .latest_input_sink(Arc::new(std::sync::atomic::AtomicU64::new(1)))
+        .unwrap();
     let ready = runtime.ready().unwrap();
     let repo = ArtifactRepository::new(&ready).unwrap();
     let views = vec![
@@ -92,7 +95,8 @@ fn recovery_real_adapter_keeps_exact_p_and_lossless_sources() {
     service.begin_edit(&"a".repeat(64), targets).unwrap();
     let snapshot = service.snapshot();
     let sink = Sink {
-        store: store.clone(),
+        local,
+        owner: job.recovery.clone(),
         project: "a".repeat(64),
         session: snapshot.session_id().unwrap().clone(),
         targets: snapshot.targets().to_vec(),

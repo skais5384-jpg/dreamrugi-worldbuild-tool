@@ -224,7 +224,7 @@ fn m42_fix002_editing_an_unnamed_v5_relation_upgrades_the_saved_document() {
     .expect("named relation edit should upgrade and save");
     let round: Value =
         serde_json::from_slice(&encode_document(outcome.document()).unwrap()).unwrap();
-    assert_eq!(round["schemaVersion"], 6);
+    assert_eq!(round["schemaVersion"], DOCUMENT_SCHEMA_VERSION.get());
     assert_eq!(round["fieldValues"][FIELD_TEXT]["links"][0]["name"], "친구");
 }
 
@@ -888,18 +888,18 @@ fn template_revision_is_positive_numeric_and_checked() -> Result<(), Box<dyn Err
 }
 
 #[test]
-fn artifact_schema_registries_admit_template_v7_and_document_v6() -> Result<(), Box<dyn Error>> {
+fn artifact_schema_registries_admit_template_v8_and_document_v7() -> Result<(), Box<dyn Error>> {
     let template = template_migration_registry()?;
     let document = document_migration_registry()?;
 
-    assert_eq!(TEMPLATE_SCHEMA_VERSION.get(), 7);
-    assert_eq!(DOCUMENT_SCHEMA_VERSION.get(), 6);
+    assert_eq!(TEMPLATE_SCHEMA_VERSION.get(), 8);
+    assert_eq!(DOCUMENT_SCHEMA_VERSION.get(), 7);
     assert_eq!(template.current(), TEMPLATE_SCHEMA_VERSION);
     assert_eq!(template.minimum_migratable().get(), 1);
     assert_eq!(document.current(), DOCUMENT_SCHEMA_VERSION);
     assert_eq!(document.minimum_migratable().get(), 1);
-    assert_eq!(template_migration_step_count(), 6);
-    assert_eq!(document_migration_step_count(), 5);
+    assert_eq!(template_migration_step_count(), 7);
+    assert_eq!(document_migration_step_count(), 6);
 
     assert_eq!(CURRENT_SCHEMA_VERSION.get(), 1);
     assert_eq!(TRANSACTION_SCHEMA_VERSION.get(), 1);
@@ -950,7 +950,7 @@ fn headers_reject_missing_duplicate_wrong_and_future_values() {
         ArtifactCodecErrorCategory::DuplicateJsonKey,
     );
     assert_codec_category(
-        decode_template(br#"{"artifactType":"template","schemaVersion":8}"#),
+        decode_template(br#"{"artifactType":"template","schemaVersion":9}"#),
         ArtifactCodecErrorCategory::UnsupportedFuture,
     );
     assert_codec_category(
@@ -959,7 +959,7 @@ fn headers_reject_missing_duplicate_wrong_and_future_values() {
     );
 
     let mut future_with_unknown = template_value();
-    future_with_unknown["schemaVersion"] = json!(8);
+    future_with_unknown["schemaVersion"] = json!(9);
     future_with_unknown["futureTop"] = json!({"mustNotOpenV2": true});
     assert_codec_category(
         decode_template(&deterministic(&future_with_unknown)),
@@ -967,7 +967,7 @@ fn headers_reject_missing_duplicate_wrong_and_future_values() {
     );
 
     let mut future_document = document_value();
-    future_document["schemaVersion"] = json!(7);
+    future_document["schemaVersion"] = json!(8);
     future_document["futureTop"] = json!({"mustNotOpenV2": true});
     assert_codec_category(
         decode_document(&deterministic(&future_document)),
@@ -2354,15 +2354,10 @@ fn bound_document_required_policy_is_separate_from_template_defaults_and_standal
         BoundDocumentValueContext::ExistingDocumentValue,
         BoundDocumentValueContext::MaterializedHistorical,
     ] {
-        let error = field
-            .validate_document_value(value, context)
-            .expect_err("active required explicit unset must fail bound validation");
         assert_eq!(
-            error.category(),
-            FieldValidationErrorCategory::RequiredValueUnset
+            field.validate_document_value(value, context)?,
+            FieldValidationOutcome::Valid
         );
-        assert!(error.option_id().is_none());
-        assert!(error.source().is_none());
     }
 
     let mut optional_template = minimal_template_value();

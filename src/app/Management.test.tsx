@@ -233,7 +233,7 @@ describe("Option·보관·순서 UI 연결", () => {
     expect(draft(c, "options_order").committed).toBe(false);
     expect(draft(c, other)).toBe(originalOther);
     fireEvent.click(
-      screen.getByRole("button", { name: "같은 ID로 제출 재시도" }),
+      screen.getByRole("button", { name: text("followUp.message07") }),
     );
     await idle(c);
     expect(draft(c, "options_order").committed).toBe(true);
@@ -368,7 +368,7 @@ describe("Option·보관·순서 UI 연결", () => {
       screen.getByRole("button", { name: text("followUp.openActions") }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "같은 ID로 제출 재시도" }),
+      screen.getByRole("button", { name: text("followUp.message07") }),
     );
     await idle(c);
     expect(t.writes).toHaveLength(1);

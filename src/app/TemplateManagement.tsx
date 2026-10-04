@@ -87,10 +87,8 @@ export function TemplateManagement({
       <p className="literal">
         {text("template.target", {
           name: action.source.content.name || text("field.emptyLabel"),
-          revision: action.source.content.revision,
         })}
       </p>
-      <p className="identifier">{action.source.content.id}</p>
       <p>
         {text(
           action.kind === "duplicate"
@@ -100,11 +98,6 @@ export function TemplateManagement({
       </p>
       <p role="status">{action.message}</p>
       {refusal && <InlineNotice kind="error">{refusal}</InlineNotice>}
-      {action.artifact && (
-        <p className="identifier">
-          {text("template.resultId", { id: action.artifact })}
-        </p>
-      )}
       {action.result?.kind === "write" &&
         (action.result.cleanup_failed ||
           action.result.recovery_required ||

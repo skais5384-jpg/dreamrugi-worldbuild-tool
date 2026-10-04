@@ -1,7 +1,6 @@
 import type { Field, Value } from "../bridge/types";
 import type { Intent } from "../bridge/workspace";
 import { numberInBounds } from "./numberBounds";
-import { richHasText } from "./rich/adapter";
 import type { ReferenceContext } from "./DocumentReferenceValue";
 
 export type { CellAddress, GroupInstance, GroupValue } from "../bridge/types";
@@ -140,27 +139,22 @@ export function cellInvalid(field: Field, intent: Intent<Value>): boolean {
     intent.intent === "unset" ||
     (intent.intent === "set" && intent.value.kind === "unset")
   )
-    return field.required;
+    return false;
   const v = intent.value;
   if (v.kind === "number_unknown") return false;
   if (v.kind === "number")
     return v.value === ""
-      ? field.required
+      ? false
       : !numberInBounds(v.value, field.minimum, field.maximum);
-  if (v.kind === "rich_text") return field.required && !richHasText(v.content);
-  if (v.kind === "image" || v.kind === "file")
-    return v.value.length > 32 || (field.required && !v.value.length);
+  if (v.kind === "rich_text") return false;
+  if (v.kind === "image" || v.kind === "file") return v.value.length > 32;
   if (v.kind === "relation")
     return (
-      (field.required && !v.links.length) ||
       (field.multiple === false && v.links.length > 1) ||
       new Set(v.links.map((link) => link.document)).size !== v.links.length
     );
   if (v.kind === "document_link")
-    return (
-      (field.required && !v.documents.length) ||
-      new Set(v.documents).size !== v.documents.length
-    );
+    return new Set(v.documents).size !== v.documents.length;
   return false;
 }
 export function groupProblem(

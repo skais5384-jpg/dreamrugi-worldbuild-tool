@@ -891,7 +891,7 @@ export function ProjectFiles({
               <DialogActions>
                 <Button
                   type="button"
-                  appearance="primary"
+                  danger
                   onClick={() => {
                     const targets = purgeConfirm;
                     setPurgeConfirm(null);

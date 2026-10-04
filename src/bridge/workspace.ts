@@ -94,6 +94,8 @@ export interface DraftStatus {
   problems: DraftProblem[];
   identities: Record<string, string>;
   outcome: ResultDto | null;
+  comparison?: RecoveryChange[];
+  remainingInput?: boolean;
 }
 export interface DraftContent {
   base: Template;
@@ -225,7 +227,7 @@ export type WorkspaceWork =
       session: Id;
       generation: string;
       body: TemplateBody;
-      action: "save" | "deposit";
+      action: "save" | "deposit" | "checkpoint";
     }
   | {
       kind: "template_draft_content";
@@ -233,6 +235,12 @@ export type WorkspaceWork =
       session: Id;
       snapshot: Id;
       offset: string;
+    }
+  | {
+      kind: "resume_template_draft";
+      project: Id;
+      session: Id;
+      selected: string[];
     }
   | { kind: "refresh_template_draft"; project: Id; session: Id }
   | {

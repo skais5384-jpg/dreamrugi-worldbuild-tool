@@ -131,7 +131,7 @@ fn layout_required_unset_accepts_typed_initial_values_without_invalid_intermedia
         "required".into(),
         LATER.into()
     )
-    .is_err());
+    .is_ok());
     for raw in ["-", "."] {
         let values = BTreeMap::from([(
             field(1),

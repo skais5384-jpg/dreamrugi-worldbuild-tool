@@ -282,3 +282,48 @@ fn jpeg_bmp_headers_enforce_pixels_before_corrupt_body_decode() {
         assert_eq!(error.stage, Stage::Validate);
     }
 }
+
+#[test]
+fn missing_attachment_permission_preserves_kind_and_requires_new_attachment_bytes() {
+    let fixture = Fixture::new();
+    let root = fixture.0.join("project");
+    let asset = id();
+    let original = serde_json::json!({"fields":{"old":{"kind":"file","value":[asset]}}});
+    let allowed = reference_kinds(&original).unwrap();
+    assert!(validate_document_with_missing(
+        &root,
+        &serde_json::to_vec(&original).unwrap(),
+        &allowed
+    )
+    .is_ok());
+    let image = serde_json::json!({"fields":{"new":{"kind":"image","value":[asset]}}});
+    assert!(
+        validate_document_with_missing(&root, &serde_json::to_vec(&image).unwrap(), &allowed)
+            .is_err()
+    );
+    let added = serde_json::json!({"fields":{"new":{"kind":"file","value":[id()]}}});
+    assert!(
+        validate_document_with_missing(&root, &serde_json::to_vec(&added).unwrap(), &allowed)
+            .is_err()
+    );
+    let unsafe_path = serde_json::json!({"kind":"file","value":["../outside"]});
+    assert!(validate_document_with_missing(
+        &root,
+        &serde_json::to_vec(&unsafe_path).unwrap(),
+        &allowed
+    )
+    .is_err());
+    let image_allowed = reference_kinds(&image).unwrap();
+    assert!(validate_document_with_missing(
+        &root,
+        &serde_json::to_vec(&image).unwrap(),
+        &image_allowed
+    )
+    .is_ok());
+    assert!(validate_document_with_missing(
+        &root,
+        &serde_json::to_vec(&original).unwrap(),
+        &image_allowed
+    )
+    .is_err());
+}

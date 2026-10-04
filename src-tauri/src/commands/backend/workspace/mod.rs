@@ -47,6 +47,11 @@ impl Registry {
 }
 
 struct Entry {
+    resume: Option<(Envelope, super::recovery_merge::Plan)>,
+    comparison_checkpoint: Option<crate::data::repository::drafts::Checkpoint>,
+    residual: Option<crate::data::edit_recovery::model::Residual>,
+    residual_ack: Option<String>,
+    resumed_attempt: Option<crate::data::edit_recovery::model::Attempt>,
     owner: Id,
     project: Id,
     fingerprint: String,
@@ -157,6 +162,8 @@ impl Entry {
             problems: self.problems.clone(),
             identities,
             outcome: self.outcome.clone(),
+            remaining_input: self.residual.is_some(),
+            comparison: self.resume.as_ref().map(|(_, plan)| plan.changes.clone()),
         })
     }
     fn rebuild_content(&mut self) -> Reply<()> {
@@ -194,6 +201,8 @@ impl Entry {
         Ok(Record {
             attempt: Arc::new(std::sync::OnceLock::new()),
             envelope: Envelope {
+                residual: self.residual.clone(),
+                residual_ack: self.residual_ack.clone(),
                 key: Key {
                     project_fingerprint: self.fingerprint.clone(),
                     draft_id: self.draft_id.clone(),
@@ -209,13 +218,25 @@ impl Entry {
                         .map(|_| self.artifact().map(|a| a.template_id().to_string()))
                         .transpose()?,
                 ),
-                attempt: submitted.then(|| crate::data::edit_recovery::model::Attempt {
-                    submitted_generation: self.generation,
-                    operation_id: job.operation.into(),
-                    result: crate::data::edit_recovery::model::SaveState::Unknown,
-                    candidate_digest: None,
-                    transaction_id: None,
-                }),
+                attempt: submitted
+                    .then(|| crate::data::edit_recovery::model::Attempt {
+                        submitted_generation: self.generation,
+                        recovery_checked: false,
+                        operation_id: job.operation.into(),
+                        result: crate::data::edit_recovery::model::SaveState::Unknown,
+                        candidate_digest: None,
+                        transaction_id: None,
+                    })
+                    .or_else(|| {
+                        self.submitted.as_ref().and_then(|record| {
+                            record
+                                .attempt
+                                .get()
+                                .cloned()
+                                .or_else(|| record.envelope.attempt.clone())
+                        })
+                    })
+                    .or_else(|| self.resumed_attempt.clone()),
             },
         })
     }

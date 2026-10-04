@@ -117,7 +117,7 @@ it("rich DOM and unknown toggle flow through controller and GuardedClient with c
     if (q.action === "edit_begin")
       return { kind: "document_workspace", value: structuredClone(d) };
     if (q.action === "edit_draft") {
-      submitted.push(structuredClone(q));
+      if (q.save) submitted.push(structuredClone(q));
       return {
         kind: "document_workspace",
         value: {

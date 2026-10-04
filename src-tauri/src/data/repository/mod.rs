@@ -1,5 +1,6 @@
 //! 복구 완료 접근권 안에서만 실제 artifact를 읽는 동기식 repository.
 mod diagnostics;
+pub(crate) mod drafts;
 pub(crate) mod format;
 pub(crate) mod progress;
 mod scan;
@@ -7,6 +8,7 @@ mod scan;
 pub(crate) mod test_support;
 #[cfg(all(test, windows))]
 mod tests;
+pub(crate) mod versions;
 mod write;
 mod write_diagnostics;
 

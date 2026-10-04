@@ -789,15 +789,6 @@ fn classify_known_field<'a>(
         None if document.template_revision() < definition.introduced_revision() => {
             *materialization_required = true;
             let value = definition.initial_default_value();
-            if definition.lifecycle() == FieldLifecycle::Active
-                && definition.required()
-                && value.is_unset()
-            {
-                blocking_issues.push(DocumentReconciliationIssue::plain(
-                    DocumentReconciliationIssueCategory::RequiredValueUnset,
-                    field_id,
-                ));
-            }
             record_historical_archived_options(field_id, definition, value, warnings);
             (Some(value), Some(ValueProvenance::HistoricalInitialDefault))
         }

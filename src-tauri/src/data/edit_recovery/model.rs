@@ -246,12 +246,39 @@ pub(crate) enum SaveState {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Attempt {
+    // This records a fresh current-source check after native recovery. It is
+    // never a claim that the historical save committed or did not apply.
+    #[serde(default, skip_serializing_if = "bool_is_false")]
+    pub(crate) recovery_checked: bool,
     #[serde(with = "decimal_generation")]
     pub(crate) submitted_generation: u64,
     pub(crate) operation_id: String,
     pub(crate) result: SaveState,
     pub(crate) candidate_digest: Option<String>,
     pub(crate) transaction_id: Option<String>,
+}
+impl Attempt {
+    pub(crate) fn unresolved(&self) -> bool {
+        matches!(self.result, SaveState::Unknown | SaveState::Uncertain) && !self.recovery_checked
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Residual {
+    pub(crate) parts: Vec<ResidualPart>,
+}
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ResidualPart {
+    pub(crate) originals: Vec<Original>,
+    pub(crate) draft: Draft,
+    pub(crate) paths: Vec<Vec<String>>,
+}
+impl Residual {
+    pub(crate) fn digest(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_vec(self).map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+    }
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -263,6 +290,10 @@ pub(crate) struct Envelope {
     pub(crate) originals: Vec<Original>,
     pub(crate) draft: Draft,
     pub(crate) attempt: Option<Attempt>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) residual: Option<Residual>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) residual_ack: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -515,6 +546,51 @@ fn validate(e: &Envelope) -> Result<(), RecoveryError> {
     };
     if !valid {
         return Err(reject(Category::InvalidEnvelope));
+    }
+    if e.residual_ack
+        .as_ref()
+        .is_some_and(|value| !valid_digest(value))
+    {
+        return Err(reject(Category::InvalidEnvelope));
+    }
+    if let Some(residual) = &e.residual {
+        fn target(draft: &Draft) -> Option<(OriginalKind, &str)> {
+            match draft {
+                Draft::Template {
+                    template: Some(id), ..
+                } => Some((OriginalKind::Template, id)),
+                Draft::Document {
+                    document: Some(id), ..
+                }
+                | Draft::AdmittedDocument { document: id, .. } => {
+                    Some((OriginalKind::Document, id))
+                }
+                _ => None,
+            }
+        }
+        if residual.parts.is_empty() || residual.parts.len() > 2048 {
+            return Err(reject(Category::InvalidEnvelope));
+        }
+        for part in &residual.parts {
+            if part.paths.is_empty()
+                || part.paths.len() > 100_000
+                || part
+                    .paths
+                    .iter()
+                    .any(|path| path.len() > 64 || path.iter().any(|key| key.len() > 4096))
+                || target(&part.draft).is_none()
+                || target(&part.draft) != target(&e.draft)
+            {
+                return Err(reject(Category::InvalidEnvelope));
+            }
+            let mut inner = e.clone();
+            inner.originals = part.originals.clone();
+            inner.draft = part.draft.clone();
+            inner.residual = None;
+            inner.residual_ack = None;
+            inner.attempt = None;
+            validate(&inner)?;
+        }
     }
     Ok(())
 }

@@ -166,7 +166,7 @@ pub(super) fn plan(
     Ok(plan)
 }
 
-pub(super) fn composite_preview(envelope: &Envelope) -> Reply<TemplateBody> {
+pub(in crate::commands::backend) fn composite_preview(envelope: &Envelope) -> Reply<TemplateBody> {
     let crate::data::edit_recovery::model::Draft::AdmittedComposite { edit, .. } = &envelope.draft
     else {
         return Err(Code::WrongBinding.into());

@@ -17,6 +17,7 @@ export interface ReferenceContext {
   templates: TemplateSummary[];
   index?: ReadonlyMap<string, ReferenceDisplay>;
   currentDocument?: string;
+  preview?: boolean;
   open: (document: string) => void;
 }
 
@@ -48,7 +49,8 @@ export function buildReferenceIndex(
     result.set(summary.id, {
       name: summary.name,
       detail: [
-        templateNames.get(summary.template) ?? summary.template,
+        templateNames.get(summary.template) ??
+          text("reference.missingTemplate"),
         parents.length ? parents.join(" / ") : text("documents.root"),
         node?.state === "trashed" ? text("reference.trashed") : "",
       ]
@@ -100,7 +102,7 @@ function ReferenceRows({
                       type="button"
                       appearance="transparent"
                       className="relation-tag-name"
-                      disabled={!shown.active}
+                      disabled={!shown.active || context.preview}
                       onClick={() => context.open(document)}
                     >
                       {shown.name}
@@ -111,7 +113,7 @@ function ReferenceRows({
                       <span aria-hidden="true">–</span> {relation.name}
                     </span>
                   )}
-                  {change && (
+                  {(change || context.preview) && (
                     <span className="relation-tag-direction">
                       {relation.oneWay ? "단방향 →" : "양방향 ↔"}
                     </span>
@@ -202,7 +204,7 @@ function ReferenceRows({
                 as="button"
                 type="button"
                 className="reference-link"
-                disabled={!shown.active}
+                disabled={!shown.active || context.preview}
                 onClick={() => context.open(document)}
               >
                 {shown.name}

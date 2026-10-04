@@ -15,6 +15,7 @@ use uuid::Uuid;
 thread_local! {
     static TEST_FAULT: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
     static TEST_DELETE_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static TEST_SAFETY_HOOK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -279,6 +280,40 @@ struct RestoreJournal {
     operation_id: String,
     target_files: Vec<ManifestFile>,
     target_directories: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    safety_completion: Option<RestoreSafety>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RestoreSafety {
+    storage: String,
+    fingerprint: String,
+    root_fingerprint: String,
+    locator: String,
+    id: String,
+    manifest_digest: String,
+}
+fn complete_journal_safety(root: &Path, journal: &RestoreJournal) -> Result<(), BackupError> {
+    let Some(safety) = &journal.safety_completion else {
+        return Ok(());
+    };
+    let canonical = canonical_existing_directory(root)?;
+    if super::project_lock::project_fingerprint(&canonical) != safety.root_fingerprint {
+        return Err(BackupError::new(BackupCategory::SourceChanged));
+    }
+    let locator = canonical_existing_directory(Path::new(&safety.locator))?;
+    let manifest = read_manifest(&locator, Some(&safety.fingerprint))?;
+    if manifest.id != safety.id
+        || manifest.kind != BackupKind::PreRestore
+        || hash_file(&locator.join(MANIFEST_NAME))?.1 != safety.manifest_digest
+    {
+        return Err(BackupError::new(BackupCategory::SourceChanged));
+    }
+    complete_safety_backup(
+        Path::new(&safety.storage),
+        &safety.fingerprint,
+        &row(&locator, &manifest, "verified"),
+    )
 }
 
 fn invalid() -> BackupError {
@@ -401,8 +436,16 @@ fn validate_relative(value: &str) -> Result<PathBuf, BackupError> {
     let managed = parts
         .first()
         .is_some_and(|value| MANAGED_NAMESPACES.contains(value));
-    let history =
-        parts.len() >= 2 && parts[0] == ".worldbuild" && parts[1] == FORMAT_HISTORY_DIRECTORY;
+    let history = parts.len() >= 2
+        && parts[0] == ".worldbuild"
+        && matches!(
+            parts[1],
+            FORMAT_HISTORY_DIRECTORY
+                | super::repository::versions::DIRECTORY
+                | super::repository::drafts::DIRECTORY
+                | super::edit_recovery::transition::DIRECTORY
+                | super::edit_recovery::format_transition::DIRECTORY
+        );
     if !managed && !history && value != crate::svn::policy::FILE {
         return Err(invalid());
     }
@@ -504,16 +547,24 @@ fn collect_with_root_entries(
         Err(error) if error.kind() == io::ErrorKind::NotFound => (),
         Err(error) => return Err(error.into()),
     }
-    let history = root.join(".worldbuild").join(FORMAT_HISTORY_DIRECTORY);
-    match fs::symlink_metadata(&history) {
-        Ok(metadata) => {
-            if !metadata.is_dir() || super::project_file::directory::is_reparse(&metadata) {
-                return Err(BackupError::new(BackupCategory::Corrupt));
+    for directory in [
+        FORMAT_HISTORY_DIRECTORY,
+        super::edit_recovery::transition::DIRECTORY,
+        super::edit_recovery::format_transition::DIRECTORY,
+        super::repository::drafts::DIRECTORY,
+        super::repository::versions::DIRECTORY,
+    ] {
+        let history = root.join(".worldbuild").join(directory);
+        match fs::symlink_metadata(&history) {
+            Ok(metadata) => {
+                if !metadata.is_dir() || super::project_file::directory::is_reparse(&metadata) {
+                    return Err(BackupError::new(BackupCategory::Corrupt));
+                }
+                collect_directory(&root, &history, &mut directories, &mut files, &mut total)?;
             }
-            collect_directory(&root, &history, &mut directories, &mut files, &mut total)?;
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
-        Err(error) => return Err(error.into()),
     }
     directories.sort();
     directories.dedup();
@@ -564,7 +615,14 @@ fn validate_root_entries(root: &Path) -> Result<(), BackupError> {
                     {
                         return Err(BackupError::new(BackupCategory::SourceChanged));
                     }
-                } else if name != FORMAT_HISTORY_DIRECTORY {
+                } else if !matches!(
+                    name,
+                    FORMAT_HISTORY_DIRECTORY
+                        | super::repository::versions::DIRECTORY
+                        | super::repository::drafts::DIRECTORY
+                        | super::edit_recovery::transition::DIRECTORY
+                        | super::edit_recovery::format_transition::DIRECTORY
+                ) {
                     return Err(BackupError::new(BackupCategory::InvalidInput));
                 }
             }
@@ -784,12 +842,21 @@ fn admit_snapshot_storage(
     files: &[ManifestFile],
     owned_apply: bool,
 ) -> Result<(), BackupError> {
-    let sizes = files.iter().map(|file| file.size).collect::<Vec<_>>();
+    let mut sizes = files.iter().map(|file| file.size).collect::<Vec<_>>();
+    if files
+        .iter()
+        .any(|file| file.path.starts_with(".worldbuild/latest-drafts/"))
+    {
+        // Rebinding happens after the full stage exists. One pending input file
+        // is allocated alongside its old copy, up to the enforced read bound.
+        sizes.push(34 * 1024 * 1024);
+    }
     let backups = vec![None; sizes.len()];
-    let names = files
+    let mut names = files
         .iter()
         .map(|file| file.path.len() as u64)
         .collect::<Vec<_>>();
+    names.resize(sizes.len(), 256);
     let input = super::storage_estimate::TransactionStorageInput {
         staged_sizes: &sizes,
         backup_sizes: &backups,
@@ -835,14 +902,23 @@ pub(crate) fn export_project(
     let result = (|| {
         materialize(&source, &stage, &directories, &files)?;
         confirm_unchanged(&source, &directories, &files)?;
+        confirm_unchanged(&stage, &directories, &files)?;
+        let (_, original_fingerprint) = super::project_lock::canonical_project_identity(&source)?;
+        let copied_fingerprint = super::project_lock::project_fingerprint(&destination);
+        super::repository::drafts::rebind_verified_snapshot(
+            &stage,
+            &original_fingerprint,
+            &copied_fingerprint,
+        )?;
+        let (copied_directories, copied_files) = collect(&stage)?;
         preparing()?;
         publish_directory(&stage, &destination)?;
         let verified = if take_test_fault("copy_after_publish") {
             false
         } else {
             collect(&destination)
-                .map(|(copied_directories, copied_files)| {
-                    copied_directories == directories && copied_files == files
+                .map(|(actual_directories, actual_files)| {
+                    actual_directories == copied_directories && actual_files == copied_files
                 })
                 .unwrap_or(false)
         };
@@ -1227,9 +1303,37 @@ pub(crate) fn quarantine_backup(
         return Err(invalid());
     }
     let manifest = read_manifest(&source, Some(fingerprint))?;
-    if manifest.kind == BackupKind::PreRestore {
-        return Err(BackupError::new(BackupCategory::RecoveryRequired));
-    }
+    // The completion receipt lives outside the package. Hold it against
+    // replacement while moving a completed safety copy to deleted backups.
+    let _completion = if manifest.kind == BackupKind::PreRestore {
+        let path = safety_completion_path(&parent.path, &manifest.id);
+        let mut file = super::edit_recovery::native::open(&path, false, false)
+            .map_err(|_| BackupError::new(BackupCategory::RecoveryRequired))?;
+        parent._guards.last().ok_or_else(invalid)?.validate_file(
+            &file,
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?,
+        )?;
+        let mut bytes = Vec::new();
+        Read::by_ref(&mut file).take(8193).read_to_end(&mut bytes)?;
+        let proof: SafetyCompletion = serde_json::from_slice(&bytes)
+            .map_err(|_| BackupError::new(BackupCategory::RecoveryRequired))?;
+        if bytes.len() > 8192
+            || proof
+                != (SafetyCompletion {
+                    schema_version: 1,
+                    id: manifest.id.clone(),
+                    project_fingerprint: fingerprint.into(),
+                    manifest_digest: hash_file(&source.join(MANIFEST_NAME))?.1,
+                })
+        {
+            return Err(BackupError::new(BackupCategory::RecoveryRequired));
+        }
+        Some(file)
+    } else {
+        None
+    };
     verify_payload(&source, &manifest)?;
     let deleted = deleted_parent(&parent, true)?.ok_or_else(invalid)?;
     if cleanup_one_expired_backup(storage, fingerprint)?
@@ -1420,6 +1524,288 @@ pub(crate) fn create_backup(
     label: Option<&str>,
     kind: BackupKind,
 ) -> Result<BackupRow, BackupError> {
+    create_backup_inner(
+        root,
+        fingerprint,
+        storage,
+        label,
+        kind,
+        Uuid::new_v4().to_string(),
+    )
+}
+/// An immutable project transition intent selects this ID before snapshotting.
+/// Retrying it reuses the exact verified package instead of accumulating backups.
+pub(crate) fn create_transition_backup(
+    root: &Path,
+    fingerprint: &str,
+    storage: &Path,
+    label: &str,
+    id: &str,
+) -> Result<BackupRow, BackupError> {
+    if Uuid::parse_str(id)
+        .ok()
+        .map(|value| value.to_string())
+        .as_deref()
+        != Some(id)
+    {
+        return Err(invalid());
+    }
+    create_transition_snapshot(root, fingerprint, storage, label, id)
+}
+
+fn admit_transition_partial(
+    root: &Path,
+    directory: &Path,
+    directories: &[String],
+    files: &[ManifestFile],
+    count: &mut usize,
+) -> Result<(), BackupError> {
+    let guard = super::project_file::directory::ProjectDirectory::open_root(directory)?;
+    for entry in guard.read_dir()? {
+        *count += 1;
+        if *count > MAX_FILES {
+            return Err(BackupError::new(BackupCategory::TooLarge));
+        }
+        let path = entry?.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| invalid())?
+            .components()
+            .map(|component| match component {
+                Component::Normal(name) => name.to_str().ok_or_else(invalid),
+                _ => Err(invalid()),
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("/");
+        let metadata = fs::symlink_metadata(&path)?;
+        if super::project_file::directory::is_reparse(&metadata) {
+            return Err(BackupError::new(BackupCategory::Corrupt));
+        }
+        if metadata.is_dir() {
+            if !directories.iter().any(|expected| {
+                expected == &relative || expected.starts_with(&(relative.clone() + "/"))
+            }) {
+                return Err(BackupError::new(BackupCategory::SourceChanged));
+            }
+            admit_transition_partial(root, &path, directories, files, count)?;
+        } else {
+            if !metadata.is_file()
+                || !files
+                    .iter()
+                    .any(|expected| expected.path == relative && metadata.len() <= expected.size)
+            {
+                return Err(BackupError::new(BackupCategory::SourceChanged));
+            }
+            let file = super::edit_recovery::native::open(&path, false, false)?;
+            guard.validate_file(
+                &file,
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(invalid)?,
+            )?;
+        }
+    }
+    guard.validate()?;
+    Ok(())
+}
+
+/// Resume only the snapshot described by the durable transition intent. Every
+/// existing path must belong to this inventory, and each partial file must be
+/// an exact prefix of its independently verified, still-held source.
+fn create_transition_snapshot(
+    root: &Path,
+    fingerprint: &str,
+    storage: &Path,
+    label: &str,
+    id: &str,
+) -> Result<BackupRow, BackupError> {
+    if !safe_label(label) {
+        return Err(invalid());
+    }
+    let source = canonical_existing_directory(root)?;
+    let storage = canonical_existing_directory(storage)?;
+    if !disjoint(&source, &storage) {
+        return Err(invalid());
+    }
+    let parent = backup_parent(&storage, fingerprint, true)?.ok_or_else(invalid)?;
+    let stage_name = format!(".staging-{id}");
+    let stage = parent.path.join(&stage_name);
+    let destination = parent.path.join(format!("{id}.worldbuild-backup"));
+    match fs::symlink_metadata(&destination) {
+        Ok(_) => {
+            let manifest = read_manifest(&destination, Some(fingerprint))?;
+            if manifest.id != id || manifest.kind != BackupKind::Manual || manifest.label != label {
+                return Err(invalid());
+            }
+            verify_payload(&destination, &manifest)?;
+            return Ok(row(&destination, &manifest, "verified"));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.into()),
+    }
+    let (directories, files) = collect(&source)?;
+    admit_snapshot_storage(
+        &parent.path,
+        &[stage.clone(), destination.clone()],
+        &files,
+        false,
+    )?;
+    let (_, stage_guard) = open_or_create_plain_child(
+        &parent.path,
+        parent._guards.last().ok_or_else(invalid)?,
+        &stage_name,
+    )?;
+    let created_at_utc = time::OffsetDateTime::from(fs::metadata(&stage)?.created()?)
+        .format(time::macros::format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
+        ))
+        .map_err(|_| BackupError::new(BackupCategory::Io))?;
+    let manifest = Manifest {
+        schema_version: CURRENT_MANIFEST_SCHEMA,
+        id: id.into(),
+        project_fingerprint: fingerprint.into(),
+        created_at_utc,
+        kind: BackupKind::Manual,
+        label: label.into(),
+        directories: directories.clone(),
+        files: files.clone(),
+        total_bytes: files
+            .iter()
+            .try_fold(0_u64, |total, file| total.checked_add(file.size))
+            .ok_or_else(invalid)?,
+        complete: true,
+        format_history_complete: true,
+    };
+    let bytes = serde_json::to_vec(&manifest).map_err(|_| invalid())?;
+    let mut pending_token = MANIFEST_NAME.as_bytes().to_vec();
+    pending_token.push(0);
+    pending_token.extend_from_slice(&bytes);
+    let pending = format!("pending-{:x}", Sha256::digest(&pending_token));
+    // No error is converted to permission to remove an existing staging tree.
+    for entry in stage_guard.read_dir()? {
+        let name = entry?.file_name().into_string().map_err(|_| invalid())?;
+        if ![MANIFEST_NAME, PAYLOAD_DIRECTORY, pending.as_str()].contains(&name.as_str()) {
+            return Err(BackupError::new(BackupCategory::SourceChanged));
+        }
+    }
+    let (payload, payload_guard) =
+        open_or_create_plain_child(&stage, &stage_guard, PAYLOAD_DIRECTORY)?;
+    super::edit_recovery::transition::stage_exact(&stage, &stage_guard, MANIFEST_NAME, &bytes)?;
+    let checked = read_manifest_file(
+        &stage,
+        &mut super::edit_recovery::native::open(&stage.join(MANIFEST_NAME), false, false)?,
+        Some(fingerprint),
+    )?;
+    if checked != manifest {
+        return Err(BackupError::new(BackupCategory::SourceChanged));
+    }
+    admit_transition_partial(&payload, &payload, &directories, &files, &mut 0)?;
+    for directory in &directories {
+        let relative = validate_relative(directory)?;
+        let mut at = payload.clone();
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err(invalid());
+            };
+            let guard = super::project_file::directory::ProjectDirectory::open_root(&at)?;
+            let (child, _) =
+                open_or_create_plain_child(&at, &guard, name.to_str().ok_or_else(invalid)?)?;
+            at = child;
+        }
+    }
+    for expected in &files {
+        let relative = validate_relative(&expected.path)?;
+        let from = source.join(&relative);
+        let to = payload.join(&relative);
+        let source_guard = super::project_file::directory::ProjectDirectory::open_root(
+            from.parent().ok_or_else(invalid)?,
+        )?;
+        let target_guard = super::project_file::directory::ProjectDirectory::open_root(
+            to.parent().ok_or_else(invalid)?,
+        )?;
+        let name = to
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(invalid)?;
+        let mut input = super::edit_recovery::native::open(&from, false, false)?;
+        source_guard.validate_file(&input, name)?;
+        if hash_opened_file(&mut input)? != (expected.size, expected.sha256.clone()) {
+            return Err(BackupError::new(BackupCategory::SourceChanged));
+        }
+        input.seek(SeekFrom::Start(0))?;
+        let mut output = match super::edit_recovery::native::open(&to, true, true) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                super::edit_recovery::native::open_for_resume(&to)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        target_guard.validate_file(&output, name)?;
+        let prefix = output.metadata()?.len();
+        if prefix > expected.size {
+            return Err(BackupError::new(BackupCategory::SourceChanged));
+        }
+        let mut remaining = prefix;
+        let mut a = vec![0; BUFFER_BYTES];
+        let mut b = vec![0; BUFFER_BYTES];
+        while remaining > 0 {
+            let amount = remaining.min(BUFFER_BYTES as u64) as usize;
+            input.read_exact(&mut a[..amount])?;
+            output.read_exact(&mut b[..amount])?;
+            if a[..amount] != b[..amount] {
+                return Err(BackupError::new(BackupCategory::SourceChanged));
+            }
+            remaining -= amount as u64;
+        }
+        output.seek(SeekFrom::End(0))?;
+        loop {
+            checkpoint(false)?;
+            let amount = input.read(&mut a)?;
+            if amount == 0 {
+                break;
+            }
+            output.write_all(&a[..amount])?;
+        }
+        output.flush()?;
+        output.sync_all()?;
+        if hash_opened_file(&mut output)? != (expected.size, expected.sha256.clone()) {
+            return Err(BackupError::new(BackupCategory::SourceChanged));
+        }
+        source_guard.validate()?;
+        target_guard.validate()?;
+        process_crash_checkpoint("transition_snapshot_after_file");
+    }
+    confirm_unchanged(&source, &directories, &files)?;
+    payload_guard.validate()?;
+    stage_guard.validate()?;
+    verify_payload(&stage, &manifest)?;
+    let stage_identity = stage_guard.identity();
+    drop(payload_guard);
+    drop(stage_guard);
+    let owned = super::project_file::directory::ProjectDirectory::open_owned_root(&stage)?;
+    if owned.identity() != stage_identity {
+        return Err(BackupError::new(BackupCategory::SourceChanged));
+    }
+    let destination_guard =
+        super::project_file::directory::ProjectDirectory::open_move_destination(&parent.path)?;
+    owned.rename_owned_into(&destination_guard, &format!("{id}.worldbuild-backup"))?;
+    drop(destination_guard);
+    let checked = read_manifest(&destination, Some(fingerprint))?;
+    verify_payload(&destination, &checked)?;
+    if checked != manifest {
+        return Err(BackupError::new(BackupCategory::SourceChanged));
+    }
+    Ok(row(&destination, &manifest, "verified"))
+}
+
+fn create_backup_inner(
+    root: &Path,
+    fingerprint: &str,
+    storage: &Path,
+    label: Option<&str>,
+    kind: BackupKind,
+    id: String,
+) -> Result<BackupRow, BackupError> {
     let label = label.unwrap_or("");
     if !safe_label(label) {
         return Err(invalid());
@@ -1430,7 +1816,6 @@ pub(crate) fn create_backup(
         return Err(invalid());
     }
     let parent = backup_parent(&storage, fingerprint, true)?.ok_or_else(invalid)?;
-    let id = Uuid::new_v4().to_string();
     let stage = parent.path.join(format!(".staging-{id}"));
     let destination = parent.path.join(format!("{id}.worldbuild-backup"));
     let (directories, files) = collect(&source)?;
@@ -1580,7 +1965,16 @@ fn validate_manifest(
             .filter(|parent| !parent.as_os_str().is_empty())
         {
             let parent = parent.to_string_lossy();
-            if parent != ".worldbuild" || directory != ".worldbuild/format-history" {
+            if parent != ".worldbuild"
+                || !matches!(
+                    directory.as_str(),
+                    ".worldbuild/format-history"
+                        | ".worldbuild/content-versions"
+                        | ".worldbuild/latest-drafts"
+                        | ".worldbuild/transition-inputs"
+                        | ".worldbuild/format-transition"
+                )
+            {
                 if !directories.contains(parent.as_ref()) {
                     return Err(BackupError::new(BackupCategory::Corrupt));
                 }
@@ -1795,6 +2189,54 @@ pub(crate) fn inspect_backup(locator: &Path) -> Result<BackupRow, BackupError> {
     Ok(row(locator, &manifest, "verified"))
 }
 
+/// Bound to the exact manifest validated for this backup. The held native
+/// handle prevents changing that manifest while callers verify individual leaves.
+pub(crate) struct VerifiedInventory {
+    pub(crate) files: BTreeMap<String, (u64, String)>,
+    pub(crate) manifest_digest: String,
+    _manifest: File,
+}
+/// Read-only identity for one independently backed-up transition cohort. A
+/// restored older project or another physical copy must not reuse a stale copy.
+pub(crate) fn transition_inventory(
+    root: &Path,
+) -> Result<(String, BTreeMap<String, (u64, String)>), BackupError> {
+    let (directories, files) = collect(root)?;
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&(&directories, &files)).map_err(|_| invalid())?)
+    );
+    let files = files
+        .into_iter()
+        .map(|leaf| (leaf.path, (leaf.size, leaf.sha256)))
+        .collect();
+    Ok((digest, files))
+}
+pub(crate) fn verified_inventory(expected: &BackupRow) -> Result<VerifiedInventory, BackupError> {
+    let directory = canonical_existing_directory(Path::new(&expected.locator))?;
+    validate_package_shape(&directory)?;
+    let mut file =
+        super::edit_recovery::native::open(&directory.join(MANIFEST_NAME), false, false)?;
+    let manifest = read_manifest_file(&directory, &mut file, None)?;
+    verify_payload(&directory, &manifest)?;
+    if row(&directory, &manifest, "verified") != *expected {
+        return Err(invalid());
+    }
+    let manifest_digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&manifest).map_err(|_| invalid())?)
+    );
+    Ok(VerifiedInventory {
+        files: manifest
+            .files
+            .into_iter()
+            .map(|leaf| (leaf.path, (leaf.size, leaf.sha256)))
+            .collect(),
+        manifest_digest,
+        _manifest: file,
+    })
+}
+
 pub(crate) fn restore_new(
     locator: &Path,
     parent: &Path,
@@ -1829,6 +2271,14 @@ pub(crate) fn restore_new(
             &manifest.directories,
             &manifest.files,
         )?;
+        confirm_unchanged(&stage, &manifest.directories, &manifest.files)?;
+        let restored_fingerprint = super::project_lock::project_fingerprint(&destination);
+        super::repository::drafts::rebind_verified_snapshot(
+            &stage,
+            &manifest.project_fingerprint,
+            &restored_fingerprint,
+        )?;
+        let (restored_directories, restored_files) = collect(&stage)?;
         preparing()?;
         publish_directory(&stage, &destination)?;
         let verified = if take_test_fault("restore_new_after_publish") {
@@ -1836,7 +2286,7 @@ pub(crate) fn restore_new(
         } else {
             collect(&destination)
                 .map(|(directories, files)| {
-                    directories == manifest.directories && files == manifest.files
+                    directories == restored_directories && files == restored_files
                 })
                 .unwrap_or(false)
         };
@@ -1926,12 +2376,20 @@ fn apply_staged(root: &Path, staged: &Path, journal: &RestoreJournal) -> Result<
             }
         }
     }
-    let history = root.join(".worldbuild").join(FORMAT_HISTORY_DIRECTORY);
-    remove_empty_managed_directories(&history, &history)?;
-    if let Ok(mut entries) = fs::read_dir(&history) {
-        if entries.next().transpose()?.is_none() {
-            fs::remove_dir(&history)?;
-            checkpoint_after_first_apply_mutation(&mut mutation_observed);
+    for directory in [
+        FORMAT_HISTORY_DIRECTORY,
+        super::edit_recovery::transition::DIRECTORY,
+        super::edit_recovery::format_transition::DIRECTORY,
+        super::repository::drafts::DIRECTORY,
+        super::repository::versions::DIRECTORY,
+    ] {
+        let history = root.join(".worldbuild").join(directory);
+        remove_empty_managed_directories(&history, &history)?;
+        if let Ok(mut entries) = fs::read_dir(&history) {
+            if entries.next().transpose()?.is_none() {
+                fs::remove_dir(&history)?;
+                checkpoint_after_first_apply_mutation(&mut mutation_observed);
+            }
         }
     }
     let _ = fs::remove_dir(root.join(".worldbuild"));
@@ -1965,6 +2423,291 @@ fn remove_empty_managed_directories(root: &Path, current: &Path) -> Result<(), B
     if current != root && fs::read_dir(current)?.next().transpose()?.is_none() {
         fs::remove_dir(current)?;
     }
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SafetyCompletion {
+    schema_version: u32,
+    id: String,
+    project_fingerprint: String,
+    manifest_digest: String,
+}
+fn safety_completion_path(parent: &Path, id: &str) -> PathBuf {
+    parent.join(format!(".completed-safety-{id}.json"))
+}
+fn read_safety_completion(
+    parent: &Path,
+    id: &str,
+) -> Result<Option<SafetyCompletion>, BackupError> {
+    let path = safety_completion_path(parent, id);
+    let mut file = match super::project_file::open_existing_private_file(parent, &path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file).take(8193).read_to_end(&mut bytes)?;
+    if bytes.len() > 8192 {
+        return Err(BackupError::new(BackupCategory::Corrupt));
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| BackupError::new(BackupCategory::Corrupt))
+}
+/// Only a verified, successfully completed restore may retire previous completed
+/// safety copies. Missing/uncertain completion proofs remain protected.
+struct SafetyCustody {
+    manifest: Manifest,
+    manifest_digest: String,
+    guards: BTreeMap<PathBuf, super::project_file::directory::ProjectDirectory>,
+    files: Vec<(PathBuf, File)>,
+    shape: BTreeMap<PathBuf, BTreeMap<String, bool>>,
+}
+pub(crate) struct TransitionCustody {
+    held: SafetyCustody,
+    _parent: BackupParent,
+}
+impl TransitionCustody {
+    pub(crate) fn validate(&self) -> Result<(), BackupError> {
+        self.held.validate_shape()
+    }
+    pub(crate) fn inventory(&self) -> BTreeMap<String, (u64, String)> {
+        self.held
+            .manifest
+            .files
+            .iter()
+            .map(|leaf| (leaf.path.clone(), (leaf.size, leaf.sha256.clone())))
+            .collect()
+    }
+}
+pub(crate) fn hold_transition_backup(
+    expected: &BackupRow,
+    storage: &Path,
+    fingerprint: &str,
+) -> Result<TransitionCustody, BackupError> {
+    let parent = backup_parent(storage, fingerprint, false)?.ok_or_else(invalid)?;
+    let directory = canonical_existing_directory(Path::new(&expected.locator))?;
+    if directory.parent() != Some(parent.path.as_path()) {
+        return Err(invalid());
+    }
+    let held = SafetyCustody::hold(&directory, fingerprint)?;
+    if row(&directory, &held.manifest, "verified") != *expected {
+        return Err(invalid());
+    }
+    Ok(TransitionCustody {
+        held,
+        _parent: parent,
+    })
+}
+impl SafetyCustody {
+    fn hold(directory: &Path, fingerprint: &str) -> Result<Self, BackupError> {
+        let package = super::project_file::directory::ProjectDirectory::open_root(directory)?;
+        let mut manifest_file =
+            super::edit_recovery::native::open(&directory.join(MANIFEST_NAME), false, false)?;
+        package.validate_file(&manifest_file, MANIFEST_NAME)?;
+        let manifest = read_manifest_file(directory, &mut manifest_file, Some(fingerprint))?;
+        let (_, manifest_digest) = hash_opened_file(&mut manifest_file)?;
+        let payload = directory.join(PAYLOAD_DIRECTORY);
+        let payload_guard = super::project_file::directory::ProjectDirectory::open_root(&payload)?;
+        let mut custody = Self {
+            manifest,
+            manifest_digest,
+            guards: BTreeMap::from([
+                (directory.to_owned(), package),
+                (payload.clone(), payload_guard),
+            ]),
+            files: vec![(directory.join(MANIFEST_NAME), manifest_file)],
+            shape: BTreeMap::from([
+                (
+                    directory.to_owned(),
+                    BTreeMap::from([
+                        (MANIFEST_NAME.into(), false),
+                        (PAYLOAD_DIRECTORY.into(), true),
+                    ]),
+                ),
+                (payload.clone(), BTreeMap::new()),
+            ]),
+        };
+        for relative in deletion_directory_paths(&custody.manifest)? {
+            // Prefixes already have validated Normal components. A parent such
+            // as .worldbuild is permitted here without being a managed leaf.
+            let path = payload.join(Path::new(&relative));
+            let parent = path.parent().ok_or_else(invalid)?;
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?;
+            let guard = super::project_file::directory::ProjectDirectory::open_root(&path)?;
+            custody.guards.get(parent).ok_or_else(invalid)?.validate()?;
+            custody
+                .shape
+                .get_mut(parent)
+                .ok_or_else(invalid)?
+                .insert(name.into(), true);
+            custody.shape.insert(path.clone(), BTreeMap::new());
+            custody.guards.insert(path, guard);
+        }
+        for expected in &custody.manifest.files {
+            let path = payload.join(validate_relative(&expected.path)?);
+            let parent = path.parent().ok_or_else(invalid)?;
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?;
+            let mut file = super::edit_recovery::native::open(&path, false, false)?;
+            custody
+                .guards
+                .get(parent)
+                .ok_or_else(invalid)?
+                .validate_file(&file, name)?;
+            let (size, digest) = hash_opened_file(&mut file)?;
+            if size != expected.size || digest != expected.sha256 {
+                return Err(BackupError::new(BackupCategory::SourceChanged));
+            }
+            custody
+                .shape
+                .get_mut(parent)
+                .ok_or_else(invalid)?
+                .insert(name.into(), false);
+            custody.files.push((path, file));
+        }
+        custody.validate_shape()?;
+        Ok(custody)
+    }
+    // Held files pin exact bytes; directories pin ancestry, not the child set.
+    // Enumerate names/types separately without reopening our exclusive files.
+    fn validate_shape(&self) -> Result<(), BackupError> {
+        for (path, guard) in &self.guards {
+            let mut names = BTreeMap::new();
+            for entry in guard.read_dir()? {
+                let entry = entry?;
+                let name = entry.file_name().to_str().ok_or_else(invalid)?.to_owned();
+                let metadata = fs::symlink_metadata(entry.path())?;
+                if super::project_file::directory::is_reparse(&metadata)
+                    || (!metadata.is_dir() && !metadata.is_file())
+                {
+                    return Err(BackupError::new(BackupCategory::SourceChanged));
+                }
+                if names.len() >= MAX_FILES {
+                    return Err(BackupError::new(BackupCategory::TooLarge));
+                }
+                names.insert(name, metadata.is_dir());
+            }
+            if Some(&names) != self.shape.get(path) {
+                return Err(BackupError::new(BackupCategory::SourceChanged));
+            }
+            guard.validate()?;
+        }
+        for (path, file) in &self.files {
+            self.guards
+                .get(path.parent().ok_or_else(invalid)?)
+                .ok_or_else(invalid)?
+                .validate_file(
+                    file,
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or_else(invalid)?,
+                )?;
+        }
+        Ok(())
+    }
+}
+fn complete_safety_backup(
+    storage: &Path,
+    fingerprint: &str,
+    latest: &BackupRow,
+) -> Result<(), BackupError> {
+    let parent = backup_parent(storage, fingerprint, false)?.ok_or_else(invalid)?;
+    let locator = canonical_existing_directory(Path::new(&latest.locator))?;
+    if locator.parent() != Some(parent.path.as_path()) {
+        return Err(invalid());
+    }
+    let custody = SafetyCustody::hold(&locator, fingerprint)?;
+    let manifest = &custody.manifest;
+    if manifest.kind != BackupKind::PreRestore || manifest.id != latest.id {
+        return Err(invalid());
+    }
+    let expected = SafetyCompletion {
+        schema_version: 1,
+        id: manifest.id.clone(),
+        project_fingerprint: fingerprint.into(),
+        manifest_digest: custody.manifest_digest.clone(),
+    };
+    let path = safety_completion_path(&parent.path, &manifest.id);
+    #[cfg(test)]
+    TEST_SAFETY_HOOK.with(|hook| {
+        if let Some(hook) = hook.borrow_mut().take() {
+            hook();
+        }
+    });
+    custody.validate_shape()?;
+    match read_safety_completion(&parent.path, &manifest.id)? {
+        Some(existing) if existing == expected => (),
+        Some(_) => return Err(BackupError::new(BackupCategory::SourceChanged)),
+        None => {
+            if take_test_fault("safety_completion_before_write") {
+                return Err(BackupError::new(BackupCategory::Io));
+            }
+            atomic_file::save_deterministic_json(&path, &expected)
+                .map_err(|_| BackupError::new(BackupCategory::Io))?;
+        }
+    }
+    if read_safety_completion(&parent.path, &manifest.id)? != Some(expected) {
+        return Err(BackupError::new(BackupCategory::Corrupt));
+    }
+    for entry in parent._guards.last().ok_or_else(invalid)?.read_dir()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        let Some(id) = name.strip_suffix(".worldbuild-backup") else {
+            continue;
+        };
+        if id == latest.id || Uuid::parse_str(id).is_err() {
+            continue;
+        }
+        // A corrupt proof is not permission to prune an old safety copy.
+        let Ok(Some(completion)) = read_safety_completion(&parent.path, id) else {
+            continue;
+        };
+        if completion.schema_version != 1
+            || completion.id != id
+            || completion.project_fingerprint != fingerprint
+        {
+            continue;
+        }
+        let old = parent.path.join(name);
+        let Ok(old_manifest) = read_manifest(&old, Some(fingerprint)) else {
+            continue;
+        };
+        if old_manifest.kind != BackupKind::PreRestore {
+            continue;
+        }
+        let (_, digest) = hash_file(&old.join(MANIFEST_NAME))?;
+        if completion.manifest_digest != digest {
+            continue;
+        }
+        // Existing deletion captures exact files/handles and preserves unknown entries.
+        custody.validate_shape()?;
+        let removed = delete_backup_in_parent(&parent.path, &old, fingerprint)?;
+        if removed.outcome != "deleted" {
+            return Err(BackupError::new(BackupCategory::RecoveryRequired));
+        }
+        let completion_path = safety_completion_path(&parent.path, id);
+        let file = super::edit_recovery::native::open_for_discard(&completion_path)?;
+        parent._guards.last().ok_or_else(invalid)?.validate_file(
+            &file,
+            completion_path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .ok_or_else(invalid)?,
+        )?;
+        super::edit_recovery::native::cleanup(&file)?;
+    }
+    custody.validate_shape()?;
     Ok(())
 }
 
@@ -2004,6 +2747,16 @@ pub(crate) fn restore_current(
         operation_id,
         target_files: manifest.files.clone(),
         target_directories: manifest.directories.clone(),
+        safety_completion: Some(RestoreSafety {
+            storage: canonical_existing_directory(safety_storage)?
+                .to_string_lossy()
+                .into(),
+            fingerprint: fingerprint.into(),
+            root_fingerprint: super::project_lock::project_fingerprint(&root),
+            locator: safety.locator.clone(),
+            id: safety.id.clone(),
+            manifest_digest: hash_file(&Path::new(&safety.locator).join(MANIFEST_NAME))?.1,
+        }),
     };
     let prepared = (|| {
         fs::create_dir_all(&restore_parent)?;
@@ -2039,6 +2792,7 @@ pub(crate) fn restore_current(
         });
     }
     let applied = apply_staged(&root, &staged, &journal)
+        .and_then(|()| complete_journal_safety(&root, &journal))
         .and_then(|()| {
             if take_test_fault("restore_cleanup_after_apply")
                 || take_root_test_fault(&root, "restore_cleanup_after_apply")
@@ -2053,22 +2807,32 @@ pub(crate) fn restore_current(
             Ok(())
         });
     if applied.is_ok() {
+        let retention_warning = complete_safety_backup(safety_storage, fingerprint, &safety)
+            .err()
+            .map(|_| "safety_retention_pending");
         return Ok(SnapshotResult {
             root,
             row: Some(selected),
             safety: Some(safety),
             outcome: "applied_verified",
-            warning: None,
+            warning: retention_warning,
         });
     }
     match recover_pending(&root) {
-        Ok(()) => Ok(SnapshotResult {
-            root,
-            row: Some(selected),
-            safety: Some(safety),
-            outcome: "applied_recovered",
-            warning: Some("post_commit_recovery_completed"),
-        }),
+        Ok(()) => {
+            let warning = if complete_safety_backup(safety_storage, fingerprint, &safety).is_err() {
+                "safety_retention_pending"
+            } else {
+                "post_commit_recovery_completed"
+            };
+            Ok(SnapshotResult {
+                root,
+                row: Some(selected),
+                safety: Some(safety),
+                outcome: "applied_recovered",
+                warning: Some(warning),
+            })
+        }
         Err(recovery) => Err(BackupError {
             category: BackupCategory::RecoveryRequired,
             io: recovery
@@ -2133,6 +2897,8 @@ pub(crate) fn recover_pending(root: &Path) -> Result<(), BackupError> {
         }
         if operation.join(COMMIT_MARKER).exists() {
             apply_staged(root, &operation.join("new"), &journal)?;
+            // Keep the durable operation until completion and bounded retention are verified.
+            complete_journal_safety(root, &journal)?;
         }
         cleanup_owned(&operation)?;
     }
@@ -2558,6 +3324,176 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn completed_safety_backup_keeps_latest_and_protects_pending_and_manual_copies() {
+        let base = fixture("completed-safety");
+        let root = base.join("project");
+        let storage = base.join("backups");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&storage).unwrap();
+        project(&root);
+        let fingerprint = "c".repeat(64);
+        let manual = create_backup(
+            &root,
+            &fingerprint,
+            &storage,
+            Some("독립 백업"),
+            BackupKind::Manual,
+        )
+        .unwrap();
+        let pending = create_backup(
+            &root,
+            &fingerprint,
+            &storage,
+            Some("미완료 복원"),
+            BackupKind::PreRestore,
+        )
+        .unwrap();
+        let first = create_backup(
+            &root,
+            &fingerprint,
+            &storage,
+            Some("완료된 복원"),
+            BackupKind::PreRestore,
+        )
+        .unwrap();
+        complete_safety_backup(&storage, &fingerprint, &first).unwrap();
+        let second = create_backup(
+            &root,
+            &fingerprint,
+            &storage,
+            Some("다음 복원"),
+            BackupKind::PreRestore,
+        )
+        .unwrap();
+        TEST_FAULT.with(|fault| fault.set(Some("safety_completion_before_write")));
+        assert!(complete_safety_backup(&storage, &fingerprint, &second).is_err());
+        assert!(inspect_backup(Path::new(&first.locator)).is_ok());
+        assert!(inspect_backup(Path::new(&second.locator)).is_ok());
+        complete_safety_backup(&storage, &fingerprint, &second).unwrap();
+        assert!(!Path::new(&first.locator).exists());
+        for row in [&manual, &pending, &second] {
+            assert_eq!(
+                inspect_backup(Path::new(&row.locator)).unwrap().status,
+                "verified"
+            );
+        }
+        // An idempotent retry cannot remove the latest confirmed safety copy.
+        complete_safety_backup(&storage, &fingerprint, &second).unwrap();
+        assert!(Path::new(&second.locator).exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+    #[cfg(windows)]
+    #[test]
+    fn completing_safety_copy_holds_exact_files_and_parents_until_old_retirement() {
+        let base = fixture("safety-held-custody");
+        let root = base.join("project");
+        let storage = base.join("backups");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&storage).unwrap();
+        project(&root);
+        let fingerprint = "c".repeat(64);
+        let old =
+            create_backup(&root, &fingerprint, &storage, None, BackupKind::PreRestore).unwrap();
+        complete_safety_backup(&storage, &fingerprint, &old).unwrap();
+        let latest =
+            create_backup(&root, &fingerprint, &storage, None, BackupKind::PreRestore).unwrap();
+        let package = PathBuf::from(&latest.locator);
+        let manifest = read_manifest(&package, Some(&fingerprint)).unwrap();
+        let leaf = package
+            .join(PAYLOAD_DIRECTORY)
+            .join(&manifest.files[0].path);
+        let expected_leaf = fs::read(&leaf).unwrap();
+        let expected_manifest = fs::read(package.join(MANIFEST_NAME)).unwrap();
+        // A competing writable opener cannot authorize retiring the old copy.
+        let busy = OpenOptions::new().write(true).open(&leaf).unwrap();
+        assert!(complete_safety_backup(&storage, &fingerprint, &latest).is_err());
+        assert!(Path::new(&old.locator).exists());
+        drop(busy);
+        let held_package = package.clone();
+        let held_leaf = leaf.clone();
+        TEST_SAFETY_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                std::thread::spawn(move || {
+                    for file in [held_package.join(MANIFEST_NAME), held_leaf.clone()] {
+                        assert!(fs::write(&file, b"competing replacement").is_err());
+                        assert!(fs::remove_file(&file).is_err());
+                        assert!(fs::rename(&file, file.with_extension("raced")).is_err());
+                    }
+                    for directory in [
+                        held_leaf.parent().unwrap().to_owned(),
+                        held_package.join(PAYLOAD_DIRECTORY),
+                        held_package.clone(),
+                    ] {
+                        assert!(fs::rename(&directory, directory.with_extension("raced")).is_err());
+                    }
+                })
+                .join()
+                .unwrap();
+            }))
+        });
+        complete_safety_backup(&storage, &fingerprint, &latest).unwrap();
+        assert!(!Path::new(&old.locator).exists());
+        assert_eq!(fs::read(&leaf).unwrap(), expected_leaf);
+        assert_eq!(
+            fs::read(package.join(MANIFEST_NAME)).unwrap(),
+            expected_manifest
+        );
+        // Custody ends with completion; it is not a permanent undeletable backup.
+        fs::write(&leaf, &expected_leaf).unwrap();
+        assert!(inspect_backup(&package).is_ok());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn safety_completion_rechecks_child_set_without_deleting_unknown_entries() {
+        let base = fixture("safety-shape-seam");
+        let root = base.join("project");
+        let storage = base.join("backups");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&storage).unwrap();
+        project(&root);
+        let fingerprint = "c".repeat(64);
+        let old =
+            create_backup(&root, &fingerprint, &storage, None, BackupKind::PreRestore).unwrap();
+        complete_safety_backup(&storage, &fingerprint, &old).unwrap();
+        let latest =
+            create_backup(&root, &fingerprint, &storage, None, BackupKind::PreRestore).unwrap();
+        let foreign = PathBuf::from(&latest.locator).join("foreign-canary.txt");
+        let seam_path = foreign.clone();
+        let inserted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = inserted.clone();
+        TEST_SAFETY_HOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                observed.store(
+                    std::thread::spawn(move || {
+                        fs::write(seam_path, b"preserve unknown entry").is_ok()
+                    })
+                    .join()
+                    .unwrap(),
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+            }))
+        });
+        let result = complete_safety_backup(&storage, &fingerprint, &latest);
+        if inserted.load(std::sync::atomic::Ordering::SeqCst) {
+            eprintln!("safety seam: unknown child created; shape rejection preserves old backup and canary");
+            assert!(result.is_err());
+            assert!(Path::new(&old.locator).exists());
+            assert_eq!(fs::read(&foreign).unwrap(), b"preserve unknown entry");
+            fs::remove_file(&foreign).unwrap();
+            complete_safety_backup(&storage, &fingerprint, &latest).unwrap();
+        } else {
+            eprintln!("safety seam: directory sharing denied unknown child creation");
+            result.unwrap();
+        }
+        assert!(!Path::new(&old.locator).exists());
+        assert!(inspect_backup(Path::new(&latest.locator)).is_ok());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn quarantined_backup_restores_same_package_and_survives_relisting() {
         let base = fixture("quarantine-roundtrip");
         let source = base.join("source");
@@ -2846,6 +3782,30 @@ mod tests {
             BackupCategory::RecoveryRequired
         );
         assert!(Path::new(&protected.locator).exists());
+        complete_safety_backup(&storage, &fingerprint, &protected).unwrap();
+        let proof_path = safety_completion_path(
+            Path::new(&protected.locator).parent().unwrap(),
+            &protected.id,
+        );
+        let proof = fs::read(&proof_path).unwrap();
+        fs::write(&proof_path, b"corrupt proof").unwrap();
+        assert!(quarantine_backup(&storage, Path::new(&protected.locator), &fingerprint).is_err());
+        fs::write(&proof_path, &proof).unwrap();
+        let mut wrong: SafetyCompletion = serde_json::from_slice(&proof).unwrap();
+        wrong.manifest_digest = "0".repeat(64);
+        fs::write(&proof_path, serde_json::to_vec(&wrong).unwrap()).unwrap();
+        assert!(quarantine_backup(&storage, Path::new(&protected.locator), &fingerprint).is_err());
+        fs::write(&proof_path, proof).unwrap();
+        let deleted = quarantine_backup(&storage, Path::new(&protected.locator), &fingerprint)
+            .unwrap()
+            .deleted
+            .unwrap();
+        assert!(!Path::new(&protected.locator).exists());
+        assert!(Path::new(&ordinary.locator).exists());
+        restore_deleted_backup(&storage, &fingerprint, &protected.id, &deleted.operation).unwrap();
+        assert!(Path::new(&protected.locator).exists());
+        let restored = read_manifest(Path::new(&protected.locator), Some(&fingerprint)).unwrap();
+        verify_payload(Path::new(&protected.locator), &restored).unwrap();
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -3326,6 +4286,7 @@ mod tests {
                     operation_id: operation_id.into(),
                     target_files: target_files.clone(),
                     target_directories: target_directories.clone(),
+                    safety_completion: None,
                 },
             )
             .unwrap();
@@ -3591,6 +4552,62 @@ mod tests {
             b"{\"unknown\":1}"
         );
         assert!(!source.join(RESTORE_DIRECTORY).exists());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn startup_restore_finishes_safety_retention_before_journal_cleanup() {
+        let base = fixture("restart-safety-retention");
+        let source = base.join("source");
+        let storage = base.join("storage");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&storage).unwrap();
+        project(&source);
+        let fingerprint = "7".repeat(64);
+        let manual =
+            create_backup(&source, &fingerprint, &storage, None, BackupKind::Manual).unwrap();
+        let old = create_backup(
+            &source,
+            &fingerprint,
+            &storage,
+            None,
+            BackupKind::PreRestore,
+        )
+        .unwrap();
+        complete_safety_backup(&storage, &fingerprint, &old).unwrap();
+        let pending = create_backup(
+            &source,
+            &fingerprint,
+            &storage,
+            None,
+            BackupKind::PreRestore,
+        )
+        .unwrap();
+        fs::write(source.join("templates/t.json"), b"before recovery").unwrap();
+        TEST_FAULT.with(|fault| fault.set(Some("safety_completion_before_write")));
+        set_root_test_faults(&source, vec!["recover_pending_once"]);
+        let error = restore_current(&source, &fingerprint, Path::new(&manual.locator), &storage)
+            .unwrap_err();
+        let latest = error.safety.unwrap();
+        assert!(source.join(RESTORE_DIRECTORY).exists());
+        assert!(Path::new(&old.locator).exists());
+        assert!(Path::new(&latest.locator).exists());
+        recover_pending(&source).unwrap();
+        assert!(!source.join(RESTORE_DIRECTORY).exists());
+        assert!(!Path::new(&old.locator).exists());
+        for preserved in [&manual, &pending, &latest] {
+            assert_eq!(
+                inspect_backup(Path::new(&preserved.locator))
+                    .unwrap()
+                    .status,
+                "verified"
+            );
+        }
+        assert_eq!(
+            fs::read(source.join("templates/t.json")).unwrap(),
+            b"{\"unknown\":1}"
+        );
+        recover_pending(&source).unwrap();
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -3901,6 +4918,14 @@ mod tests {
         };
         let root = PathBuf::from(std::env::var_os("WB_M523_ROOT").unwrap());
         let locks = PathBuf::from(std::env::var_os("WB_M523_LOCKS").unwrap());
+        if mode == "transition_snapshot" {
+            let storage = PathBuf::from(std::env::var_os("WB_M523_STORAGE").unwrap());
+            let fingerprint = std::env::var("WB_M523_FINGERPRINT").unwrap();
+            let id = std::env::var("WB_M523_TRANSITION_ID").unwrap();
+            let result =
+                create_transition_backup(&root, &fingerprint, &storage, "전환 전 사본", &id);
+            panic!("snapshot child reached terminal state instead of checkpoint: {result:?}");
+        }
         if mode == "restore" {
             let storage = PathBuf::from(std::env::var_os("WB_M523_STORAGE").unwrap());
             let locator = PathBuf::from(std::env::var_os("WB_M523_LOCATOR").unwrap());
@@ -4000,6 +5025,100 @@ mod tests {
             .backups
             .iter()
             .any(|row| row.kind == BackupKind::PreRestore));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn transition_snapshot_killed_copy_resumes_one_package_and_foreign_staging_is_preserved() {
+        let base = fixture("transition-snapshot-killed");
+        let root = base.join("project");
+        let storage = base.join("storage");
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&storage).unwrap();
+        project(&root);
+        let fingerprint = "d".repeat(64);
+        let id = Uuid::new_v4().to_string();
+        let ready = base.join("ready");
+        let expected = collect(&root).unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "data::project_backup::tests::m523_child_restore_driver",
+                "--nocapture",
+            ])
+            .env("WB_M523_CHILD_MODE", "transition_snapshot")
+            .env("WB_M523_CRASH_POINT", "transition_snapshot_after_file")
+            .env("WB_M523_CRASH_READY", &ready)
+            .env("WB_M523_ROOT", &root)
+            .env("WB_M523_LOCKS", base.join("locks"))
+            .env("WB_M523_STORAGE", &storage)
+            .env("WB_M523_FINGERPRINT", &fingerprint)
+            .env("WB_M523_TRANSITION_ID", &id)
+            .spawn()
+            .unwrap();
+        for _ in 0..1500 {
+            if ready.exists() {
+                break;
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("snapshot child exited: {status}");
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ready.exists());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let stage = storage
+            .join(BACKUP_DIRECTORY)
+            .join(&fingerprint)
+            .join(format!(".staging-{id}"));
+        let copied = expected.1.first().unwrap();
+        let file = stage.join(PAYLOAD_DIRECTORY).join(&copied.path);
+        let bytes = fs::read(root.join(&copied.path)).unwrap();
+        fs::write(&file, &bytes[..bytes.len() / 2]).unwrap();
+        let row =
+            create_transition_backup(&root, &fingerprint, &storage, "전환 전 사본", &id).unwrap();
+        assert_eq!(row.status, "verified");
+        assert_eq!(collect(&root).unwrap(), expected);
+        assert!(!stage.exists());
+        for _ in 0..3 {
+            assert_eq!(
+                create_transition_backup(&root, &fingerprint, &storage, "전환 전 사본", &id)
+                    .unwrap(),
+                row
+            );
+        }
+        assert_eq!(
+            list_backups(&fingerprint, &storage, None)
+                .unwrap()
+                .backups
+                .len(),
+            1
+        );
+        let foreign_id = Uuid::new_v4().to_string();
+        let foreign = storage
+            .join(BACKUP_DIRECTORY)
+            .join(&fingerprint)
+            .join(format!(".staging-{foreign_id}"));
+        fs::create_dir(&foreign).unwrap();
+        fs::write(foreign.join("foreign.txt"), b"keep unknown staging content").unwrap();
+        for _ in 0..3 {
+            assert!(create_transition_backup(
+                &root,
+                &fingerprint,
+                &storage,
+                "전환 전 사본",
+                &foreign_id
+            )
+            .is_err());
+            assert_eq!(
+                fs::read(foreign.join("foreign.txt")).unwrap(),
+                b"keep unknown staging content"
+            );
+            assert_eq!(collect(&root).unwrap(), expected);
+        }
+        assert!(base.starts_with(std::env::temp_dir()));
         fs::remove_dir_all(base).unwrap();
     }
 

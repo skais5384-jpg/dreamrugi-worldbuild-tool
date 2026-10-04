@@ -1076,7 +1076,8 @@ export class TemplateController {
         error: null,
       },
     });
-    if (!inspection && this.state.projectId) void this.inspectAssets();
+    // Template lifecycle changes can make a cached trash inventory stale.
+    if (this.state.projectId) void this.inspectAssets();
   }
   focusFileManager(
     surface: "resources" | "trash",
@@ -2512,9 +2513,11 @@ export class TemplateController {
         });
       this.publish({
         message: text(
-          data.outcome === "applied_recovered"
-            ? "backup.restoredCurrentRecovered"
-            : "backup.restoredCurrent",
+          data.warning === "safety_retention_pending"
+            ? "backup.restoredCurrentRetentionPending"
+            : data.outcome === "applied_recovered"
+              ? "backup.restoredCurrentRecovered"
+              : "backup.restoredCurrent",
         ),
       });
     }
@@ -3136,7 +3139,9 @@ export class TemplateController {
             ? action.kind === "duplicate"
               ? "template.duplicated"
               : "template.deleted"
-            : "template.unconfirmed",
+            : action.kind === "duplicate" && retained
+              ? "template.duplicateRetained"
+              : "template.unconfirmed",
         ),
       });
       if (committed) {
@@ -3725,7 +3730,11 @@ export class TemplateController {
         )
         .catch((error: unknown) => {
           // 예약 자체가 실패하면 아직 submit을 호출하지 않았다. 이 폼은 미제출로 남긴다.
-          if (this.state.form && !this.state.closing)
+          if (
+            this.state.form &&
+            !this.state.form.handedOff &&
+            !this.state.closing
+          )
             this.publish({ form: { ...form, submitted: false } });
           throw error;
         });
@@ -3765,6 +3774,73 @@ export class TemplateController {
           message: text("controller.message18"),
         });
         await this.refreshRetained();
+        if (form.kind === "create" && retained) {
+          const held = this.state.retained.find(
+            (item) => item.retained.id === retained.id,
+          );
+          const knownNotCommitted =
+            (result.kind === "rejected" && held?.create_retry_safe === true) ||
+            (result.kind === "write" &&
+              ["not_attempted", "not_applied", "rolled_back"].includes(
+                result.disk,
+              ) &&
+              !result.cleanup_failed &&
+              !result.recovery_required);
+          if (
+            knownNotCommitted &&
+            held?.g6_clearable &&
+            held.intent?.kind === "create_template"
+          ) {
+            const cleared = await this.operations.run(
+              { kind: "abandon_retained", retained: held.retained },
+              text("controller.message20"),
+              "control",
+            );
+            if (
+              cleared.result.kind === "retained_handled" &&
+              cleared.result.action === "abandoned"
+            ) {
+              if (result.kind === "write")
+                await this.endSession(project, result.session);
+              await this.refreshRetained();
+              const stillOwned =
+                this.state.retainedRefs.some(
+                  (item) => item.id === retained.id,
+                ) ||
+                (result.kind === "write" &&
+                  this.state.sessions.some(
+                    (item) => item.id === result.session,
+                  ));
+              if (!stillOwned)
+                this.publish({
+                  form: { ...form, submitted: false, handedOff: false },
+                });
+            }
+          }
+        }
+        if (
+          form.kind === "create" &&
+          !retained &&
+          result.kind === "write" &&
+          ["not_attempted", "not_applied", "rolled_back"].includes(
+            result.disk,
+          ) &&
+          !result.cleanup_failed &&
+          !result.recovery_required
+        ) {
+          await this.endSession(project, result.session);
+          this.publish({
+            form: { ...form, submitted: false, handedOff: false },
+          });
+        } else if (
+          form.kind === "create" &&
+          !retained &&
+          result.kind === "rejected"
+        ) {
+          this.publish({
+            form: { ...form, submitted: false, handedOff: false },
+          });
+        }
       }
     });
   }

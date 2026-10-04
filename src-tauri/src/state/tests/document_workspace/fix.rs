@@ -285,12 +285,11 @@ fn document_refresh_real_rejection_then_recovery_success_keeps_saved_evidence() 
     assert_eq!(failed["error"]["code"], "runtime_rejected");
     let recovered = h.control(json!({"kind":"recover","project":p}));
     assert!(recovered["error"].is_null(), "{recovered}");
-    let store = h.state.recovery.connect().unwrap();
-    store.lock().unwrap().fault = Some(crate::data::edit_recovery::error::Stage::Reopen);
+    let canary = block_latest_target(&h, "document", &id);
     let unproven = request(&h, &p, json!({"action":"edit_refresh","owner":d["owner"]}));
     assert_eq!(unproven["error"]["code"], "recovery_rejected");
     assert_eq!(unproven["input_retained"], true);
-    store.lock().unwrap().fault = None;
+    unblock_latest_target(&canary);
     let refreshed = request(&h, &p, json!({"action":"edit_refresh","owner":d["owner"]}));
     assert_eq!(refreshed["value"]["read"]["name"], "submitted S");
     assert_eq!(refreshed["value"]["outcome"], saved["outcome"]);

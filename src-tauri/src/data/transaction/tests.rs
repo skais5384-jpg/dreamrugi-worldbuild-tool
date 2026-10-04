@@ -476,6 +476,7 @@ fn valid_manifest() -> Result<TransactionManifest, Box<dyn std::error::Error>> {
                 staged_sha256: HASH_B.to_owned(),
                 staged_schema_version: Some(TRANSACTION_SCHEMA_VERSION),
                 original_schema_version: Some(TRANSACTION_SCHEMA_VERSION),
+                original_raw: false,
             },
             TransactionOperation {
                 index: 1,
@@ -489,6 +490,7 @@ fn valid_manifest() -> Result<TransactionManifest, Box<dyn std::error::Error>> {
                 staged_sha256: HASH_A.to_owned(),
                 staged_schema_version: Some(TRANSACTION_SCHEMA_VERSION),
                 original_schema_version: Some(TRANSACTION_SCHEMA_VERSION),
+                original_raw: false,
             },
         ],
     })

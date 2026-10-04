@@ -182,14 +182,6 @@ impl FieldValidationError {
         )
     }
 
-    const fn required_value_unset(location: FieldValidationLocation) -> Self {
-        Self::new(
-            FieldValidationErrorCategory::RequiredValueUnset,
-            location,
-            "active required Field requires a non-unset final Document value",
-        )
-    }
-
     const fn invalid_scalar(error: ScalarValueError, location: FieldValidationLocation) -> Self {
         let mut result = Self::new(
             FieldValidationErrorCategory::InvalidScalarValue,
@@ -768,7 +760,7 @@ pub(crate) fn validate_template_default(
     validate_value_against_rule(rule, value, choice_context, location)
 }
 
-/// Template과 결합된 final Document 값에서만 active required를 강제한다.
+/// 필수 미입력은 UI 경고 대상이며 저장을 막지 않는다. 값의 형식 검사는 유지한다.
 pub(crate) fn validate_bound_document_value(
     rule: &FieldRule,
     value: FieldValueView<'_>,
@@ -796,11 +788,6 @@ pub(crate) fn validate_bound_document_value(
         return Err(FieldValidationError::context_lifecycle_mismatch(location));
     }
     if value.is_unset() {
-        if rule.lifecycle == FieldLifecycleView::Active
-            && rule.requiredness == Requiredness::Required
-        {
-            return Err(FieldValidationError::required_value_unset(location));
-        }
         return Ok(FieldValidationOutcome::Valid);
     }
 
@@ -1254,11 +1241,9 @@ mod tests {
                     &required,
                     FieldValueView::Unset,
                     BoundDocumentValueContext::NewDocumentValue,
-                )
-                .unwrap_err()
-                .category(),
-                FieldValidationErrorCategory::RequiredValueUnset,
-                "required unset for {kind:?}"
+                ),
+                Ok(FieldValidationOutcome::Valid),
+                "required unset remains saveable for {kind:?}"
             );
 
             let wrong_value = if kind == FieldKind::SingleLineText {
@@ -1373,6 +1358,28 @@ mod tests {
     }
 
     #[test]
+    fn required_missing_is_saveable_but_wrong_type_still_rejected() {
+        let required = rule(FieldKind::SingleLineText, Requiredness::Required);
+        for context in [
+            BoundDocumentValueContext::NewDocumentValue,
+            BoundDocumentValueContext::ExistingDocumentValue,
+            BoundDocumentValueContext::MaterializedHistorical,
+        ] {
+            assert_eq!(
+                validate_bound_document_value(&required, FieldValueView::Unset, context),
+                Ok(FieldValidationOutcome::Valid),
+            );
+            assert_eq!(
+                validate_bound_document_value(&required, FieldValueView::Number("0"), context)
+                    .unwrap_err()
+                    .category(),
+                FieldValidationErrorCategory::FieldValueKindMismatch,
+            );
+        }
+        assert_eq!(required.requiredness, Requiredness::Required);
+    }
+
+    #[test]
     fn required_policy_distinguishes_defaults_bound_values_and_archived_fields() {
         let required = rule(FieldKind::SingleLineText, Requiredness::Required);
         for context in [
@@ -1389,13 +1396,10 @@ mod tests {
             BoundDocumentValueContext::ExistingDocumentValue,
             BoundDocumentValueContext::MaterializedHistorical,
         ] {
-            let error = validate_bound_document_value(&required, FieldValueView::Unset, context)
-                .unwrap_err();
             assert_eq!(
-                error.category(),
-                FieldValidationErrorCategory::RequiredValueUnset
+                validate_bound_document_value(&required, FieldValueView::Unset, context),
+                Ok(FieldValidationOutcome::Valid)
             );
-            assert!(error.option_id().is_none());
         }
 
         let archived = FieldRule::try_new(

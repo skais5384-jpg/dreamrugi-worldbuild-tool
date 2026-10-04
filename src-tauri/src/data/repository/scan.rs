@@ -23,7 +23,71 @@ pub(crate) enum DocumentScanVisitError<E> {
     Visitor(E),
 }
 
+/// Read-only rows deliberately carry no canonical artifact or source token.
+pub(crate) struct TemplateDisplay {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) revision: String,
+    pub(crate) lifecycle: String,
+    pub(crate) glossary_excluded: bool,
+}
+pub(crate) struct DocumentDisplay {
+    pub(crate) id: DocumentId,
+    pub(crate) template: String,
+    pub(crate) name: String,
+    pub(crate) english_name: String,
+    pub(crate) glossary_summary: String,
+    pub(crate) glossary_excluded: bool,
+    pub(crate) available: bool,
+}
+
 impl ArtifactRepository<'_, '_> {
+    /// Display recovery remains possible for known damaged artifacts. Hard I/O,
+    /// namespace and custody failures never become permission to skip a target.
+    pub(crate) fn policy_transition_sources(&self) -> Result<Vec<SourceToken>, RepositoryError> {
+        let mut result = Vec::new();
+        for (kind, operation, current) in [
+            (
+                ArtifactType::Template,
+                RepositoryOperation::ScanTemplates,
+                artifact::TEMPLATE_SCHEMA_VERSION,
+            ),
+            (
+                ArtifactType::Document,
+                RepositoryOperation::ScanDocuments,
+                artifact::DOCUMENT_SCHEMA_VERSION,
+            ),
+        ] {
+            if let Some(directory) = self.namespace(kind, operation)? {
+                for id in self.entries(&directory, kind, operation)? {
+                    let source = match id {
+                        ArtifactSourceId::Template(id) => self
+                            .read_template(id, &directory, operation, true)
+                            .map(|v| v.source),
+                        ArtifactSourceId::Document(id) => self
+                            .read_document(id, &directory, operation, true)
+                            .map(|v| v.source),
+                        ArtifactSourceId::DocumentLayout => unreachable!(),
+                    };
+                    match source {
+                        Ok(source) if source.schema().get() < current.get() => result.push(source),
+                        Ok(_) => (),
+                        Err(error)
+                            if matches!(
+                                error.diagnostic().category,
+                                RepositoryCategory::CodecRejected | RepositoryCategory::IdMismatch
+                            ) =>
+                        {
+                            ()
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                self.finish_namespace(&directory, operation, kind)?;
+            }
+        }
+        Ok(result)
+    }
     /// 이미 full decode한 scan의 이름 집합을 final prepare 직전에 재대조한다.
     /// 열거 결과만으로 새 완전성 증거를 발급하지 않는다.
     pub(crate) fn confirm_document_membership(
@@ -52,6 +116,121 @@ impl ArtifactRepository<'_, '_> {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn display_templates(&self) -> io::Result<Vec<TemplateDisplay>> {
+        let mut ids = versions::targets(self)?
+            .into_iter()
+            .filter(|id| matches!(id, ArtifactSourceId::Template(_)))
+            .collect::<BTreeSet<_>>();
+        if let Some(directory) = self
+            .namespace(ArtifactType::Template, RepositoryOperation::ScanTemplates)
+            .map_err(io::Error::other)?
+        {
+            ids.extend(
+                self.entries(
+                    &directory,
+                    ArtifactType::Template,
+                    RepositoryOperation::ScanTemplates,
+                )
+                .map_err(io::Error::other)?,
+            );
+        }
+        let mut records = Vec::new();
+        for id in ids {
+            let ArtifactSourceId::Template(template) = id else {
+                continue;
+            };
+            let artifact = match self.load_template(template) {
+                Ok(loaded) => Some(loaded.into_artifact()),
+                Err(_) => versions::newest_snapshot(self, id)?
+                    .map(|bytes| artifact::decode_template(&bytes).map_err(io::Error::other))
+                    .transpose()?,
+            };
+            records.push(match artifact {
+                Some(value) => TemplateDisplay {
+                    id: template.to_string(),
+                    name: value.name().into(),
+                    revision: value.revision().get().to_string(),
+                    lifecycle: format!("{:?}", value.lifecycle()),
+                    glossary_excluded: value.glossary_excluded(),
+                },
+                None => TemplateDisplay {
+                    id: template.to_string(),
+                    name: "내용을 읽을 수 없는 템플릿".into(),
+                    revision: String::new(),
+                    lifecycle: "Active".into(),
+                    glossary_excluded: false,
+                },
+            });
+        }
+        Ok(records)
+    }
+    pub(crate) fn display_documents(&self) -> io::Result<Vec<DocumentDisplay>> {
+        let mut ids = versions::targets(self)?
+            .into_iter()
+            .filter(|id| matches!(id, ArtifactSourceId::Document(_)))
+            .collect::<BTreeSet<_>>();
+        if let Some(directory) = self
+            .namespace(ArtifactType::Document, RepositoryOperation::ScanDocuments)
+            .map_err(io::Error::other)?
+        {
+            ids.extend(
+                self.entries(
+                    &directory,
+                    ArtifactType::Document,
+                    RepositoryOperation::ScanDocuments,
+                )
+                .map_err(io::Error::other)?,
+            );
+        }
+        // A verified layout can retain the identity of a missing item even when no
+        // usable versions remain. Discovery is display-only, never a complete scan.
+        if let Ok(Some(layout)) = self.load_layout() {
+            ids.extend(
+                layout
+                    .artifact()
+                    .nodes
+                    .keys()
+                    .copied()
+                    .map(ArtifactSourceId::Document),
+            );
+        }
+        let mut records = Vec::new();
+        for id in ids {
+            let ArtifactSourceId::Document(document) = id else {
+                continue;
+            };
+            let loaded = self.load_document(document).ok();
+            let available = loaded.is_some();
+            let artifact = match loaded {
+                Some(loaded) => Some(loaded.into_artifact()),
+                None => versions::newest_snapshot(self, id)?
+                    .map(|bytes| artifact::decode_document(&bytes).map_err(io::Error::other))
+                    .transpose()?,
+            };
+            records.push(match artifact {
+                Some(value) => DocumentDisplay {
+                    id: document,
+                    template: value.template_id().to_string(),
+                    name: value.name().into(),
+                    english_name: value.english_name().into(),
+                    glossary_summary: value.glossary_summary().into(),
+                    glossary_excluded: value.glossary_excluded(),
+                    available,
+                },
+                None => DocumentDisplay {
+                    id: document,
+                    template: String::new(),
+                    name: "내용을 읽을 수 없는 문서".into(),
+                    english_name: String::new(),
+                    glossary_summary: String::new(),
+                    glossary_excluded: false,
+                    available: false,
+                },
+            });
+        }
+        Ok(records)
     }
 
     pub(crate) fn scan_templates(&self) -> Result<CompleteTemplateScan, RepositoryError> {

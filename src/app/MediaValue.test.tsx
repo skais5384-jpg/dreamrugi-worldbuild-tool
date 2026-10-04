@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AssetList,
   MediaContext,
+  MediaTargetContext,
   mediaKind,
   UrlRead,
   youtubeEmbed,
@@ -117,6 +118,33 @@ describe("M3-7 media", () => {
       });
     },
   );
+  it("uses the actual target to show a retained filename for missing historical bytes", async () => {
+    const media = vi.fn().mockResolvedValue({
+      kind: "asset_error",
+      error: { category: "not_found", stage: "asset_read", nextAction: "" },
+      assetName: "관측 자료.txt",
+      assetState: "missing",
+    });
+    render(
+      <MediaContext.Provider
+        value={{ media, pollProgress: vi.fn().mockResolvedValue(undefined) }}
+      >
+        <MediaTargetContext.Provider
+          value={{ kind: "document", artifact: "document-owned" }}
+        >
+          <AssetList ids={["internal-asset-id"]} image={false} />
+        </MediaTargetContext.Provider>
+      </MediaContext.Provider>,
+    );
+    const reason = await screen.findByText(text("media.state.missing"));
+    expect(reason.closest('[role="alert"]')).toHaveTextContent("관측 자료.txt");
+    expect(screen.queryByText("internal-asset-id")).toBeNull();
+    expect(media).toHaveBeenCalledWith({
+      action: "asset_read",
+      asset: "internal-asset-id",
+      target: { kind: "document", artifact: "document-owned" },
+    });
+  });
   it("does not attach a late result after cancel or unmount", async () => {
     let finish: (id: string) => void = () => {};
     const importAsset = vi.fn(

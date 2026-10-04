@@ -103,6 +103,7 @@ fn m36_verify_export_current_product_samples_and_manual_project() {
         json!({"action":"edit_deposit","owner":d["owner"],"generation":"2","body":b}),
     );
     assert_eq!(dep["value"]["deposited"], true, "{dep}");
+    stage_latest_as_legacy_archive(&h, &dep["value"]["owner"]);
     let rows = h.work(json!({"kind":"recovery_page","cursor":null}));
     let row = &rows["page"]["entries"][0]["row"];
     let key: Key = serde_json::from_value(row["key"].clone()).unwrap();
@@ -174,19 +175,20 @@ fn format(h: &Harness, p: &str, kind: &str, id: &str, restore: Option<&str>) -> 
 fn edit_name(h: &Harness, p: &str, id: &str, name: &str) {
     let d = request(h, p, json!({"action":"edit_begin","document":id}))["value"].clone();
     assert_eq!(d["kind"], "editing", "{d}");
+    let generation = (d["generation"].as_str().unwrap().parse::<u64>().unwrap() + 1).to_string();
     let mut b = d["body"].clone();
     b["name"] = json!({"intent":"set","value":name});
     let saved = request(
         h,
         p,
-        json!({"action":"edit_draft","owner":d["owner"],"generation":"2","body":b,"save":true}),
+        json!({"action":"edit_draft","owner":d["owner"],"generation":generation,"body":b,"save":true}),
     );
     assert_eq!(saved["value"]["outcome"]["disk"], "committed", "{saved}");
     assert_eq!(
         request(
             h,
             p,
-            json!({"action":"edit_release","owner":d["owner"],"generation":"2"})
+            json!({"action":"edit_release","owner":d["owner"],"generation":generation})
         )["value"]["kind"],
         "released"
     );
@@ -236,7 +238,16 @@ fn m36_verify_format_uncertain_upgrade_restore_cold_recovery_then_edit_save() {
             let up = format(&h, &p, "document", &id, None);
             assert_eq!(up["disk"], "committed", "{up}");
             edit_name(&h, &p, &id, "복원 전 최신 내용");
-            original.clone()
+            let legacy = h
+                .root
+                .join(format!(".worldbuild/format-history/document-{id}"));
+            fs::create_dir_all(&legacy).unwrap();
+            fs::write(
+                legacy.join(format!("{}.json", digest(&original))),
+                &original,
+            )
+            .unwrap();
+            current_policy_fixture(&original, &format!("documents/{id}.json"))
         } else {
             crate::data::artifact::transition_format(
                 &original,
@@ -262,11 +273,20 @@ fn m36_verify_format_uncertain_upgrade_restore_cold_recovery_then_edit_save() {
         assert_eq!(fs::read(&path).unwrap(), target);
         let history = h
             .root
-            .join(format!(".worldbuild/format-history/document-{id}"));
-        assert_eq!(
-            fs::read(history.join(format!("{}.json", digest(&before)))).unwrap(),
-            before
+            .join(format!(".worldbuild/content-versions/document-{id}"));
+        let preserved = fs::read_dir(&history)
+            .unwrap()
+            .map(|entry| {
+                let value: Value =
+                    serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+                value["content"].as_str().unwrap().as_bytes().to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            preserved.contains(&before),
+            "exact pre-write content must be preserved"
         );
+        assert!(preserved.len() <= 10);
         let journals = fs::read_dir(h.root.join(".worldbuild/transactions"))
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
@@ -312,7 +332,6 @@ fn m36_verify_format_uncertain_upgrade_restore_cold_recovery_then_edit_save() {
         let id = oracle["document"].as_str().unwrap().to_owned();
         let before: Vec<u8> = serde_json::from_value(oracle["before"].clone()).unwrap();
         let path = base.join(format!("project/documents/{id}.json"));
-        let history = PathBuf::from(oracle["history"].as_str().unwrap());
         let h = Harness::at(base, backend::provider(), true);
         let p = h.open();
         assert_eq!(
@@ -320,10 +339,21 @@ fn m36_verify_format_uncertain_upgrade_restore_cold_recovery_then_edit_save() {
             before,
             "cold recovery rolls back undecided transaction"
         );
-        assert_eq!(
-            fs::read(history.join(format!("{}.json", digest(&before)))).unwrap(),
-            before
-        );
+        // Cold rollback preserves the exact pre-write state in bounded versions.
+        // Legacy format-history is not the new archive for every format write.
+        let versions = fs::read_dir(
+            h.root
+                .join(format!(".worldbuild/content-versions/document-{id}")),
+        )
+        .unwrap()
+        .map(|entry| {
+            let value: Value =
+                serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+            value["content"].as_str().unwrap().as_bytes().to_vec()
+        })
+        .collect::<Vec<_>>();
+        assert!(versions.contains(&before));
+        assert!(versions.len() <= 10);
         if !restore_case {
             let up = format(&h, &p, "document", &id, None);
             assert_eq!(up["disk"], "committed", "{up}");
@@ -341,7 +371,9 @@ fn m36_verify_mixed_versions_and_dirty_owner_format_gate_preserve_sources() {
     for old_template in [false, true] {
         let h = Harness::new();
         let p = h.open();
-        let (t, _) = h.template(&p);
+        let (t, creation_session) = h.template(&p);
+        let ended = h.control(json!({"kind":"session_control","project":p,"session":creation_session,"control":"end"}));
+        assert!(ended["error"].is_null(), "{ended}");
         let view = h.read_template(&p, &t);
         let whole = begin(&h, &p, view["view"].clone());
         let mut template_body = content(&h, &p, &whole)["body"].clone();
@@ -385,10 +417,18 @@ fn m36_verify_mixed_versions_and_dirty_owner_format_gate_preserve_sources() {
         } else {
             ("document", id.as_str(), dp.as_path(), 1)
         };
-        let original = old_header(path, version);
+        let legacy = old_header(path, version);
         let read = request(&h, &p, json!({"action":"read","document":id}));
         assert_eq!(read["value"]["kind"], "read", "{read}");
-        assert_eq!(read["value"]["schema"], if old_template { 6 } else { 1 });
+        assert_eq!(
+            read["value"]["schema"],
+            artifact::DOCUMENT_SCHEMA_VERSION.get()
+        );
+        let original = fs::read(path).unwrap();
+        assert_eq!(
+            original,
+            current_policy_fixture(&legacy, &format!("{kind}s/{target}.json"))
+        );
         let d = request(&h, &p, json!({"action":"edit_begin","document":id}))["value"].clone();
         let mut raw = d["body"].clone();
         raw["name"] = json!({"intent":"set","value":"보존할 dirty 초안"});
@@ -400,6 +440,7 @@ fn m36_verify_mixed_versions_and_dirty_owner_format_gate_preserve_sources() {
         assert_eq!(dirty["value"]["body"], raw, "{dirty}");
         let denied = format(&h, &p, kind, target, None);
         assert_eq!(denied["kind"], "rejected", "{denied}");
+        assert_eq!(denied["error"]["code"], "owners_remain", "{denied}");
         assert_eq!(fs::read(path).unwrap(), original);
         let dep = request(
             &h,
@@ -431,7 +472,11 @@ fn m36_verify_mixed_versions_and_dirty_owner_format_gate_preserve_sources() {
         assert_eq!(fs::read(path).unwrap(), original);
         assert!(release(&h, &p, &template_deposit, false)["error"].is_null());
         let up = format(&h, &p, kind, target, None);
-        assert_eq!(up["disk"], "committed", "{up}");
+        // Normal admission already converted the header. An explicit duplicate
+        // upgrade is rejected rather than manufacturing another format write.
+        assert_eq!(up["disk"], "not_applied", "{up}");
+        assert_eq!(up["error"]["code"], "save_rejected", "{up}");
+        assert_eq!(fs::read(path).unwrap(), original);
         edit_name(&h, &p, &id, "혼합 버전 정상 저장");
         let persisted: Value = serde_json::from_slice(&fs::read(&dp).unwrap()).unwrap();
         assert_eq!(

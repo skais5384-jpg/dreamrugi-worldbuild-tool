@@ -164,8 +164,24 @@ pub(super) fn plan(
             return Err(Code::WrongBinding.into());
         }
     }
-    let base = baseline(old_document.as_ref(), &old_template)?;
-    let current = baseline(current_document, current_template)?;
+    let mut base = baseline(old_document.as_ref(), &old_template)?;
+    let mut current = baseline(current_document, current_template)?;
+    // A definition added after the preserved document has no original cell.
+    // Its inherited value is not a concurrent document edit. Compare against
+    // that inherited baseline only while neither document stores this cell;
+    // an explicit current value must still require a genuine conflict choice.
+    for field in &current.fields {
+        let id = convert::id(&field.field)?;
+        if !old_template.fields().contains_key(&id)
+            && old_document
+                .as_ref()
+                .is_none_or(|d| !d.field_values().contains_key(&id))
+            && current_document.is_none_or(|d| !d.field_values().contains_key(&id))
+            && !base.fields.iter().any(|old| old.field == field.field)
+        {
+            base.fields.push(field.clone());
+        }
+    }
     let mut input = body(&envelope.draft)?;
     super::workspace::recovery_template::map_composite_document(
         envelope,
@@ -259,6 +275,17 @@ pub(super) fn plan(
     let value = |body: &EditBody| -> Reply<serde_json::Value> {
         serde_json::to_value(body).map_err(|_| Code::SerializationFailed.into())
     };
+    // Document cells are addressed by field identity; their vector order is
+    // not a document edit. Keep group instance order untouched.
+    for body in [
+        &mut base,
+        &mut current,
+        &mut effective,
+        &mut current_raw,
+        &mut input,
+    ] {
+        body.fields.sort_by(|a, b| a.field.cmp(&b.field));
+    }
     let mut plan = Plan::new(
         value(&base)?,
         value(&current)?,
@@ -315,19 +342,19 @@ pub(super) fn plan(
                 .and_then(|d| field.and_then(|id| d.field_values().get(&id)));
             let current_value =
                 current_document.and_then(|d| field.and_then(|id| d.field_values().get(&id)));
-            if old_value.is_some_and(|v| v.contains_unknown_storage_data())
-                && (current_value.is_none()
-                    || (old_value.is_some_and(|v| {
-                        matches!(
-                            v.validation_view(),
-                            crate::data::field_engine::validation::FieldValueView::Group(_)
-                        )
-                    }) && current_value.is_none_or(|v| {
-                        !matches!(
-                            v.validation_view(),
-                            crate::data::field_engine::validation::FieldValueView::Group(_)
-                        )
-                    })))
+            if old_value.is_some_and(|old| {
+                old.has_unknown_outer_data()
+                    && current_value.is_none_or(|current| !current.has_same_outer_extras(old))
+            }) {
+                change.status = "blocked";
+                change.reason =
+                    Some("원문의 추가 정보를 현재 값과 연결할 수 없어 입력을 보존합니다.".into());
+            }
+            if !change.path.iter().any(|key| key == "instances")
+                && old_value.is_some_and(|old| {
+                    old.contains_unknown_storage_data()
+                        && current_value.is_none_or(|current| !current.preserves_unknown_from(old))
+                })
             {
                 change.status = "blocked";
                 change.reason=Some("원문에 현재 앱이 해석하지 못하는 정보가 있습니다. 출처가 없는 위치에 다시 만들지 않고 원 보관본에 유지합니다. 나머지 항목은 선택해 회수할 수 있습니다.".into());
@@ -389,12 +416,36 @@ pub(super) fn plan(
                                 .unwrap_or(id);
                             old.instances.get(&source).map(|card| (id, source, card))
                         }) {
-                            if card.2.contains_unknown_storage_data()
-                                && now.is_none_or(|group| {
-                                    !group.instances.contains_key(&card.0)
-                                        && !group.instances.contains_key(&card.1)
+                            let current_card = now.and_then(|group| {
+                                group
+                                    .instances
+                                    .get(&card.0)
+                                    .or_else(|| group.instances.get(&card.1))
+                            });
+                            let child_id = change
+                                .path
+                                .iter()
+                                .enumerate()
+                                .skip(position + 3)
+                                .find_map(|(i, key)| {
+                                    (key == "fields").then(|| change.path.get(i + 2)).flatten()
                                 })
-                            {
+                                .and_then(|id| id.parse().ok());
+                            let custody_missing = if let Some(child_id) = child_id {
+                                card.2.values.get(&child_id).is_some_and(|original| {
+                                    original.contains_unknown_storage_data()
+                                        && current_card
+                                            .and_then(|current| current.values.get(&child_id))
+                                            .is_none_or(|current| {
+                                                !current.preserves_unknown_from(original)
+                                            })
+                                }) || current_card
+                                    .is_none_or(|current| !current.has_same_outer_extras(card.2))
+                            } else {
+                                current_card
+                                    .is_none_or(|current| !current.preserves_unknown_from(card.2))
+                            };
+                            if card.2.contains_unknown_storage_data() && custody_missing {
                                 change.status = "blocked";
                                 change.reason=Some("이 카드의 미지원 정보는 원 보관본에 유지됩니다. 현재 카드에 출처가 없어 손실 없이 다시 만들 수 없으므로 다른 항목을 회수하세요.".into());
                             }

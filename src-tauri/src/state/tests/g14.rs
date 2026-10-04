@@ -207,6 +207,21 @@ fn g14_process_child() {
     let scenario = std::env::var("G14_SCENARIO").unwrap();
     if action == "seed" && scenario == "pair" {
         pair::seed(&base);
+        // This matrix isolates transaction recovery from subsequent policy
+        // admission. Seed current canonical headers before capturing either
+        // transaction oracle; keep every lossless payload subtree unchanged.
+        for namespace in ["templates", "documents"] {
+            for entry in fs::read_dir(base.join("project").join(namespace)).unwrap() {
+                let path = entry.unwrap().path();
+                let relative = format!(
+                    "{namespace}/{}",
+                    path.file_name().unwrap().to_str().unwrap()
+                );
+                let original = fs::read(&path).unwrap();
+                let admitted = current_policy_fixture(&original, &relative);
+                fs::write(path, admitted).unwrap();
+            }
+        }
         return;
     }
     let phase = std::env::var("G14_PHASE").unwrap();

@@ -101,6 +101,7 @@ export class TestTransport implements Transport {
   cleanup = false;
   uncertain = false;
   rejectWrite = false;
+  creationRejectHasOwner = false;
   deletion: Extract<ResultDto, { kind: "write" }>["deletion"] = undefined;
   initializationFailed = false;
   initializationCleanupOutcome:
@@ -1051,6 +1052,11 @@ export class TestTransport implements Transport {
                 : { kind: "duplicate_template" },
         result,
         g6_clearable: !this.uncertain,
+        create_retry_safe:
+          input.kind === "create_template" &&
+          result.kind === "rejected" &&
+          !this.creationRejectHasOwner &&
+          !this.uncertain,
       });
     }
     this.results.set(operation, {

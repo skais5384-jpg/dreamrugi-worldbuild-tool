@@ -1,6 +1,7 @@
 import type { Field, Template } from "../bridge/types";
 import { text } from "../strings";
 import { fieldKind } from "./fieldEditing";
+import { MediaTargetContext } from "./MediaValue";
 import { ValueRead } from "./FieldValue";
 import { PropertyRow } from "./PropertyRow";
 import { lifecycleLabel } from "./statusLabels";
@@ -60,9 +61,6 @@ function ReadonlyField({ field }: { field: Field }) {
       <PropertyRow label={text("field.default")}>
         <ValueRead value={field.default} options={field.options} />
       </PropertyRow>
-      <PropertyRow label={text("field.initial")}>
-        <ValueRead value={field.initialDefault} options={field.options} />
-      </PropertyRow>
       {!!field.members?.length && (
         <details>
           <summary>{text("group.members")}</summary>
@@ -108,31 +106,35 @@ export function ReadonlyTemplate({
   actions?: ReactNode;
 }) {
   return (
-    <section className="template-read-detail">
-      <header className="template-detail-header">
-        <div>
-          <h2>{template.name || text("app.message19")}</h2>
-          <Badge
-            appearance="tint"
-            color={template.lifecycle === "Active" ? "success" : "warning"}
-          >
-            {lifecycleLabel(template.lifecycle)}
-          </Badge>
-        </div>
-        {actions && <div className="actions">{actions}</div>}
-      </header>
-      {!!template.fields.length && (
-        <section aria-label={text("whole.fields")}>
-          <h2>{text("whole.fields")}</h2>
-          {orderedFields(template).map((field) => (
-            <Fragment key={field.id}>
-              <SectionTitles template={template} before={field.id} />
-              <ReadonlyField field={field} />
-            </Fragment>
-          ))}
-          <SectionTitles template={template} before={null} />
-        </section>
-      )}
-    </section>
+    <MediaTargetContext.Provider
+      value={{ kind: "template", artifact: template.id }}
+    >
+      <section className="template-read-detail">
+        <header className="template-detail-header">
+          <div>
+            <h2>{template.name || text("app.message19")}</h2>
+            <Badge
+              appearance="tint"
+              color={template.lifecycle === "Active" ? "success" : "warning"}
+            >
+              {lifecycleLabel(template.lifecycle)}
+            </Badge>
+          </div>
+          {actions && <div className="actions">{actions}</div>}
+        </header>
+        {!!template.fields.length && (
+          <section aria-label={text("whole.fields")}>
+            <h2>{text("whole.fields")}</h2>
+            {orderedFields(template).map((field) => (
+              <Fragment key={field.id}>
+                <SectionTitles template={template} before={field.id} />
+                <ReadonlyField field={field} />
+              </Fragment>
+            ))}
+            <SectionTitles template={template} before={null} />
+          </section>
+        )}
+      </section>
+    </MediaTargetContext.Provider>
   );
 }

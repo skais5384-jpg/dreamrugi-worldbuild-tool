@@ -24,6 +24,8 @@ impl Drop for Fixture {
 }
 fn sample() -> Envelope {
     Envelope {
+        residual: None,
+        residual_ack: None,
         key: Key {
             project_fingerprint: "a".repeat(64),
             draft_id: "11111111-1111-4111-8111-111111111111".into(),
@@ -638,6 +640,7 @@ fn recovery_schema_header_generation_and_typed_depth_boundaries() {
     envelope.key.generation = 9_007_199_254_740_993;
     envelope.attempt = Some(Attempt {
         submitted_generation: envelope.key.generation,
+        recovery_checked: false,
         operation_id: uuid::Uuid::new_v4().to_string(),
         result: SaveState::Uncertain,
         candidate_digest: Some("b".repeat(64)),
@@ -698,6 +701,7 @@ fn recovery_followup_keeps_actual_submitted_generation() {
     e.key.generation = 3;
     e.attempt = Some(Attempt {
         submitted_generation: 2,
+        recovery_checked: false,
         operation_id: uuid::Uuid::new_v4().to_string(),
         result: SaveState::NotApplied,
         candidate_digest: None,

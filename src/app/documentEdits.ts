@@ -23,6 +23,42 @@ export interface EditEntry {
   closing?: boolean;
   /** A local SVN save remains unpublished until this exact document is committed. */
   localUncommitted?: boolean;
+  /** Display-only acknowledgement. Never substitutes for a terminal deposit receipt. */
+  checkpoint?: {
+    owner: string;
+    document: string;
+    generation: string;
+    body: string;
+  };
+}
+/** Match the wire representation, including omitted optional keep intents. */
+function checkpointBody(body: EditBody): string {
+  const normalized = {
+    ...body,
+    englishName: body.englishName ?? { intent: "keep" },
+    glossarySummary: body.glossarySummary ?? { intent: "keep" },
+    glossaryExcluded: body.glossaryExcluded ?? { intent: "keep" },
+  };
+  return JSON.stringify(normalized, (_key, value: unknown) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const entries = Object.entries(value).sort(([a], [b]) =>
+        a.localeCompare(b),
+      );
+      return Object.fromEntries(entries);
+    }
+    return value;
+  });
+}
+export function currentInputCheckpointed(e: EditEntry): boolean {
+  return (
+    !!e.checkpoint &&
+    !e.status.comparison &&
+    e.status.problem !== "DraftConflict" &&
+    e.checkpoint.owner === e.status.owner &&
+    e.checkpoint.document === e.status.document &&
+    e.checkpoint.generation === e.generation &&
+    e.checkpoint.body === checkpointBody(e.body)
+  );
 }
 export function emptyValue(v: Value): boolean {
   if (v.kind === "group") return false;
@@ -85,11 +121,7 @@ export function editableProblem(e: EditEntry): string | null {
       (d) => d.id === f.field,
     );
     if (definition?.kind === "Group") continue;
-    const required = definition?.required;
-    if (f.value.intent === "unset") {
-      if (required) return f.field;
-      continue;
-    }
+    if (f.value.intent === "unset") continue;
     if (
       (f.value.value.kind === "number" &&
         f.value.value.value !== "" &&
@@ -98,8 +130,7 @@ export function editableProblem(e: EditEntry): string | null {
           definition?.minimum,
           definition?.maximum,
         )) ||
-      (!emptyValue(f.value.value) && !valid(f.value.value)) ||
-      (required && emptyValue(f.value.value))
+      (!emptyValue(f.value.value) && !valid(f.value.value))
     )
       return f.field;
   }
@@ -191,6 +222,7 @@ export const editDirty = (e: EditEntry) =>
 const paused = (r: DocumentEditing) =>
   !!r.problem &&
   [
+    "DraftConflict",
     "Uncertain",
     "SourceChanged",
     "SaveFailed",
@@ -205,6 +237,8 @@ export class DocumentEdits {
   entries: Record<string, EditEntry> = {};
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private pending = new Map<string, Promise<void>>();
+  private checkpointTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private checkpointPending = new Map<string, Promise<void>>();
   private follow = new Set<string>();
   private closing = new Set<string>();
   private requests = new Map<string, symbol>();
@@ -254,7 +288,85 @@ export class DocumentEdits {
       generation: String(g),
       error: null,
     });
+    this.scheduleCheckpoint(id);
     this.schedule(id);
+  }
+  private scheduleCheckpoint(id: string) {
+    const timer = this.checkpointTimers.get(id);
+    if (timer) clearTimeout(timer);
+    this.checkpointTimers.set(
+      id,
+      setTimeout(() => {
+        this.checkpointTimers.delete(id);
+        void this.checkpointInput(id);
+      }, 250),
+    );
+  }
+  private async checkpointInput(id: string): Promise<void> {
+    const pending = this.checkpointPending.get(id);
+    if (pending) {
+      await pending;
+      return this.checkpointInput(id);
+    }
+    const entry = this.entries[id];
+    if (!entry || !editDirty(entry)) return;
+    const submitted = structuredClone(entry);
+    const run = (async () => {
+      try {
+        const result = await this.work({
+          action: "edit_draft",
+          owner: submitted.status.owner,
+          generation: submitted.generation,
+          body: submitted.body,
+          save: false,
+        });
+        if (
+          result.kind !== "editing" ||
+          result.document !== id ||
+          result.owner !== submitted.status.owner ||
+          result.generation !== submitted.generation
+        )
+          throw new BridgeFailure("protocol");
+        const current = this.entries[id];
+        if (
+          current?.status.owner === submitted.status.owner &&
+          current.generation === submitted.generation &&
+          !submitted.status.comparison &&
+          !current.status.comparison &&
+          !result.comparison &&
+          result.problem !== "DraftConflict" &&
+          checkpointBody(current.body) === checkpointBody(submitted.body) &&
+          checkpointBody(result.body) === checkpointBody(submitted.body)
+        )
+          this.publish(id, {
+            ...current,
+            checkpoint: {
+              owner: result.owner,
+              document: id,
+              generation: result.generation,
+              body: checkpointBody(submitted.body),
+            },
+          });
+      } catch (error) {
+        const current = this.entries[id];
+        if (
+          current?.status.owner === submitted.status.owner &&
+          current.generation === submitted.generation
+        )
+          this.publish(id, {
+            ...current,
+            checkpoint: undefined,
+            error: safeFailure(error),
+          });
+      }
+    })();
+    this.checkpointPending.set(id, run);
+    try {
+      await run;
+    } finally {
+      if (this.checkpointPending.get(id) === run)
+        this.checkpointPending.delete(id);
+    }
   }
   field(id: string, field: string, value: Intent<Value>) {
     this.update(id, (b) => ({
@@ -474,6 +586,40 @@ export class DocumentEdits {
     }
     return null;
   }
+  async resume(id: string, selected: string[]) {
+    const entry = this.entries[id];
+    if (
+      !entry ||
+      entry.busy ||
+      !entry.status.comparison ||
+      this.pending.has(id)
+    )
+      return;
+    this.publish(id, { ...entry, busy: true });
+    try {
+      const result = await this.work({
+        action: "edit_resume",
+        owner: entry.status.owner,
+        selected,
+      });
+      if (this.entries[id]?.status.owner !== entry.status.owner) return;
+      if (
+        result.kind !== "editing" ||
+        result.owner !== entry.status.owner ||
+        result.document !== id
+      )
+        throw new BridgeFailure("protocol");
+      this.install(result);
+    } catch (error) {
+      const current = this.entries[id];
+      if (current?.status.owner === entry.status.owner)
+        this.publish(id, {
+          ...current,
+          busy: false,
+          error: safeFailure(error),
+        });
+    }
+  }
   async refresh(id: string) {
     await this.reconcile(id, false);
   }
@@ -584,31 +730,50 @@ export class DocumentEdits {
     owner: string,
   ): Promise<boolean> {
     this.clear(id);
+    const checkpointTimer = this.checkpointTimers.get(id);
+    if (checkpointTimer) clearTimeout(checkpointTimer);
+    this.checkpointTimers.delete(id);
+    await this.checkpointPending.get(id);
     this.follow.delete(id);
     const p = this.pending.get(id);
     if (p) await p;
     if (!this.entries[id]) return true;
     if (this.entries[id].status.owner !== owner) return false;
     const entry = this.entries[id];
+    const cancelComparison = !!entry.status.comparison;
     // A confirmed local SVN save is already durable even before commit. Its
     // acknowledged UI body can differ from the submitted raw in the same
     // generation, so it must not be submitted as a new recovery draft.
     const preserve =
       deposit && (editDirty(entry) || !!entry.status.problem || entry.paused);
-    if (!(
-      preserve &&
-      entry?.status.deposited &&
-      entry.status.generation === entry.generation
-    ))
+    if (
+      !cancelComparison &&
+      !(
+        preserve &&
+        entry?.status.deposited &&
+        entry.status.generation === entry.generation
+      )
+    )
       await this.submit(id, preserve);
     const e = this.entries[id];
     if (!e || e.status.owner !== owner || e.busy) return false;
     if (
+      !cancelComparison &&
       preserve &&
       !(e.status.deposited && e.status.generation === e.generation)
     )
       return false;
     if (
+      !cancelComparison &&
+      !preserve &&
+      (editDirty(e) ||
+        e.paused ||
+        e.error ||
+        e.status.saved_generation !== e.generation)
+    )
+      return false;
+    if (
+      !cancelComparison &&
       editDirty(e) &&
       !(e.status.deposited && e.status.generation === e.generation)
     )

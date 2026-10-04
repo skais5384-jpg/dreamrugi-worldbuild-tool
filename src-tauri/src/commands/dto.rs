@@ -215,6 +215,11 @@ pub(crate) enum Work {
         snapshot: Id,
         offset: String,
     },
+    ResumeTemplateDraft {
+        project: Id,
+        session: Id,
+        selected: Vec<String>,
+    },
     RefreshTemplateDraft {
         project: Id,
         session: Id,
@@ -435,6 +440,7 @@ impl Work {
             | Self::TemplateDraft { project, .. }
             | Self::TemplateDraftContent { project, .. }
             | Self::RefreshTemplateDraft { project, .. }
+            | Self::ResumeTemplateDraft { project, .. }
             | Self::ReleaseTemplateDraft { project, .. } => Some(*project),
             Self::Open { .. }
             | Self::CreateProject { .. }
@@ -485,6 +491,7 @@ impl Work {
             Self::TemplateDraft { session, .. }
             | Self::TemplateDraftContent { session, .. }
             | Self::RefreshTemplateDraft { session, .. }
+            | Self::ResumeTemplateDraft { session, .. }
             | Self::ReleaseTemplateDraft { session, .. } => Some(*session),
             Self::UpdateTemplate { session, .. }
             | Self::TombstoneTemplate { session, .. }
@@ -634,6 +641,7 @@ pub(crate) enum Response {
         intent: Option<G6Intent>,
         result: Box<ResultDto>,
         g6_clearable: bool,
+        create_retry_safe: bool,
     },
     Project {
         project: Id,

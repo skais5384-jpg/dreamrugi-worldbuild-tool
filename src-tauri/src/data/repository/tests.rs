@@ -20,7 +20,7 @@ use std::{
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
-const TEMPLATE: &str = "11111111-1111-4111-8111-111111111111";
+pub(super) const TEMPLATE: &str = "11111111-1111-4111-8111-111111111111";
 const OTHER: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const FIELD: &str = "22222222-2222-4222-8222-222222222222";
 const ORPHAN: &str = "33333333-3333-4333-8333-333333333333";
@@ -28,13 +28,13 @@ const CANARY: &str = "credential=repository-secret C:/Users/private-user/body.js
 const TIME: &str = "2026-09-07T01:02:03.004Z";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
-struct Fixture {
+pub(super) struct Fixture {
     base: PathBuf,
-    root: PathBuf,
+    pub(super) root: PathBuf,
     locks: PathBuf,
 }
 impl Fixture {
-    fn new() -> io::Result<Self> {
+    pub(super) fn new() -> io::Result<Self> {
         for _ in 0..128 {
             let base = std::env::temp_dir().join(format!(
                 "worldbuild-g3-test-{}-{}",
@@ -105,7 +105,7 @@ fn template_value(id: &str, lifecycle: &str) -> Value {
         "name":CANARY,"lifecycle":lifecycle,"presentation":{},"fieldOrder":[],"fields":{},
         "createdAtUtc":TIME,"updatedAtUtc":TIME,"future":null})
 }
-fn template_bytes(id: &str, lifecycle: &str) -> Vec<u8> {
+pub(super) fn template_bytes(id: &str, lifecycle: &str) -> Vec<u8> {
     let input = serde_json::to_vec(&template_value(id, lifecycle)).expect("fixture JSON");
     let artifact =
         artifact::decode_template(&input).expect("fixture full Template codec admission");
@@ -116,7 +116,7 @@ fn document_value(n: usize, template: &str) -> Value {
         "templateRevision":1,"name":CANARY,"fieldValues":{},"orphanedFieldDefinitions":{},
         "createdAtUtc":TIME,"updatedAtUtc":TIME,"future":null})
 }
-fn document_bytes(n: usize, template: &str) -> Vec<u8> {
+pub(super) fn document_bytes(n: usize, template: &str) -> Vec<u8> {
     let input = serde_json::to_vec(&document_value(n, template)).expect("fixture JSON");
     let artifact =
         artifact::decode_document(&input).expect("fixture full Document codec admission");
@@ -1070,7 +1070,8 @@ fn late_corruption_future_and_semantic_error_override_reference_observations() -
             fixture.document(1, if references { TEMPLATE } else { OTHER })?;
             let mut bad = document_value(2, OTHER);
             if failure == "future" {
-                bad["schemaVersion"] = json!(7);
+                bad["schemaVersion"] =
+                    json!(crate::data::artifact::DOCUMENT_SCHEMA_VERSION.get() + 1);
             }
             if failure == "semantic" {
                 bad["fieldValues"][FIELD] = json!({"kind":"number","value":"not-a-number"});
@@ -1335,5 +1336,35 @@ fn complete_document_order_is_deterministic_and_other_project_areas_are_ignored(
             .collect::<Vec<_>>()
     );
     assert_eq!(inventory(&fixture.root)?, before);
+    Ok(())
+}
+
+#[test]
+fn all_corrupt_content_stays_discoverable_without_granting_a_complete_scan() -> TestResult {
+    let fixture = Fixture::new()?;
+    let mut runtime = fixture.ready_runtime()?;
+    let ready = runtime.ready()?;
+    let repository = ArtifactRepository::new(&ready)?;
+    let template_id = TEMPLATE.parse()?;
+    fs::create_dir(fixture.root.join("templates"))?;
+    fs::write(
+        fixture.root.join(format!("templates/{TEMPLATE}.json")),
+        template_bytes(TEMPLATE, "active"),
+    )?;
+    versions::confirm(&repository, ArtifactSourceId::Template(template_id), TIME)?;
+    let canonical = fixture.root.join(format!("templates/{TEMPLATE}.json"));
+    let historical = fixture.root.join(format!(
+        ".worldbuild/content-versions/template-{TEMPLATE}/v00000000000000000001.json"
+    ));
+    fs::write(&canonical, b"damaged current source")?;
+    fs::write(&historical, b"damaged historical source")?;
+    let rows = repository.display_templates()?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, TEMPLATE);
+    assert_eq!(rows[0].name, "내용을 읽을 수 없는 템플릿");
+    assert!(repository.scan_templates().is_err());
+    assert!(!versions::list(&repository, ArtifactSourceId::Template(template_id))?[0].available);
+    assert_eq!(fs::read(canonical)?, b"damaged current source");
+    assert_eq!(fs::read(historical)?, b"damaged historical source");
     Ok(())
 }

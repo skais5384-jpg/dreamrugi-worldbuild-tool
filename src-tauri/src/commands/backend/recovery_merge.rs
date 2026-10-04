@@ -3,9 +3,9 @@
 //! artifact preparation. Unknown canonical storage stays with those source owners.
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Change {
     pub(crate) id: String,
@@ -22,6 +22,7 @@ pub(crate) struct Plan {
     pub(crate) changes: Vec<Change>,
     current: Value,
     preserved: Value,
+    replacements: BTreeMap<Vec<String>, Option<Value>>,
 }
 
 #[derive(Clone, PartialEq, Deserialize, Serialize)]
@@ -272,7 +273,67 @@ impl Plan {
             changes,
             current: normalize(&current_raw, ""),
             preserved: normalize(&preserved_raw, ""),
+            replacements: BTreeMap::new(),
         }
+    }
+    /// Two projections share the current source. Overlapping input is retained
+    /// rather than silently picking one payload; callers must not retire it.
+    pub(crate) fn combine(mut self, other: Self) -> Result<Self, ()> {
+        if self.current != other.current {
+            return Err(());
+        }
+        for change in other.changes {
+            let replacement = other
+                .replacements
+                .get(&change.path)
+                .cloned()
+                .unwrap_or_else(|| at(&other.preserved, &change.path).cloned());
+            if let Some(existing) = self.changes.iter_mut().find(|old| old.path == change.path) {
+                if existing.preserved == change.preserved {
+                    if change.status == "blocked" {
+                        existing.status = "blocked";
+                        existing.reason = change.reason;
+                        self.replacements.insert(change.path, replacement);
+                    }
+                    continue;
+                }
+                return Err(());
+            }
+            if self
+                .changes
+                .iter()
+                .any(|old| old.path.starts_with(&change.path) || change.path.starts_with(&old.path))
+            {
+                return Err(());
+            }
+            // The primary raw input can be Keep for a whole group. Do not
+            // reconstruct or replace that entire subtree with old residual
+            // input. Each selected change reads only its own retained source.
+            self.replacements.insert(change.path.clone(), replacement);
+            self.changes.push(change);
+        }
+        Ok(self)
+    }
+    /// Keep only changes that cannot yet be applied. The unchanged portions use
+    /// the current source as their baseline, so later edits are not replayed.
+    pub(crate) fn blocked_input(&self) -> Result<Option<Value>, ()> {
+        let mut plan = self.clone();
+        let selected = plan
+            .changes
+            .iter_mut()
+            .filter_map(|change| {
+                if change.status == "blocked" {
+                    change.status = "proposed";
+                    Some(change.id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            return Ok(None);
+        }
+        plan.apply(&selected).map(Some)
     }
     pub(crate) fn apply(&self, selected: &[String]) -> Result<Value, ()> {
         let unique: BTreeSet<_> = selected.iter().collect();
@@ -293,7 +354,11 @@ impl Plan {
             if !unique.contains(&change.id) {
                 continue;
             }
-            let mut replacement = at(&self.preserved, &change.path).cloned();
+            let mut replacement = self
+                .replacements
+                .get(&change.path)
+                .cloned()
+                .unwrap_or_else(|| at(&self.preserved, &change.path).cloned());
             if change.path.last().is_some_and(|key| key == "$order") {
                 if let (Some(Value::Array(current)), Some(Value::Array(chosen))) =
                     (at(&result, &change.path), replacement.as_mut())
@@ -323,6 +388,25 @@ impl Plan {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn atomic_group_comparison_keeps_normal_gui_arrays_and_safe_apply() {
+        let base = json!({"fields":[{"field":"g","value":{"intent":"set","value":{"kind":"group","instances":[{"id":"old","fields":[]}]}}}]});
+        let current = json!({"fields":[{"field":"g","value":{"intent":"unset"}}]});
+        let input = json!({"fields":[{"field":"g","value":{"intent":"set","value":{"kind":"group","instances":[{"id":"card","fields":[{"field":"child","value":{"intent":"set","value":{"kind":"single_line_text","value":"보존 내용"}}}]}]}}}]});
+        let plan = Plan::new(base, current.clone(), input.clone(), current, input.clone());
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].status, "conflict");
+        let dto = serde_json::to_value(&plan.changes).unwrap();
+        assert!(
+            dto[0]["preserved"]["value"]["instances"].is_array(),
+            "synthetic comparison: {dto}"
+        );
+        assert!(dto[0]["preserved"]["value"]["instances"][0]["fields"].is_array());
+        for key in ["original", "current", "preserved"] {
+            assert!(!dto[0][key].to_string().contains("$items"));
+        }
+        assert_eq!(plan.apply(&[plan.changes[0].id.clone()]).unwrap(), input);
+    }
     #[test]
     fn different_fields_and_current_new_definitions_survive_selected_recovery() {
         let base = json!({"fields":[{"id":"a","label":"old"},{"id":"b","label":"old"}]});
@@ -372,5 +456,23 @@ mod tests {
         let applied = plan.apply(&[label]).unwrap();
         assert_eq!(applied["name"], "current");
         assert_eq!(applied["fields"][0]["label"], "input");
+    }
+    #[test]
+    fn identical_value_never_downgrades_blocked_provenance_when_combining() {
+        let base = json!({"name":"old"});
+        let current = json!({"name":"current"});
+        let input = json!({"name":"new"});
+        let primary = Plan::new(
+            base.clone(),
+            current.clone(),
+            input.clone(),
+            current.clone(),
+            input.clone(),
+        );
+        let mut blocked = Plan::new(base, current.clone(), input.clone(), current, input);
+        blocked.changes[0].status = "blocked";
+        let combined = primary.combine(blocked).unwrap();
+        assert_eq!(combined.changes[0].status, "blocked");
+        assert!(combined.apply(&[combined.changes[0].id.clone()]).is_err());
     }
 }

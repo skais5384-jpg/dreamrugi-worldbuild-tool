@@ -91,10 +91,30 @@ pub(crate) struct TransactionOperation {
     pub(crate) staged_schema_version: Option<SchemaVersion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) original_schema_version: Option<SchemaVersion>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) original_raw: bool,
 }
 
 impl TransactionOperation {
     fn validate(&self, transaction_id: Option<&TransactionId>) -> TransactionModelResult<()> {
+        if self.original_raw
+            && (!self.original_existed
+                || self.original_schema_version.is_some()
+                || self.staged_schema_version.is_none()
+                || !matches!(
+                    crate::data::repository::ArtifactSourceId::from_target(&self.target_path),
+                    Some(
+                        crate::data::repository::ArtifactSourceId::Template(_)
+                            | crate::data::repository::ArtifactSourceId::Document(_)
+                    )
+                ))
+        {
+            return Err(TransactionModelError::invalid_journal(
+                transaction_id,
+                "operations.originalRaw",
+                "raw originals require an observed managed artifact replacement",
+            ));
+        }
         if self.staged_path != staged_artifact_path(self.index) {
             return Err(TransactionModelError::invalid_journal(
                 transaction_id,
@@ -186,8 +206,13 @@ impl TransactionStateRecord {
                         &target.original_sha256,
                         &target.original_schema_version,
                     ) {
-                        (None, None, None) => true,
-                        (Some(_), Some(hash), Some(_)) => is_lowercase_sha256(hash),
+                        (None, None, None) if !target.original_raw => true,
+                        (Some(_), Some(hash), Some(_)) if !target.original_raw => {
+                            is_lowercase_sha256(hash)
+                        }
+                        (Some(_), Some(hash), None) if target.original_raw => {
+                            is_lowercase_sha256(hash)
+                        }
                         _ => false,
                     };
                     if !valid || previous.is_some_and(|p| p >= &target.target_path) {
@@ -249,6 +274,8 @@ pub(super) struct OriginalTarget {
     pub(super) original_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) original_schema_version: Option<SchemaVersion>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) original_raw: bool,
 }
 impl TransactionManifest {
     pub(super) fn original_targets(&self) -> Option<Vec<OriginalTarget>> {
@@ -260,6 +287,7 @@ impl TransactionManifest {
                     original_size: op.original_size,
                     original_sha256: op.original_sha256.clone(),
                     original_schema_version: op.original_schema_version,
+                    original_raw: op.original_raw,
                 })
                 .collect()
         })

@@ -1,4 +1,5 @@
 import { GroupRead } from "./GroupValue";
+import { missingRequired } from "./requiredWarnings";
 import { AssetList, UrlRead } from "./MediaValue";
 import { createElement, type ReactNode } from "react";
 import { Label } from "@fluentui/react-components";
@@ -103,6 +104,8 @@ export function ValueRead({
   field?: Field;
   reference?: ReferenceContext;
 }) {
+  if (field && missingRequired(field, value))
+    return <span>{text("required.unwritten")}</span>;
   switch (value.kind) {
     case "group":
       return <GroupRead value={value} field={field} reference={reference} />;
@@ -122,14 +125,19 @@ export function ValueRead({
     case "single_choice":
       return (
         <span>
-          {options.find((o) => o.id === value.option)?.label ?? value.option}
+          {options.find((o) => o.id === value.option)?.label ??
+            text("field.unavailableOption")}
         </span>
       );
     case "multi_choice":
       return (
         <span>
           {value.options
-            .map((id) => options.find((o) => o.id === id)?.label ?? id)
+            .map(
+              (id) =>
+                options.find((o) => o.id === id)?.label ??
+                text("field.unavailableOption"),
+            )
             .join(", ")}
         </span>
       );

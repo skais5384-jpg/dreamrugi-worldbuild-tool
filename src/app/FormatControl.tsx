@@ -1,5 +1,11 @@
-import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
-import { useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Dialog,
   DialogActions,
@@ -13,100 +19,188 @@ import type { TemplateController } from "./controller";
 import type { DocumentRequest, DocumentResponse } from "../bridge/documents";
 import { BridgeFailure } from "../bridge/client";
 import { safeFailure } from "./operations";
-import { Button, Select } from "../ui/Controls";
+import { Button } from "../ui/Controls";
 import { IconCommand } from "../ui/IconCommand";
+import { InlineNotice } from "../ui/InlineNotice";
+import type { ReferenceContext } from "./DocumentReferenceValue";
+import { DocumentContent } from "./DocumentContent";
+import { ReadonlyTemplate } from "./ReadonlyTemplate";
+import {
+  MediaActiveContext,
+  MediaContext,
+  ExternalMediaPreviewContext,
+  AssetNamesContext,
+  MediaTargetContext,
+} from "./MediaValue";
 import { text } from "../strings";
 import { formatLocalDateTime } from "./localDateTime";
-type Inspection = Extract<DocumentResponse, { kind: "format" }>;
-/** 쓰기 버튼을 누르기 전에 현재 버전·복원 자료를 조회하고 사용자가 동작을 고른다. */
-export function FormatControl({
+
+type Versions = Extract<DocumentResponse, { kind: "versions" }>;
+type Preview = Extract<DocumentResponse, { kind: "version_preview" }>;
+type FormatControlProps = {
+  shell: TemplateController;
+  kind: "template" | "document";
+  artifact: string;
+  locked: boolean;
+  reference?: ReferenceContext;
+  changed: () => Promise<void>;
+};
+export function FormatControl(props: FormatControlProps) {
+  const { shell, kind, artifact } = props;
+  const projectId = useSyncExternalStore(
+    shell.subscribe,
+    shell.snapshot,
+    shell.snapshot,
+  ).projectId;
+  return (
+    <FormatControlSession
+      key={JSON.stringify([projectId, kind, artifact])}
+      {...props}
+    />
+  );
+}
+function FormatControlSession({
   shell,
   kind,
   artifact,
   locked,
   changed,
-}: {
-  shell: TemplateController;
-  kind: "template" | "document";
-  artifact: string;
-  locked: boolean;
-  changed: () => Promise<void>;
-}) {
-  const [info, setInfo] = useState<Inspection | null>(null);
+  reference,
+}: FormatControlProps) {
   const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false),
-    [message, setMessage] = useState("");
-  const [restore, setRestore] = useState("");
+  const [versions, setVersions] = useState<Versions | null>(null);
+  const [selected, setSelected] = useState("");
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  const pending = useRef(0);
   useEffect(() => {
-    setInfo(null);
-    setRestore("");
-    setMessage("");
-  }, [artifact, kind]);
+    const gate = pending;
+    return () => {
+      ++gate.current;
+    };
+  }, []);
   useEffect(() => {
     if (!busy) return;
     const timer = setInterval(() => void shell.operations.queryAll(), 250);
     return () => clearInterval(timer);
   }, [busy, shell]);
-  async function request(request: DocumentRequest) {
-    const project = shell.snapshot().projectId;
-    if (!project) throw new BridgeFailure("protocol");
-    const { result } = await shell.operations.run(
-      { kind: "document_workspace", project, request },
-      text("format.title"),
-    );
-    if (result.kind === "rejected")
-      throw new BridgeFailure("boundary", undefined, result.error);
-    return result.kind === "document_workspace" ? result.value : result;
-  }
-  async function inspect() {
+  const request = useCallback(
+    async (request: DocumentRequest) => {
+      const project = shell.snapshot().projectId;
+      if (!project) throw new BridgeFailure("protocol");
+      const generation = shell.projectGeneration();
+      const { result } = await shell.operations.run(
+        { kind: "document_workspace", project, request },
+        text("format.title"),
+      );
+      if (
+        shell.snapshot().projectId !== project ||
+        shell.projectGeneration() !== generation
+      )
+        throw new BridgeFailure("protocol");
+      if (result.kind === "rejected")
+        throw new BridgeFailure("boundary", undefined, result.error);
+      return result.kind === "document_workspace" ? result.value : result;
+    },
+    [shell],
+  );
+  const previewMedia = useMemo(
+    () => ({
+      media: request,
+      pollProgress: () => shell.operations.queryAll(),
+    }),
+    [request, shell],
+  );
+  const mediaTarget = useMemo(() => ({ kind, artifact }), [kind, artifact]);
+  async function select(version: string) {
+    const current = ++pending.current;
+    setSelected(version);
+    setPreview(null);
     setBusy(true);
     setMessage("");
+    setConfirm(false);
     try {
-      const r = await request({ action: "format_inspect", kind, artifact });
-      if (r.kind !== "format") throw new BridgeFailure("protocol");
-      setInfo(r);
-    } catch (e) {
-      setMessage(safeFailure(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-  function show() {
-    setOpen(true);
-    void inspect();
-  }
-  async function apply(hash: string | null) {
-    if (!info) return;
-    setBusy(true);
-    setMessage("");
-    try {
-      const r = await request({
-        action: "format_change",
+      const response = await request({
+        action: "version_preview",
         kind,
         artifact,
-        source: info.source,
-        restore: hash,
+        version,
       });
-      if (r.kind !== "write") throw new BridgeFailure("protocol");
+      if (current !== pending.current) return;
+      if (response.kind !== "version_preview")
+        throw new BridgeFailure("protocol");
+      setPreview(response);
+    } catch (error) {
+      if (current === pending.current) setMessage(safeFailure(error));
+    } finally {
+      if (current === pending.current) setBusy(false);
+    }
+  }
+  async function show() {
+    const current = ++pending.current;
+    setOpen(true);
+    setBusy(true);
+    setMessage("");
+    setVersions(null);
+    setPreview(null);
+    setConfirm(false);
+    try {
+      const response = await request({
+        action: "versions_list",
+        kind,
+        artifact,
+      });
+      if (current !== pending.current) return;
+      if (response.kind !== "versions") throw new BridgeFailure("protocol");
+      setVersions(response);
+      const newest = response.versions.find((row) => row.available);
+      if (newest) {
+        await select(newest.version);
+        return;
+      }
+    } catch (error) {
+      if (current === pending.current) setMessage(safeFailure(error));
+    } finally {
+      if (current === pending.current) setBusy(false);
+    }
+  }
+  async function restore() {
+    if (!preview || locked) return;
+    const current = ++pending.current;
+    setBusy(true);
+    setMessage("");
+    try {
+      const response = await request({
+        action: "version_restore",
+        kind,
+        artifact,
+        version: preview.version,
+        source: preview.source,
+      });
+      if (current !== pending.current) return;
+      if (response.kind !== "write") throw new BridgeFailure("protocol");
       if (
-        r.disk !== "committed" ||
-        r.error ||
-        r.cleanup_failed ||
-        r.recovery_required
+        !["committed", "no_write"].includes(response.disk) ||
+        response.error ||
+        response.cleanup_failed ||
+        response.recovery_required
       ) {
         setMessage(text("format.incomplete"));
         await shell.checkStatus();
         return;
       }
-      setInfo(null);
-      setRestore("");
-      setMessage("");
       await changed();
       setOpen(false);
-    } catch (e) {
-      setMessage(safeFailure(e));
+      setConfirm(false);
+    } catch (error) {
+      if (current === pending.current) {
+        setMessage(safeFailure(error));
+        setConfirm(false);
+      }
     } finally {
-      setBusy(false);
+      if (current === pending.current) setBusy(false);
     }
   }
   return (
@@ -115,84 +209,156 @@ export function FormatControl({
         label={text("format.title")}
         icon={<History20Regular />}
         disabled={busy}
-        onClick={show}
+        onClick={() => void show()}
       />
       <Dialog
         open={open}
         modalType="modal"
-        onOpenChange={(_, data) => setOpen(data.open)}
+        onOpenChange={(_, data) => {
+          if (!busy) {
+            ++pending.current;
+            setOpen(data.open);
+          }
+        }}
       >
-        <DialogSurface className="format-history-dialog">
+        <DialogSurface className="content-versions-dialog">
           <DialogBody>
             <DialogTitle>{text("format.title")}</DialogTitle>
             <DialogContent>
               <p className="format-history-help">{text("format.help")}</p>
-              {busy && !info && <p role="status">{text("format.loading")}</p>}
-              {message && (
-                <FloatingNotice intent="warning">
-                  <FloatingNoticeContent>{message}</FloatingNoticeContent>
-                </FloatingNotice>
+              {message && <InlineNotice kind="warning">{message}</InlineNotice>}
+              {busy && <p role="status">{text("format.loading")}</p>}
+              {versions && !versions.versions.length && (
+                <p>{text("format.empty")}</p>
               )}
-              {info && (
-                <div className="format-history-content">
-                  <section>
-                    <h3>{text("format.current")}</h3>
-                    <p>
-                      {text("format.version", {
-                        version: String(info.schema),
-                      })}
-                    </p>
-                    {info.schema < (kind === "template" ? 5 : 4) && (
-                      <Button
+              {versions &&
+                versions.versions.length > 0 &&
+                !versions.versions.some((row) => row.available) && (
+                  <InlineNotice kind="warning">
+                    {text("format.backupNeeded")}
+                  </InlineNotice>
+                )}
+              {!!versions?.versions.length && (
+                <div className="content-versions-grid">
+                  <div
+                    role="listbox"
+                    aria-label={text("format.savedVersions")}
+                    className="content-versions-list"
+                  >
+                    {versions.versions.map((row) => (
+                      <button
                         type="button"
-                        disabled={locked || busy}
-                        onClick={() => void apply(null)}
+                        role="option"
+                        key={row.version}
+                        aria-selected={selected === row.version}
+                        disabled={busy || !row.available}
+                        onClick={() => void select(row.version)}
                       >
-                        {text("format.upgrade")}
-                      </Button>
-                    )}
-                  </section>
-                  <section>
-                    <h3>{text("format.savedVersions")}</h3>
-                    {info.history.length > 0 ? (
-                      <>
-                        <Select
-                          aria-label={text("format.restore")}
-                          value={restore}
-                          disabled={locked || busy}
-                          onChange={(e) => setRestore(e.target.value)}
-                        >
-                          <option value="">{text("format.choose")}</option>
-                          {info.history.map((h, index) => (
-                            <option key={h.digest} value={h.digest}>
-                              {text("format.version", {
-                                version: String(h.schema),
-                              })}{" "}
-                              · {index + 1} ·{" "}
-                              {formatLocalDateTime(h.content_updated_at)}
-                            </option>
-                          ))}
-                        </Select>
-                        <p className="format-history-help">
-                          {text("format.restoreHelp")}
-                        </p>
-                        <Button
-                          type="button"
-                          disabled={!restore || locked || busy}
-                          onClick={() => void apply(restore)}
-                        >
-                          {text("format.restore")}
-                        </Button>
-                      </>
-                    ) : (
-                      <p>{text("format.empty")}</p>
-                    )}
+                        <strong>
+                          {text("format.version", { version: row.version })}
+                        </strong>
+                        <span>
+                          {row.available
+                            ? formatLocalDateTime(row.recorded_at_utc)
+                            : text("format.unavailable")}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <section
+                    className="content-version-preview"
+                    aria-label={text("format.preview")}
+                  >
+                    <MediaContext.Provider value={previewMedia}>
+                      <MediaTargetContext.Provider value={mediaTarget}>
+                        <MediaActiveContext.Provider value={false}>
+                          <ExternalMediaPreviewContext.Provider value={false}>
+                            <AssetNamesContext.Provider
+                              value={preview?.asset_names ?? {}}
+                            >
+                              {preview?.template && (
+                                <ReadonlyTemplate template={preview.template} />
+                              )}
+                              {preview?.document && (
+                                <article>
+                                  <header>
+                                    <h2>{preview.document.name}</h2>
+                                    {!!preview.document.englishName && (
+                                      <p>{preview.document.englishName}</p>
+                                    )}
+                                    {!!preview.document.glossarySummary && (
+                                      <p>{preview.document.glossarySummary}</p>
+                                    )}
+                                  </header>
+                                  <DocumentContent
+                                    read={preview.document}
+                                    reference={
+                                      reference
+                                        ? {
+                                            ...reference,
+                                            preview: true,
+                                            open: () => {},
+                                          }
+                                        : undefined
+                                    }
+                                  />
+                                </article>
+                              )}
+                            </AssetNamesContext.Provider>
+                          </ExternalMediaPreviewContext.Provider>
+                        </MediaActiveContext.Provider>
+                      </MediaTargetContext.Provider>
+                    </MediaContext.Provider>
                   </section>
                 </div>
               )}
+              {confirm && (
+                <InlineNotice kind="warning">
+                  {text(
+                    kind === "template"
+                      ? "format.restoreTemplateHelp"
+                      : "format.restoreDocumentHelp",
+                  )}
+                </InlineNotice>
+              )}
             </DialogContent>
             <DialogActions>
-              <Button type="button" onClick={() => setOpen(false)}>
+              {confirm ? (
+                <>
+                  <Button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setConfirm(false)}
+                  >
+                    {text("common.cancel")}
+                  </Button>
+                  <Button
+                    type="button"
+                    appearance="primary"
+                    disabled={busy || locked}
+                    onClick={() => void restore()}
+                  >
+                    {text("format.confirmRestore")}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  type="button"
+                  appearance="primary"
+                  disabled={!preview || busy || locked}
+                  onClick={() => setConfirm(true)}
+                >
+                  {text("format.restore")}
+                </Button>
+              )}
+              <Button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  ++pending.current;
+                  setOpen(false);
+                }}
+              >
                 {text("common.close")}
               </Button>
             </DialogActions>

@@ -432,36 +432,22 @@ fn m42_fix002_group_relation_name_survives_cold_recovery_and_save() {
     )["value"]
         .clone();
     assert_eq!(deposited["deposited"], true, "{deposited}");
-    let page = h.work(json!({"kind":"recovery_page","cursor":null}));
-    let row = page["page"]["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| &entry["row"])
-        .find(|row| row["key"]["generation"] == "2")
-        .unwrap()
-        .clone();
     edit_release(&h, &project, &deposited);
     h.close_clean();
     drop(h);
 
     let h = Harness::at(base, backend::provider(), true);
     let project = h.open();
-    let restored = request(
-        &h,
-        &project,
-        json!({
-            "action":"edit_restore",
-            "key":row["key"],
-            "deposit_id":row["depositId"],
-            "digest":row["payloadDigest"]
-        }),
-    )["value"]
-        .clone();
+    let restored = edit_begin(&h, &project, &source);
+    let relation = restored["body"]["fields"][0]["value"]["value"]["instances"][0]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["field"] == RELATION)
+        .unwrap();
     assert_eq!(
-        restored["body"]["fields"][0]["value"]["value"]["instances"][0]["fields"][0]["value"]
-            ["value"]["links"][0]["name"],
-        "단짝"
+        relation["value"]["value"]["links"][0]["name"], "단짝",
+        "{restored}"
     );
     let generation = (restored["generation"]
         .as_str()
@@ -488,7 +474,7 @@ fn m42_fix002_group_relation_name_survives_cold_recovery_and_save() {
 }
 
 #[test]
-fn m38_fix_required_absent_child_blocks_untouched_group_save() {
+fn m38_fix_required_absent_child_allows_save_without_changing_required_definition() {
     let h = Harness::new();
     let p = h.open();
     let t = template(&h, &p);
@@ -519,12 +505,23 @@ fn m38_fix_required_absent_child_blocks_untouched_group_save() {
     );
     let b = json!({"name":{"intent":"set","value":"renamed"},"fields":[],"composing":false});
     let denied = edit_save(&h, &p, &e, "2", b.clone());
-    assert_ne!(denied["saved_generation"], denied["generation"], "{denied}");
+    assert_eq!(denied["saved_generation"], denied["generation"], "{denied}");
     assert_eq!(denied["body"], b);
-    assert_eq!(fs::read(&path).unwrap(), before);
+    assert!(
+        disk(&h, &id)["fieldValues"][GROUP]["instances"][A]["values"]
+            .get(new_child)
+            .is_none(),
+        "name-only save preserves absent historical child instead of inventing its value"
+    );
+    let read = request(&h, &p, json!({"action":"read","document":id}));
+    assert!(
+        read["value"]["fields"].to_string().contains(new_child),
+        "missing required field remains visible in normal read"
+    );
     assert_eq!(
-        denied["field"],
-        serde_json::to_string(&[GROUP, A, new_child]).unwrap()
+        serde_json::from_slice::<Value>(&fs::read(&tp).unwrap()).unwrap()["fields"][GROUP]
+            ["configuration"]["members"][new_child]["required"],
+        true
     );
     let mut fixed = body(vec![card(A, Some(A), None)]);
     fixed["name"] = b["name"].clone();
@@ -631,8 +628,7 @@ fn m38_fix_final_save_checks_effective_absence_and_preserves_historical_controls
                 // 이 회귀는 실행 시각에 의존하지 않도록 생성 fixture보다 확실히 뒤인 시각을 쓴다.
                 "2099-09-18T00:00:00.000Z",
             );
-            let accepted = !["missing", "explicit unset", "current missing"].contains(&case);
-            assert_eq!(result.is_ok(), accepted, "{case}: {result:?}");
+            assert_eq!(result.is_ok(), true, "{case}: {result:?}");
             assert_eq!(
                 encode_document(&document).unwrap(),
                 before,
@@ -739,23 +735,19 @@ fn m38_fix_clone_next_save_raw_assets_and_cold_draft_preserve_captured_value() {
     )["value"]
         .clone();
     assert_eq!(dep["deposited"], true, "{dep}");
-    let page = h.work(json!({"kind":"recovery_page","cursor":null}));
-    let row = page["page"]["entries"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| &entry["row"])
-        .find(|row| row["key"]["generation"] == "3")
-        .unwrap_or_else(|| panic!("missing deposited generation: {page}"))
-        .clone();
     edit_release(&h, &p, &dep);
     h.close_clean();
     drop(store);
     drop(h);
     let h = Harness::at(base, backend::provider(), true);
     let p = h.open();
-    let restored=request(&h,&p,json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]}))["value"].clone();
-    assert_eq!(restored["body"], b, "{restored}");
+    let restored = edit_begin(&h, &p, &id);
+    let cards = &restored["body"]["fields"][0]["value"]["value"]["instances"];
+    assert_eq!(cards[0]["id"], C);
+    assert_eq!(cards[0]["source"], B);
+    assert_eq!(cards[1]["id"], B);
+    assert_eq!(cards[2]["id"], A);
+
     let generation = (restored["generation"]
         .as_str()
         .unwrap()
@@ -763,7 +755,7 @@ fn m38_fix_clone_next_save_raw_assets_and_cold_draft_preserve_captured_value() {
         .unwrap()
         + 1)
     .to_string();
-    let saved = edit_save(&h, &p, &restored, &generation, b);
+    let saved = edit_save(&h, &p, &restored, &generation, restored["body"].clone());
     assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
     let result = disk(&h, &id);
     assert_eq!(
@@ -814,18 +806,22 @@ fn m38_fix_committed_clone_receipt_rebases_only_with_own_commit_proof() {
     )["value"]
         .clone();
     assert_eq!(dep["deposited"], true, "{dep}");
-    let row =
-        h.work(json!({"kind":"recovery_page","cursor":null}))["page"]["entries"][0]["row"].clone();
     edit_release(&h, &p, &dep);
-    let restored=request(&h,&p,json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]}))["value"].clone();
+    let restored = edit_begin(&h, &p, &id);
     assert_eq!(
-        restored["body"]["fields"][0]["value"]["value"]["instances"][1]["source"], B,
+        restored["read"]["fields"][0]["value"]["instances"][1]["source"], B,
         "{restored}"
     );
     assert_eq!(
         fs::read(h.root.join(format!("documents/{id}.json"))).unwrap(),
         before
     );
+    assert_eq!(
+        restored["body"]["fields"],
+        json!([]),
+        "already-committed content has no pending edits"
+    );
+    assert_eq!(restored["saved_generation"], restored["generation"]);
     let saved = edit_save(&h, &p, &restored, "4", restored["body"].clone());
     assert!(saved["problem"].is_null(), "{saved}");
     assert_eq!(
@@ -858,11 +854,23 @@ fn m38_invalid_raw_required_duplicate_foreign_and_nested_keep_original() {
     ];
     let mut current = e;
     for (index, b) in cases.into_iter().enumerate() {
-        let r = edit_save(&h, &p, &current, &(index + 2).to_string(), b.clone());
-        assert!(r["saved_generation"] != r["generation"], "{r}");
-        assert_eq!(r["body"], b);
+        let response = request(
+            &h,
+            &p,
+            json!({"action":"edit_draft","owner":current["owner"],"generation":(index + 2).to_string(),"body":b,"save":true}),
+        );
+        let r = response["value"].clone();
+        if r["kind"] == "editing" {
+            assert!(r["saved_generation"] != r["generation"], "{r}");
+            assert_eq!(r["body"], b);
+            current = r;
+        } else {
+            // Forged nested groups exceed the admitted raw envelope shape. The
+            // owner retains the input; the previous durable checkpoint stays valid.
+            assert_eq!(response["error"]["code"], "recovery_rejected", "{response}");
+            assert_eq!(response["input_retained"], true);
+        }
         assert_eq!(fs::read(&path).unwrap(), before);
-        current = r;
     }
     let saved = edit_save(&h, &p, &current, "20", body(vec![]));
     edit_release(&h, &p, &saved);
@@ -872,7 +880,11 @@ fn m38_invalid_raw_required_duplicate_foreign_and_nested_keep_original() {
     fs::write(&tp, serde_json::to_vec(&v).unwrap()).unwrap();
     let e = edit_begin(&h, &p, &id);
     let denied = edit_save(&h, &p, &e, "2", body(vec![card(A, None, None)]));
-    assert!(denied["field"].as_str().unwrap().contains(NUMBER));
+    assert_eq!(denied["saved_generation"], denied["generation"], "{denied}");
+    assert_eq!(
+        disk(&h, &id)["fieldValues"][GROUP]["instances"][A]["values"][NUMBER],
+        json!({"kind":"unset"})
+    );
     let saved = edit_save(&h, &p, &denied, "3", body(vec![]));
     edit_release(&h, &p, &saved);
     h.close_clean();
@@ -964,14 +976,12 @@ fn m38_draft_store_restart_preserves_invalid_raw_order_and_restores_save() {
     )["value"]
         .clone();
     assert_eq!(dep["deposited"], true, "{dep}");
-    let page = h.work(json!({"kind":"recovery_page","cursor":null}));
-    let row = page["page"]["entries"][0]["row"].clone();
     edit_release(&h, &p, &dep);
     h.close_clean();
     drop(h);
     let h = Harness::at(base, backend::provider(), true);
     let p = h.open();
-    let restored=request(&h,&p,json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]}))["value"].clone();
+    let restored = edit_begin(&h, &p, &id);
     assert_eq!(restored["body"], b, "{restored}");
     let mut fixed = b;
     fixed["fields"][0]["value"]["value"]["instances"][0]["fields"][0]["value"]["value"]["value"] =
@@ -1036,40 +1046,41 @@ fn m38_shared_assets_missing_bytes_and_scoped_import_admission() {
     // A valid scoped target reaches the absent test picker; wrong targets are denied before it.
     assert_eq!(import(B, FILE, false)["error"]["code"], "unavailable");
     let path = h.root.join(format!("documents/{id}.json"));
-    let before = fs::read(&path).unwrap();
     let binary = h.root.join("assets").join(&asset.id).join("content.txt");
     fs::remove_file(&binary).unwrap();
     let changed = body(vec![card(B, Some(B), Some("7"))]);
-    let rejected = request(
-        &h,
-        &p,
-        json!({"action":"edit_draft","owner":saved["owner"],"generation":"5","body":changed,"save":true}),
+    let saved = edit_save(&h, &p, &saved, "5", changed.clone());
+    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+    assert_eq!(
+        disk(&h, &id)["fieldValues"][GROUP]["instances"][B]["values"][FILE]["value"],
+        json!([asset.id])
     );
-    assert!(!rejected["error"].is_null(), "{rejected}");
+    assert!(
+        !binary.exists(),
+        "keeping a missing attachment must not recreate or pin bytes"
+    );
+    let before = fs::read(&path).unwrap();
+    // A new attachment reference requires actual bytes, unlike Keep above.
+    let missing = store
+        .import(&source, false, &uuid::Uuid::new_v4().to_string())
+        .unwrap();
+    fs::remove_file(h.root.join("assets").join(&missing.id).join("content.txt")).unwrap();
+    let mut new_reference = changed.clone();
+    new_reference["fields"][0]["value"]["value"]["instances"][0]["fields"].as_array_mut().unwrap().push(
+        json!({"field":FILE,"value":{"intent":"set","value":{"kind":"file","value":[missing.id]}}})
+    );
+    let failed = edit_save(&h, &p, &saved, "6", new_reference);
+    assert_ne!(failed["outcome"]["disk"], "committed", "{failed}");
     assert_eq!(fs::read(&path).unwrap(), before);
-    let rejected = request(
-        &h,
-        &p,
-        json!({"action":"edit_deposit","owner":saved["owner"],"generation":"5","body":changed}),
-    );
-    assert_ne!(rejected["value"]["deposited"], true);
     store.put(&asset, b"group attachment").unwrap();
-    let retry = request(
+    let kept = request(
         &h,
         &p,
-        json!({"action":"edit_retry","owner":saved["owner"],"generation":"5","body":changed}),
+        json!({"action":"edit_deposit","owner":saved["owner"],"generation":"7","body":changed}),
     )["value"]
         .clone();
-    assert_eq!(retry["kind"], "editing", "{retry}");
-    let saved = edit_save(
-        &h,
-        &p,
-        &retry,
-        retry["generation"].as_str().unwrap(),
-        changed,
-    );
-    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
-    edit_release(&h, &p, &saved);
+    assert_eq!(kept["deposited"], true, "{kept}");
+    edit_release(&h, &p, &kept);
     h.close_clean();
 }
 
@@ -1128,4 +1139,50 @@ fn m38_child_history_absence_raw_and_archived_label_survive_read_then_save() {
     assert!(fs::read_to_string(path).unwrap().contains("4.500e+3"));
     edit_release(&h, &p, &saved);
     h.close_clean();
+}
+
+#[test]
+fn missing_optional_group_repair_never_writes_through_unavailable_local_input() {
+    for marker in [
+        "foreign-canary.json",
+        "pending-owned-incomplete.json",
+        "d00000000000000000001.json",
+    ] {
+        let h = Harness::new();
+        let p = h.open();
+        let t = template(&h, &p);
+        let id = create(
+            &h,
+            &p,
+            &t,
+            "optional group must not repair before admission",
+        );
+        let path = h.root.join(format!("documents/{id}.json"));
+        let mut raw = disk(&h, &id);
+        raw["fieldValues"].as_object_mut().unwrap().remove(GROUP);
+        let before = serde_json::to_vec(&raw).unwrap();
+        fs::write(&path, &before).unwrap();
+        let target = h
+            .root
+            .join(format!(".worldbuild/latest-drafts/document-{id}"));
+        fs::create_dir_all(&target).unwrap();
+        let obstacle = target.join(marker);
+        fs::write(&obstacle, b"owned invalid input must remain intact").unwrap();
+        let denied = request(&h, &p, json!({"action":"edit_begin","document":id}));
+        assert_eq!(denied["error"]["code"], "sink_unavailable", "{denied}");
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            fs::read(&obstacle).unwrap(),
+            b"owned invalid input must remain intact"
+        );
+        fs::remove_file(&obstacle).unwrap();
+        let editing = edit_begin(&h, &p, &id);
+        assert!(editing["problem"].is_null(), "{editing}");
+        assert_eq!(
+            disk(&h, &id)["fieldValues"][GROUP]["instanceOrder"],
+            json!([])
+        );
+        edit_release(&h, &p, &editing);
+        h.close_clean();
+    }
 }

@@ -1,5 +1,6 @@
 //! 실행 중 Work handle을 영속 권한으로 저장하지 않고 실제 입력/원본만 복구에 전달한다.
 use super::*;
+use crate::data::edit_recovery::model;
 use crate::data::{
     application::recovery_handoff::RecoveryBackend,
     collaboration_lock::LockSessionId,
@@ -22,6 +23,8 @@ use std::sync::{
 #[derive(Default)]
 pub(crate) struct Observation {
     pub(crate) connected: AtomicBool,
+    // A failed admission does not detach the already registered backend.
+    backend_connected: AtomicBool,
     error: Mutex<Errors>,
 }
 #[derive(Default)]
@@ -142,6 +145,8 @@ impl PendingEdit {
             })
             .collect::<Reply<Vec<_>>>()?;
         let envelope = Envelope {
+            residual: None,
+            residual_ack: None,
             key: Key {
                 project_fingerprint: project.to_owned(),
                 draft_id: uuid::Uuid::new_v4().to_string(),
@@ -154,6 +159,7 @@ impl PendingEdit {
             draft,
             attempt: Some(Attempt {
                 submitted_generation: 1,
+                recovery_checked: false,
                 operation_id: job.operation.into(),
                 result: SaveState::Unknown,
                 candidate_digest: None,
@@ -229,6 +235,7 @@ pub(super) fn attempt_ref(operation: Id, diagnostic: Option<&ApplicationDiagnost
     });
     Attempt {
         submitted_generation: 1,
+        recovery_checked: false,
         operation_id: operation.into(),
         result: match state {
             None => SaveState::Unknown,
@@ -256,9 +263,7 @@ pub(super) fn connect_checked(
     job: &Job,
     binding: &Binding,
 ) -> Result<(), Arc<RecoveryError>> {
-    if binding.recovery.connected.load(Ordering::Acquire) {
-        return Ok(());
-    }
+    let already_connected = binding.recovery.backend_connected.load(Ordering::Acquire);
     let result = (|| {
         let (snapshot, _) = ctx
             .observe_session(&binding.registration)
@@ -281,9 +286,19 @@ pub(super) fn connect_checked(
                 ))
             })?
             .clone();
-        let store = job.recovery.connect()?;
+        let local = ctx
+            .latest_input_sink()
+            .map_err(|error| Arc::new(RecoveryError::io(Stage::Initialize, error)))?;
+        local
+            .validate_targets(snapshot.targets())
+            .map_err(|error| Arc::new(RecoveryError::io(Stage::Initialize, error)))?;
+        if already_connected {
+            binding.recovery.connected.store(true, Ordering::Release);
+            return Ok(());
+        }
         let sink = Sink {
-            store,
+            local,
+            owner: job.recovery.clone(),
             project,
             session,
             targets: snapshot.targets().to_vec(),
@@ -291,14 +306,22 @@ pub(super) fn connect_checked(
         };
         ctx.connect_backend(&binding.registration, RecoveryBackend::connected(sink))
             .map_err(|_| Arc::new(RecoveryError::new(Category::Conflict, Stage::Initialize)))?;
+        binding
+            .recovery
+            .backend_connected
+            .store(true, Ordering::Release);
         binding.recovery.connected.store(true, Ordering::Release);
         Ok(())
     })();
+    if result.is_err() {
+        binding.recovery.connected.store(false, Ordering::Release);
+    }
     binding.recovery.record(result.as_ref().err().cloned());
     result
 }
 struct Sink {
-    store: Arc<Mutex<edit_recovery::Store>>,
+    local: crate::data::repository::drafts::InputSink,
+    owner: Arc<crate::data::edit_recovery::Owner>,
     project: String,
     session: LockSessionId,
     targets: Vec<ProjectRelativePath>,
@@ -334,10 +357,16 @@ impl DurableRecoverySink<PendingEdit> for Sink {
                 payload.recovery.frozen.as_ref().ok_or_else(|| {
                     RecoveryError::new(Category::InvalidEnvelope, Stage::Validate)
                 })?;
-            self.store
-                .lock()
-                .map_err(|_| RecoveryError::new(Category::Unavailable, Stage::Lock))?
-                .accept(deposit)
+            if crate::data::repository::drafts::single_target(deposit.envelope()) {
+                self.local.accept(deposit, &self.targets)
+            } else {
+                self.owner
+                    .connect()
+                    .map_err(|_| RecoveryError::new(Category::Unavailable, Stage::Initialize))?
+                    .lock()
+                    .map_err(|_| RecoveryError::new(Category::Unavailable, Stage::Lock))?
+                    .accept(deposit)
+            }
         })();
         match accepted {
             Ok(proof) => {
@@ -366,6 +395,50 @@ impl DurableRecoverySink<PendingEdit> for Sink {
 #[cfg(test)]
 mod tests;
 
+pub(super) trait LatestInputContext {
+    fn preserve_latest(
+        &self,
+        envelope: Envelope,
+    ) -> std::io::Result<crate::data::repository::drafts::Checkpoint>;
+}
+impl LatestInputContext for Context {
+    fn preserve_latest(
+        &self,
+        envelope: Envelope,
+    ) -> std::io::Result<crate::data::repository::drafts::Checkpoint> {
+        self.preserve_latest_input(envelope)
+    }
+}
+impl LatestInputContext for CleanupContext<'_, PendingEdit, Receipt> {
+    fn preserve_latest(
+        &self,
+        envelope: Envelope,
+    ) -> std::io::Result<crate::data::repository::drafts::Checkpoint> {
+        self.preserve_latest_input(envelope)
+    }
+}
+
+/// Real single-target inputs have one current-project record. Legacy uncreated
+/// and composite envelopes remain in the old store until verified transition.
+pub(super) fn accept_latest_or_legacy(
+    ctx: &impl LatestInputContext,
+    job: &Job,
+    deposit: &Deposit,
+) -> Result<edit_recovery::Proof, RecoveryError> {
+    if crate::data::repository::drafts::single_target(deposit.envelope()) {
+        let checkpoint = ctx
+            .preserve_latest(deposit.envelope().clone())
+            .map_err(|error| RecoveryError::io(Stage::Write, error))?;
+        return edit_recovery::Proof::from_latest(checkpoint, deposit);
+    }
+    job.recovery
+        .connect()
+        .map_err(|_| RecoveryError::new(Category::Unavailable, Stage::Initialize))?
+        .lock()
+        .map_err(|_| RecoveryError::new(Category::Unavailable, Stage::Lock))?
+        .accept(deposit)
+}
+
 /// 저장 전에 별도 복구 사본을 인수한다. 실패 원인은 owner의 관측 자료에 보존한다.
 pub(super) fn capture_assets(
     ctx: &mut Context,
@@ -373,6 +446,9 @@ pub(super) fn capture_assets(
     deposit: &Deposit,
     observations: &mut Vec<Box<dyn Any + Send>>,
 ) -> Reply<()> {
+    if crate::data::repository::drafts::single_target(deposit.envelope()) {
+        return Ok(());
+    }
     // 첨부가 없는 기존 경로에는 복구 저장소 가용성이라는 새 선행 조건을 붙이지 않는다.
     if !deposit
         .has_assets()
@@ -392,4 +468,104 @@ pub(super) fn capture_assets(
             .map_err(|e| document_workspace::observed(observations, e, Code::RecoveryRejected))
     })
     .map_err(|e| document_workspace::observed(observations, e, Code::RuntimeRejected))?
+}
+
+/// Preserve each blocked path with the exact source that explains it. A later
+/// checkpoint must not replace unknown original metadata with a newer projection.
+pub(super) fn input_plan(
+    envelope: &Envelope,
+    make: impl Fn(&Envelope) -> Reply<super::recovery_merge::Plan>,
+) -> Reply<super::recovery_merge::Plan> {
+    let mut primary = make(envelope)?;
+    let Some(residual) = &envelope.residual else {
+        return Ok(primary);
+    };
+    for part in &residual.parts {
+        let mut remainder = envelope.clone();
+        remainder.originals = part.originals.clone();
+        remainder.draft = part.draft.clone();
+        remainder.residual = None;
+        remainder.residual_ack = None;
+        remainder.attempt = None;
+        let mut plan = make(&remainder)?;
+        plan.changes.retain(|change| {
+            part.paths
+                .iter()
+                .any(|path| change.path.starts_with(path) || path.starts_with(&change.path))
+        });
+        for change in &mut plan.changes {
+            if !part.paths.iter().any(|path| change.path.starts_with(path)) {
+                change.status = "blocked";
+                change.reason = Some("기존 입력과 현재 구조를 안전하게 연결할 수 없습니다. 관련 정의를 복원한 뒤 다시 확인해 주세요.".into());
+            }
+        }
+        primary = primary.combine(plan).map_err(|_| Code::RecoveryRejected)?;
+    }
+    Ok(primary)
+}
+pub(super) fn remaining_input(
+    envelope: &Envelope,
+    plan: &super::recovery_merge::Plan,
+) -> Reply<Option<model::Residual>> {
+    let blocked = plan
+        .changes
+        .iter()
+        .filter(|change| change.status == "blocked")
+        .map(|change| change.path.clone())
+        .collect::<Vec<_>>();
+    if blocked.is_empty() {
+        return Ok(None);
+    }
+    let mut parts = vec![];
+    let mut assigned = std::collections::BTreeSet::new();
+    if let Some(previous) = &envelope.residual {
+        for part in &previous.parts {
+            let paths = part
+                .paths
+                .iter()
+                .filter(|old| {
+                    blocked
+                        .iter()
+                        .any(|path| path.starts_with(old) || old.starts_with(path))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !paths.is_empty() {
+                assigned.extend(
+                    blocked
+                        .iter()
+                        .filter(|path| {
+                            paths
+                                .iter()
+                                .any(|old| path.starts_with(old) || old.starts_with(path))
+                        })
+                        .cloned(),
+                );
+                parts.push(model::ResidualPart {
+                    originals: part.originals.clone(),
+                    draft: part.draft.clone(),
+                    paths,
+                });
+            }
+        }
+    }
+    let paths = blocked
+        .into_iter()
+        .filter(|path| !assigned.contains(path))
+        .collect::<Vec<_>>();
+    if !paths.is_empty() {
+        parts.push(model::ResidualPart {
+            originals: envelope.originals.clone(),
+            draft: envelope.draft.clone(),
+            paths,
+        });
+    }
+    Ok(Some(model::Residual { parts }))
+}
+pub(super) fn residual_ack(envelope: &Envelope) -> Reply<Option<String>> {
+    envelope
+        .residual
+        .as_ref()
+        .map(|residual| residual.digest().map_err(|_| Code::RecoveryRejected.into()))
+        .transpose()
 }

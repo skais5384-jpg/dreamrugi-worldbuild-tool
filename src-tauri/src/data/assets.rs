@@ -92,6 +92,19 @@ impl Store {
         let guard = ProjectDirectory::open_root(&path).map_err(io)?;
         Ok((path, guard))
     }
+    /// Display metadata only. It is not proof that the content bytes still exist.
+    pub(crate) fn display_metadata(&self, id: &str) -> Result<Metadata, RecoveryError> {
+        let (path, guard) = self.directory(id, false)?;
+        let bytes = read(&path, &guard, "metadata.json", 8192)?;
+        super::json::parse_strict_json_object(&bytes)
+            .map_err(|e| RecoveryError::caused(Category::Corrupt, Stage::Read, e))?;
+        let metadata: Metadata = serde_json::from_slice(&bytes)
+            .map_err(|e| RecoveryError::caused(Category::Corrupt, Stage::Read, e))?;
+        if metadata.schema_version != 1 || metadata.id != id || !safe_name(&metadata.name) {
+            return Err(invalid());
+        }
+        Ok(metadata)
+    }
     pub(crate) fn read(&self, id: &str) -> Result<(Metadata, Vec<u8>), RecoveryError> {
         let (path, guard) = self.directory(id, false)?;
         self.read_guarded(id, &path, &guard)
@@ -579,31 +592,31 @@ pub(crate) fn image_content_type(name: &str) -> Option<&'static str> {
 }
 
 /// 보이는 필드뿐 아니라 원본/archived/unknown 하위 객체의 명시적 자산 참조도 보수적으로 수집한다.
-pub(crate) fn references(value: &serde_json::Value) -> Result<BTreeSet<String>, RecoveryError> {
-    fn walk(v: &serde_json::Value, ids: &mut BTreeSet<String>) -> Result<(), RecoveryError> {
-        match v {
-            serde_json::Value::Object(m) => {
-                if matches!(
-                    m.get("kind").and_then(|v| v.as_str()),
-                    Some("image" | "file")
-                ) {
-                    if let Some(values) = m.get("value").and_then(|v| v.as_array()) {
-                        for v in values {
-                            let id = v
+pub(crate) type ReferenceKinds = BTreeSet<(String, bool)>;
+
+pub(crate) fn reference_kinds(value: &serde_json::Value) -> Result<ReferenceKinds, RecoveryError> {
+    fn walk(value: &serde_json::Value, ids: &mut ReferenceKinds) -> Result<(), RecoveryError> {
+        match value {
+            serde_json::Value::Object(object) => {
+                if let Some(kind @ ("image" | "file")) = object.get("kind").and_then(|v| v.as_str())
+                {
+                    if let Some(values) = object.get("value").and_then(|v| v.as_array()) {
+                        for value in values {
+                            let id = value
                                 .as_str()
-                                .filter(|s| super::media::valid_id(s))
+                                .filter(|id| super::media::valid_id(id))
                                 .ok_or_else(invalid)?;
-                            ids.insert(id.into());
+                            ids.insert((id.into(), kind == "image"));
                         }
                     }
                 }
-                for v in m.values() {
-                    walk(v, ids)?;
+                for value in object.values() {
+                    walk(value, ids)?;
                 }
             }
-            serde_json::Value::Array(a) => {
-                for v in a {
-                    walk(v, ids)?;
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    walk(value, ids)?;
                 }
             }
             _ => (),
@@ -613,9 +626,16 @@ pub(crate) fn references(value: &serde_json::Value) -> Result<BTreeSet<String>, 
         }
         Ok(())
     }
-    let mut ids = BTreeSet::new();
+    let mut ids = ReferenceKinds::new();
     walk(value, &mut ids)?;
     Ok(ids)
+}
+
+pub(crate) fn references(value: &serde_json::Value) -> Result<BTreeSet<String>, RecoveryError> {
+    Ok(reference_kinds(value)?
+        .into_iter()
+        .map(|(id, _)| id)
+        .collect())
 }
 
 pub(crate) fn filename(meta: &Metadata) -> String {
@@ -642,6 +662,53 @@ pub(crate) fn validate_document(root: &Path, bytes: &[u8]) -> Result<(), Recover
     store.validate_image_references(&raw)?;
     Ok(())
 }
+/// Missing files are permitted only for references already owned by the current
+/// source or a verified content version. New references still require bytes.
+pub(crate) fn validate_document_with_missing(
+    root: &Path,
+    bytes: &[u8],
+    allowed: &ReferenceKinds,
+) -> Result<(), RecoveryError> {
+    let raw = super::json::parse_strict_json_object(bytes)
+        .map_err(|error| RecoveryError::caused(Category::Corrupt, Stage::Validate, error))?;
+    let references = reference_kinds(&raw)?;
+    if references.is_empty() {
+        return Ok(());
+    }
+    let store = match Store::open(root, false) {
+        Ok(store) => Some(store),
+        Err(error)
+            if references.is_subset(allowed)
+                && error
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    for reference in &references {
+        let (id, image) = reference;
+        match store.as_ref().map(|store| store.read(id)) {
+            Some(Ok((metadata, _))) if !*image || metadata.image => (),
+            Some(Err(error))
+                if allowed.contains(reference)
+                    && error
+                        .source
+                        .as_ref()
+                        .is_some_and(|source| source.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                ()
+            }
+            None if allowed.contains(reference) => (),
+            Some(Err(error)) => return Err(error),
+            _ => return Err(invalid()),
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     pub(crate) fn validate_image_references(
         &self,

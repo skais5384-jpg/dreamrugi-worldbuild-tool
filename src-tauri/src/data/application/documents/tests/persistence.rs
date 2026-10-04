@@ -335,7 +335,6 @@ fn g8_historical_required_edit_saves_original_and_refreshed_empty_save_is_no_wri
         )],
     );
     assert_eq!(input.template.expected_revision, revision(5));
-    let mat = mat_input(&mut rt, tid, did);
     let original = disk(&document_path(&f, did));
     let template_before = disk(&template_path(&f, tid));
     assert_numbers(&original.0);
@@ -344,19 +343,6 @@ fn g8_historical_required_edit_saves_original_and_refreshed_empty_save_is_no_wri
     let targets = doc_targets(did);
     let mut session: Session = begin(&rt, targets.session_targets());
     let snap = session.snapshot();
-    // 같은 실제 before-state에서 no-edit materialize는 required unset을 해결하지 못한다.
-    let (blocked, c, k) =
-        observe(|| materialize_document(&mut rt, &mut session, context(&snap), &mat).unwrap());
-    no_io(c, k);
-    assert!(blocked.outcome().is_none());
-    let Some(BodyOutcome::Rejected(error)) = blocked.execution.body() else {
-        panic!("materialization rejection")
-    };
-    assert!(
-        matches!(error.domain_cause(), Some(DocumentUpdateError::Materialization(e))
-        if e.category() == artifact::DocumentMaterializationErrorCategory::BlockingIssues)
-    );
-    assert_disk(&document_path(&f, did), &original);
     let ((result, c, k), hooks) = repo_hooks::scoped(
         Some((
             RepositoryStage::Namespace,

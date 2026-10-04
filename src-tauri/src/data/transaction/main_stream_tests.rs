@@ -520,6 +520,7 @@ fn fix003_legacy_context() -> TransactionManifest {
             staged_sha256: "a".repeat(64),
             staged_schema_version: None,
             original_schema_version: None,
+            original_raw: false,
         }],
     };
     manifest.validate().unwrap();
@@ -617,6 +618,7 @@ fn fix003_original_target_state_capacity_and_two_allocation_bound() {
                 original_size: Some(u64::MAX),
                 original_sha256: Some("f".repeat(64)),
                 original_schema_version: Some(SchemaVersion::new_unchecked(u32::MAX)),
+                original_raw: false,
             })
             .collect();
         let names: u64 = targets

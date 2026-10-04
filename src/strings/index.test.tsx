@@ -35,8 +35,8 @@ it("전체 리소스의 형식·인자 누락을 개발 검사에서 거부하�
 });
 it("사용자 이름의 markup과 토큰 문자열을 literal text로 한 번만 치환한다", () => {
   const name = "<img src=x onerror=alert(1)> {revision}";
-  render(<p>{text("template.target", { name, revision: "7" })}</p>);
-  expect(screen.getByText(`대상: ${name} · 기준 버전 7`)).toBeInTheDocument();
+  render(<p>{text("template.target", { name })}</p>);
+  expect(screen.getByText(`대상: ${name}`)).toBeInTheDocument();
   expect(document.querySelector("img")).toBeNull();
 });
 it("이름 있는 인자와 키를 검사하고 내부 값 대신 안전한 fallback을 표시한다", () => {

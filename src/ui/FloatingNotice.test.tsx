@@ -210,3 +210,45 @@ describe("shared lower-left notifications", () => {
     expect(screen.getByRole("button", { name: "cancel" })).toBeEnabled();
   });
 });
+
+it("keeps diagnostics out of the ordinary screen and preserves them after the notice owner closes", async () => {
+  function Fixture() {
+    const [active, setActive] = useState(true);
+    const [open, setOpen] = useState(false);
+    const history = useNoticeHistory();
+    return (
+      <>
+        <Button
+          onClick={() => {
+            setActive(false);
+            setOpen(true);
+          }}
+        >
+          show retained record
+        </Button>
+        {active && (
+          <FloatingNotice
+            intent="warning"
+            recordDetail={<p>synthetic_backup_diagnostic</p>}
+          >
+            백업 확인이 필요합니다.
+          </FloatingNotice>
+        )}
+        {open && (
+          <section aria-label="retained record">
+            {history.map((event) => (
+              <NoticeEventDetail key={event.sessionId} event={event} />
+            ))}
+          </section>
+        )}
+      </>
+    );
+  }
+  render(<Fixture />);
+  await screen.findByRole("alert");
+  expect(screen.queryByText("synthetic_backup_diagnostic")).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "show retained record" }));
+  await within(
+    screen.getByRole("region", { name: "retained record" }),
+  ).findByText("synthetic_backup_diagnostic");
+});

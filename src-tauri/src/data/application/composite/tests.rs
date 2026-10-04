@@ -673,7 +673,14 @@ fn g9_historical_required_edit_commits_actual_pair_reopens_and_fresh_pair_is_no_
 #[test]
 fn g9_document_pure_failure_keeps_template_candidate_and_both_original_files() {
     let (f, mut rt) = seeded_historical();
-    let input = load_input(&mut rt, required_intent(), vec![]);
+    let input = load_input(
+        &mut rt,
+        required_intent(),
+        vec![DocumentEdit::SetValue(
+            field(4),
+            DocumentValueEdit::single_choice(key(12).parse().unwrap()),
+        )],
+    );
     let before = pair(&f);
     preserved(&before.template.0, &before.document.0);
     let payload = Payload::new();
@@ -689,8 +696,11 @@ fn g9_document_pure_failure_keeps_template_candidate_and_both_original_files() {
     let Some(CompositeSaveError::Document(cause)) = Some(domain(&result)) else {
         panic!("Document pure error")
     };
-    assert_eq!(cause.category(), DocumentSaveErrorCategory::BlockingIssues);
-    assert_eq!(cause.stage(), DocumentSaveStage::FinalReconciliation);
+    assert_eq!(
+        cause.category(),
+        DocumentSaveErrorCategory::InvalidEditValue
+    );
+    assert_eq!(cause.stage(), DocumentSaveStage::Edits);
     let t = result.template_outcome().unwrap().changed().unwrap();
     assert_eq!(t.revision(), revision(5));
     assert!(t.fields().get(&field(3)).unwrap().required());

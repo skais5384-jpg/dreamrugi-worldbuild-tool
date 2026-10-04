@@ -66,6 +66,21 @@ struct InstanceWire {
 }
 
 impl Instance {
+    pub(crate) fn has_same_outer_extras(&self, original: &Self) -> bool {
+        self.extra == original.extra
+    }
+    pub(crate) fn preserves_unknown_from(&self, original: &Self) -> bool {
+        self.extra == original.extra
+            && original
+                .values
+                .iter()
+                .filter(|(_, value)| value.contains_unknown_storage_data())
+                .all(|(id, value)| {
+                    self.values
+                        .get(id)
+                        .is_some_and(|now| now.preserves_unknown_from(value))
+                })
+    }
     pub(crate) fn contains_unknown_storage_data(&self) -> bool {
         !self.extra.is_empty()
             || self

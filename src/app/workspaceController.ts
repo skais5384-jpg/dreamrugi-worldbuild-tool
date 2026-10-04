@@ -46,6 +46,7 @@ export type Destination =
     }
   | { kind: "close_app"; attempt: Id };
 interface WorkspaceState {
+  unavailableTemplate: string | null;
   draft: WholeDraft | null;
   busy: boolean;
   pendingAction: "save" | "deposit" | null;
@@ -84,6 +85,7 @@ function parsed<T>(source: string, keys: string[]): T {
 export class WorkspaceController {
   readonly documents: DocumentController;
   private state: WorkspaceState = {
+    unavailableTemplate: null,
     draft: null,
     busy: false,
     pendingAction: null,
@@ -101,6 +103,15 @@ export class WorkspaceController {
   private sourceView: Id | null = null;
   constructor(readonly shell: TemplateController = appController()) {
     this.documents = new DocumentController(shell);
+    let project = shell.snapshot().projectId;
+    shell.subscribe(() => {
+      const next = shell.snapshot().projectId;
+      if (project !== next) {
+        project = next;
+        if (this.state.unavailableTemplate)
+          this.publish({ unavailableTemplate: null });
+      }
+    });
     shell.workspaceInspectDocuments = (current) =>
       this.documents.refreshForHealth(current);
     // shell의 읽기 갱신이 초안 session이 보유한 원본 view를 회수하지 않도록 한다.
@@ -124,9 +135,61 @@ export class WorkspaceController {
     this.state = { ...this.state, ...patch };
     this.listeners.forEach((l) => l());
   }
+  private checkpointTimer: ReturnType<typeof setTimeout> | undefined;
+  private checkpointPending: Promise<void> | undefined;
+  private scheduleCheckpoint() {
+    if (this.checkpointTimer) clearTimeout(this.checkpointTimer);
+    this.checkpointTimer = setTimeout(() => {
+      this.checkpointTimer = undefined;
+      void this.checkpointInput();
+    }, 250);
+  }
+  private async checkpointInput(): Promise<void> {
+    if (this.checkpointPending) {
+      await this.checkpointPending;
+      return this.checkpointInput();
+    }
+    const draft = this.state.draft;
+    if (!draft?.loaded || !this.dirty()) return;
+    const submitted = structuredClone(draft);
+    const run = (async () => {
+      try {
+        const result = requireResult(
+          await this.work({
+            kind: "template_draft",
+            project: submitted.project,
+            session: submitted.status.owner,
+            generation: submitted.generation,
+            body: submitted.body,
+            action: "checkpoint",
+          }),
+          "template_draft",
+        );
+        if (
+          result.status.owner !== submitted.status.owner ||
+          result.status.generation !== submitted.generation
+        )
+          throw new BridgeFailure("protocol");
+      } catch (error) {
+        if (
+          this.state.draft?.status.owner === submitted.status.owner &&
+          this.state.draft.generation === submitted.generation
+        )
+          this.publish({ error: safeFailure(error) });
+      }
+    })();
+    this.checkpointPending = run;
+    try {
+      await run;
+    } finally {
+      if (this.checkpointPending === run) this.checkpointPending = undefined;
+    }
+  }
   dirty() {
     const d = this.state.draft;
-    return !!d && d.status.savedGeneration !== d.generation;
+    return (
+      !!d && !d.status.comparison && d.status.savedGeneration !== d.generation
+    );
   }
   edit(change: (body: TemplateBody) => TemplateBody) {
     const d = this.state.draft;
@@ -140,6 +203,7 @@ export class WorkspaceController {
         },
         error: null,
       });
+      this.scheduleCheckpoint();
     } catch (e: unknown) {
       this.publish({ error: safeFailure(e) });
     }
@@ -188,13 +252,7 @@ export class WorkspaceController {
     if (result.kind === "recovery_failure") {
       this.publish({
         recoveryFailure: result.failure,
-        error:
-          text("whole.recoveryError") +
-          " (" +
-          result.failure.category +
-          " / " +
-          result.failure.stage +
-          ")",
+        error: text("whole.recoveryError"),
       });
       throw new BridgeFailure("boundary", undefined, {
         code: "recovery_rejected",
@@ -412,14 +470,17 @@ export class WorkspaceController {
       return;
     }
     if (target.kind === "open_project") {
+      this.publish({ unavailableTemplate: null });
       await this.shell.navigate(target);
       return;
     }
     if (target.kind === "restore_current") {
+      this.publish({ unavailableTemplate: null });
       await this.shell.restoreCurrentBackup(target.locator, target.storage);
       return;
     }
     if (target.kind === "close_project") {
+      this.publish({ unavailableTemplate: null });
       await this.shell.navigate({ kind: "close_project" });
       if (!this.shell.snapshot().projectId) this.publish({ error: null });
       return;
@@ -431,10 +492,19 @@ export class WorkspaceController {
     const project = this.shell.snapshot().projectId;
     if (!project) throw new BridgeFailure("protocol");
     if (target.kind === "select" || target.kind === "format") {
+      this.publish({ unavailableTemplate: null });
+      // A version restore may rename the template. Refresh its normal list
+      // along with the detail rather than leaving the old name selected.
+      if (target.kind === "format") await this.shell.refresh();
       await this.shell.navigate({ kind: "select", id: target.id });
       const selection = this.shell.snapshot().selection;
-      if (!selection || selection.content.id !== target.id)
-        throw new BridgeFailure("protocol");
+      if (!selection || selection.content.id !== target.id) {
+        this.publish({
+          unavailableTemplate: target.id,
+          error: text("format.sourceUnavailable"),
+        });
+        return;
+      }
       if (
         target.kind === "format" ||
         (selection.content.schema ?? 5) < 5 ||
@@ -454,10 +524,37 @@ export class WorkspaceController {
       this.sourceView = selection.view;
       await this.install(result.status, project);
     } else {
+      // Create the real item first. Failed or uncertain creation never opens
+      // an unpublished editor or retries a possibly committed write.
+      if (this.shell.snapshot().form?.kind !== "create") {
+        await this.shell.navigate({ kind: "create" });
+        this.shell.setName(text("whole.newTemplateName"));
+      }
+      await this.shell.save();
+      const selection = this.shell.snapshot().selection;
+      if (
+        this.shell.snapshot().form ||
+        !selection ||
+        this.shell.snapshot().error
+      ) {
+        this.publish({
+          error: text(
+            this.shell.snapshot().form?.submitted
+              ? "whole.createUncertain"
+              : "whole.createFailed",
+          ),
+        });
+        return;
+      }
       const result = requireResult(
-        await this.work({ kind: "begin_template_draft", project, view: null }),
+        await this.work({
+          kind: "begin_template_draft",
+          project,
+          view: selection.view,
+        }),
         "template_draft",
       );
+      this.sourceView = selection.view;
       await this.install(result.status, project);
     }
   }
@@ -501,6 +598,29 @@ export class WorkspaceController {
     });
     if (closing) this.resumeReadyPreviews();
   }
+  resume(selected: string[]) {
+    return this.action(async () => {
+      const draft = this.state.draft;
+      if (!draft?.status.comparison) return;
+      const result = requireResult(
+        await this.work({
+          kind: "resume_template_draft",
+          project: draft.project,
+          session: draft.status.owner,
+          selected,
+        }),
+        "template_draft",
+      );
+      await this.install(result.status, draft.project);
+    });
+  }
+  cancelComparison() {
+    return this.action(async () => {
+      if (!this.state.draft?.status.comparison) return;
+      await this.release(false);
+      await this.shell.refresh();
+    });
+  }
   save() {
     return this.action(() => this.submit("save"));
   }
@@ -508,6 +628,9 @@ export class WorkspaceController {
     return this.action(() => this.submit("deposit"));
   }
   private async submit(action: "save" | "deposit") {
+    if (this.checkpointTimer) clearTimeout(this.checkpointTimer);
+    this.checkpointTimer = undefined;
+    await this.checkpointPending;
     let d = this.state.draft;
     if (!d || !d.loaded) return;
     if (action === "save" && d.body.composing) {
@@ -618,6 +741,9 @@ export class WorkspaceController {
     });
   }
   private async release(discard: boolean) {
+    if (this.checkpointTimer) clearTimeout(this.checkpointTimer);
+    this.checkpointTimer = undefined;
+    await this.checkpointPending;
     const d = this.state.draft;
     if (!d) return;
     // 미제출 최신 입력을 버리기로 선택한 경우에도 backend에 같은 세대가 있어야 한다.

@@ -611,6 +611,35 @@ impl FieldValue {
         }
     }
 
+    pub(crate) fn has_same_outer_extras(&self, original: &Self) -> bool {
+        self.extra == original.extra
+    }
+    pub(crate) fn has_unknown_outer_data(&self) -> bool {
+        !self.extra.is_empty()
+    }
+
+    /// Recovery may use a current source only if every opaque member still has
+    /// the same identity-bound custody. Known values may differ independently.
+    pub(crate) fn preserves_unknown_from(&self, original: &Self) -> bool {
+        if !original.has_same_storage_extras(self) {
+            return false;
+        }
+        match (&original.variant, &self.variant) {
+            (FieldValueVariant::Group(old), FieldValueVariant::Group(current)) => old
+                .instances
+                .iter()
+                .filter(|(_, card)| card.contains_unknown_storage_data())
+                .all(|(id, card)| {
+                    current
+                        .instances
+                        .get(id)
+                        .is_some_and(|now| now.preserves_unknown_from(card))
+                }),
+            (FieldValueVariant::Group(old), _) => !old.contains_unknown_storage_data(),
+            _ => true,
+        }
+    }
+
     /// 새 Field draft는 과거 wire에서 복사한 미래 metadata를 새 ID 아래에 주입할 수 없다.
     pub(crate) fn contains_unknown_storage_data(&self) -> bool {
         !self.extra.is_empty()

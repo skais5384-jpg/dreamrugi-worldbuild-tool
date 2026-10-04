@@ -93,6 +93,17 @@ impl<P, R> WorkerContext<P, R> {
     }
 }
 impl<P, R> SessionWork<'_, P, R> {
+    pub(crate) fn change_policy_formats(
+        &mut self,
+        prepared: &crate::data::edit_recovery::policy_transition::Prepared,
+    ) -> Result<crate::data::application::write::WriteExecution<(), ()>, ApplicationError> {
+        crate::data::application::format::execute_policy_batch(
+            self.runtime,
+            &mut self.entry.service,
+            context(&self.key),
+            prepared,
+        )
+    }
     pub(crate) fn change_format(
         &mut self,
         id: crate::data::repository::ArtifactSourceId,
@@ -106,6 +117,24 @@ impl<P, R> SessionWork<'_, P, R> {
             id,
             source,
             restore,
+        )
+    }
+
+    pub(crate) fn restore_version(
+        &mut self,
+        id: crate::data::repository::ArtifactSourceId,
+        version: u64,
+        source: &str,
+        timestamp: &str,
+    ) -> Result<crate::data::application::write::WriteExecution<(), ()>, ApplicationError> {
+        crate::data::application::format::restore_version(
+            self.runtime,
+            &mut self.entry.service,
+            context(&self.key),
+            id,
+            version,
+            source,
+            timestamp,
         )
     }
 

@@ -255,30 +255,24 @@ fn historical_required_unset_is_filled_by_edit_before_final_validation() {
         .remove(&key(1));
     let document = document(&raw);
     let empty = DocumentEditSet::default();
-    let blocked = failure(&template, &document, &empty, Category::BlockingIssues);
-    assert_eq!(
-        blocked.issue().expect("required issue").category(),
-        Issue::RequiredValueUnset
-    );
-    let legacy = materialize_document(&template, template.revision(), &document, LATER.to_owned())
-        .expect_err("no-edit materialization still blocks required unset");
-    assert_eq!(
-        legacy.category(),
-        DocumentMaterializationErrorCategory::BlockingIssues
-    );
+    let blank = save(&template, &document, &empty).expect("required unset is saveable");
+    assert!(blank.document().field_values()[&fid(1)].is_unset());
+    let materialized =
+        materialize_document(&template, template.revision(), &document, LATER.to_owned())
+            .expect("historical required unset is materializable");
+    assert!(materialized
+        .document()
+        .expect("inserted field")
+        .field_values()[&fid(1)]
+        .is_unset());
     let edits = set(1, DocumentValueEdit::single_line_text("filled".to_owned()));
     let outcome = save(&template, &document, &edits).expect("edit fills final required value");
     assert_eq!(outcome.kind(), DocumentSaveOutcomeKind::Changed);
     assert!(outcome.document().field_values()[&fid(1)].text() == Some("filled"));
     assert_idempotent(&template, &outcome, &edits);
     let unset = DocumentEditSet::new(vec![DocumentEdit::Unset(fid(1))]);
-    assert_eq!(
-        failure(&template, &document, &unset, Category::InvalidEditValue)
-            .issue()
-            .expect("issue")
-            .category(),
-        Issue::RequiredValueUnset
-    );
+    let cleared = save(&template, &document, &unset).expect("required unset remains saveable");
+    assert!(cleared.document().field_values()[&fid(1)].is_unset());
 }
 
 #[test]

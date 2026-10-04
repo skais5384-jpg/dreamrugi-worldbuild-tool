@@ -23,6 +23,7 @@ export interface ActivityEvent {
   projectFingerprint: string | null;
   summary?: string;
   detail?: string;
+  recordDetail?: import("react").ReactNode;
   noticeId?: string;
   noticeKey?: string;
 }

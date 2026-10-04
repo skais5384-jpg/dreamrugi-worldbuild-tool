@@ -376,7 +376,7 @@ it.each(["response", "refresh"])(
   },
 );
 
-it("F2: untouched group required absence blocks a name-only edit at its cell address", async () => {
+it("required absence remains a warning and permits a name-only edit", async () => {
   const base = fixture();
   base.read.template.fields = [
     { ...group, members: [{ ...child, required: true }] },
@@ -395,7 +395,5 @@ it("F2: untouched group required absence blocks a name-only edit at its cell add
     ...b,
     name: { intent: "set", value: "renamed" },
   }));
-  expect(editableProblem(edits.entries.doc)).toBe(
-    JSON.stringify(["g", "a", "n"]),
-  );
+  expect(editableProblem(edits.entries.doc)).toBeNull();
 });

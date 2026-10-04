@@ -22,7 +22,7 @@ type NamedArguments = {
   "documents.selectedCount": { count: string };
   "documents.replaceScopeSelected": { selected: string; total: string };
   "format.version": { version: string };
-  "template.target": { name: string; revision: string };
+  "template.target": { name: string };
   "template.resultId": { id: string };
   "template.version": { revision: string; lifecycle: string };
   "template.references": { count: string };
@@ -96,7 +96,7 @@ export const argumentNames: {
   "documents.selectedCount": ["count"],
   "documents.replaceScopeSelected": ["selected", "total"],
   "format.version": ["version"],
-  "template.target": ["name", "revision"],
+  "template.target": ["name"],
   "template.resultId": ["id"],
   "template.version": ["revision", "lifecycle"],
   "template.references": ["count"],

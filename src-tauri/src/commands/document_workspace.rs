@@ -4,6 +4,14 @@ use crate::data::{
     edit_recovery::model::{DraftValue, Key},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AssetTarget {
+    pub(crate) kind: String,
+    pub(crate) artifact: String,
+}
 
 #[derive(Clone, PartialEq, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
@@ -18,6 +26,8 @@ pub(crate) enum Request {
     },
     AssetRead {
         asset: String,
+        #[serde(default)]
+        target: Option<AssetTarget>,
     },
     AssetChunk {
         asset: String,
@@ -29,6 +39,21 @@ pub(crate) enum Request {
     },
     UrlOpen {
         url: String,
+    },
+    VersionsList {
+        kind: String,
+        artifact: String,
+    },
+    VersionPreview {
+        kind: String,
+        artifact: String,
+        version: String,
+    },
+    VersionRestore {
+        kind: String,
+        artifact: String,
+        version: String,
+        source: String,
     },
     FormatInspect {
         kind: String,
@@ -60,6 +85,10 @@ pub(crate) enum Request {
     },
     EditRefresh {
         owner: Id,
+    },
+    EditResume {
+        owner: Id,
+        selected: Vec<String>,
     },
     EditRetry {
         owner: Id,
@@ -354,6 +383,16 @@ pub(crate) enum Response {
         done: bool,
     },
     AssetDone {},
+    Versions {
+        versions: Vec<crate::data::repository::versions::Version>,
+    },
+    VersionPreview {
+        version: String,
+        source: String,
+        asset_names: BTreeMap<String, String>,
+        template: Option<TemplateDto>,
+        document: Option<Box<Response>>,
+    },
     Format {
         schema: u32,
         source: String,
@@ -372,6 +411,9 @@ pub(crate) enum Response {
         outcome: Option<Box<ResultDto>>,
         problem: Option<String>,
         field: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        comparison: Option<Vec<super::backend::recovery_merge::Change>>,
+        remaining_input: bool,
     },
     List {
         fingerprint: String,

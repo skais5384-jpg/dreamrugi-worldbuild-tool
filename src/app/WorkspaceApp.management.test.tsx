@@ -102,6 +102,20 @@ describe("whole template workspace", () => {
           command.input.locator === locatorA,
       ),
     ).toBe(false);
+    const completed = await screen.findByText(text("backup.restoredNew"));
+    expect(completed).toBeVisible();
+    const restores = fixture.transport.commands.filter(
+      (command) =>
+        command.action === "submit" && command.input.kind === "restore_new",
+    ).length;
+    fireEvent.click(screen.getByRole("button", { name: text("common.close") }));
+    expect(shell.snapshot().projectData).toBeNull();
+    expect(
+      fixture.transport.commands.filter(
+        (command) =>
+          command.action === "submit" && command.input.kind === "restore_new",
+      ),
+    ).toHaveLength(restores);
   });
 
   it("백업 센터는 메뉴 진입만으로 만들지 않고 위치·지역 시각·미지정 순번과 삭제 뒤 목록 복귀를 표시한다", async () => {
@@ -313,9 +327,10 @@ describe("whole template workspace", () => {
       }),
     );
     fireEvent.click(screen.getByText(text("error.details")));
+    const record = screen.getByRole("dialog", { name: "실행 기록" });
     expect(
-      screen.getByText("backup_quarantine_readback_required"),
-    ).toBeVisible();
+      within(record).getAllByText("backup_quarantine_readback_required").length,
+    ).toBeGreaterThan(0);
   }, 15_000);
 
   it("백업 삭제 알림을 닫아도 보관본은 목록에서 다시 복구할 수 있다", async () => {

@@ -61,9 +61,9 @@ it("keeps an unlisted archived Field distinguishable from Template/Option states
   expect(
     within(row(text("field.default"))).getByText("현재 선택"),
   ).toBeVisible();
-  expect(
-    within(row(text("field.initial"))).getByText("초기 선택"),
-  ).toBeVisible();
+  expect(screen.queryByText(text("field.initial"))).toBeNull();
+  // Old interpretation metadata stays in the artifact without a separate history row.
+  expect(field.initialDefault).toEqual({ kind: "single_choice", option: "a" });
   const options = within(row(text("field.options"))).getAllByRole("listitem");
   expect(options.map((item) => item.textContent)).toEqual([
     "현재 선택" + text("field.active"),

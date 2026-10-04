@@ -37,6 +37,8 @@ pub(super) fn seed(h: &Harness) {
     };
     let template = bytes(&template);
     let document = bytes(&document);
+    let template = current_policy_fixture(&template, &format!("templates/{}.json", field(100)));
+    let document = current_policy_fixture(&document, &format!("documents/{}.json", field(200)));
     artifact::decode_template(&template).unwrap();
     artifact::decode_document(&document).unwrap();
     fs::create_dir(h.root.join("templates")).unwrap();

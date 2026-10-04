@@ -1082,6 +1082,7 @@ fn prepare_allocated<'project, 'lock, 'guard>(
                     original_size: change.original_size_snapshot,
                     original_sha256: change.original_sha256_snapshot.clone(),
                     original_schema_version: change.original_schema_snapshot,
+                    original_raw: change.original_size_snapshot.is_some() && matches!(&change.payload, PlannedPayload::Canonical { write, .. } if write.restores_observed_source()),
                 })
                 .collect(),
         );
@@ -1630,15 +1631,17 @@ fn write_artifacts(
                 PrepareFailureSource::Io(source),
             )
         })?;
-        verify_exact_artifact(&staged_absolute, change.payload.bytes()).map_err(|source| {
-            TransactionPrepareError::failed(
-                PrepareStage::WriteStaged,
-                project,
-                Some(transaction_id),
-                Some(&change.target),
-                source,
-            )
-        })?;
+        verify_exact_artifact(&staged_absolute, change.payload.bytes(), false).map_err(
+            |source| {
+                TransactionPrepareError::failed(
+                    PrepareStage::WriteStaged,
+                    project,
+                    Some(transaction_id),
+                    Some(&change.target),
+                    source,
+                )
+            },
+        )?;
 
         let staged_size = u64::try_from(change.payload.bytes().len())
             .map_err(|_| TransactionPrepareError::EstimateOverflow)?;
@@ -1686,7 +1689,7 @@ fn write_artifacts(
                         PrepareFailureSource::Io(source),
                     )
                 })?;
-                verify_exact_artifact(&absolute, &bytes).map_err(|source| {
+                verify_exact_artifact(&absolute, &bytes, matches!(&change.payload, PlannedPayload::Canonical { write, .. } if write.restores_observed_source())).map_err(|source| {
                     TransactionPrepareError::failed(
                         PrepareStage::WriteBackup,
                         project,
@@ -1697,21 +1700,26 @@ fn write_artifacts(
                 })?;
                 let size = u64::try_from(bytes.len())
                     .map_err(|_| TransactionPrepareError::EstimateOverflow)?;
-                let schema_version = managed_schema_version(&bytes).map_err(|source| {
-                    TransactionPrepareError::failed(
-                        PrepareStage::WriteBackup,
-                        project,
-                        Some(transaction_id),
-                        Some(&change.target),
-                        PrepareFailureSource::Json(source),
-                    )
-                })?;
+                let schema_version = if matches!(&change.payload, PlannedPayload::Canonical { write, .. } if write.restores_observed_source())
+                {
+                    None
+                } else {
+                    Some(managed_schema_version(&bytes).map_err(|source| {
+                        TransactionPrepareError::failed(
+                            PrepareStage::WriteBackup,
+                            project,
+                            Some(transaction_id),
+                            Some(&change.target),
+                            PrepareFailureSource::Json(source),
+                        )
+                    })?)
+                };
                 (
                     Some(relative),
                     true,
                     Some(size),
                     Some(sha256(&bytes)),
-                    Some(schema_version),
+                    schema_version,
                 )
             }
             None => (None, false, None, None, None),
@@ -1728,6 +1736,7 @@ fn write_artifacts(
             staged_sha256,
             staged_schema_version: Some(staged_schema_version),
             original_schema_version,
+            original_raw: original_existed && matches!(&change.payload, PlannedPayload::Canonical { write, .. } if write.restores_observed_source()),
         });
     }
     sync_directory(staged_directory).map_err(|source| {
@@ -1770,7 +1779,9 @@ fn precheck_schema_transitions(
             })?;
             if let Some(bytes) = bytes {
                 change.original_sha256_snapshot = Some(sha256(&bytes));
-                change.original_schema_snapshot =
+                change.original_schema_snapshot = if write.restores_observed_source() {
+                    None
+                } else {
                     Some(managed_schema_version(&bytes).map_err(|source| {
                         TransactionPrepareError::failed(
                             PrepareStage::ValidateSchemaTransition,
@@ -1779,7 +1790,8 @@ fn precheck_schema_transitions(
                             Some(&change.target),
                             PrepareFailureSource::Json(source),
                         )
-                    })?);
+                    })?)
+                };
                 validate_schema_transition(change, &bytes).map_err(|source| {
                     TransactionPrepareError::failed(
                         PrepareStage::ValidateSchemaTransition,
@@ -1932,6 +1944,13 @@ fn validate_schema_transition(
 ) -> Result<(), PrepareFailureSource> {
     let staged_schema =
         managed_schema_version(change.payload.bytes()).map_err(PrepareFailureSource::Json)?;
+    // The version builder already verified same-target typed content and the
+    // exact observed original bytes; a damaged original need not decode.
+    if matches!(&change.payload, PlannedPayload::Canonical { write, .. } if write.restores_observed_source())
+    {
+        return Ok(());
+    }
+
     if let Some(expected) = change.payload.expected_migration() {
         let original_schema = strict_schema_version(original).map_err(|_| {
             PrepareFailureSource::ExpectedOriginalMismatch(io::Error::new(
@@ -1994,7 +2013,11 @@ fn write_new_synced(
     Ok(())
 }
 
-fn verify_exact_artifact(path: &Path, expected: &[u8]) -> Result<(), PrepareFailureSource> {
+fn verify_exact_artifact(
+    path: &Path,
+    expected: &[u8],
+    raw_original: bool,
+) -> Result<(), PrepareFailureSource> {
     let actual = fs::read(path).map_err(PrepareFailureSource::Io)?;
     if actual.len() != expected.len() || sha256(&actual) != sha256(expected) || actual != expected {
         return Err(PrepareFailureSource::Io(io::Error::new(
@@ -2002,7 +2025,11 @@ fn verify_exact_artifact(path: &Path, expected: &[u8]) -> Result<(), PrepareFail
             "artifact bytes, size, or SHA-256 differ",
         )));
     }
-    validate_managed_json(&actual).map_err(PrepareFailureSource::Json)
+    if raw_original {
+        Ok(())
+    } else {
+        validate_managed_json(&actual).map_err(PrepareFailureSource::Json)
+    }
 }
 
 fn verify_manifest(
@@ -2077,7 +2104,32 @@ fn verify_manifest(
     }
     for operation in &decoded.operations {
         let staged = transaction_directory.join(&operation.staged_path);
-        verify_recorded_artifact(&staged, operation.staged_size, &operation.staged_sha256)
+        verify_recorded_artifact(
+            &staged,
+            operation.staged_size,
+            &operation.staged_sha256,
+            false,
+        )
+        .map_err(|source| {
+            TransactionPrepareError::failed(
+                PrepareStage::VerifyManifest,
+                project,
+                Some(transaction_id),
+                Some(&operation.target_path),
+                source,
+            )
+        })?;
+        if let (Some(backup_path), Some(size), Some(hash)) = (
+            operation.backup_path.as_deref(),
+            operation.original_size,
+            operation.original_sha256.as_deref(),
+        ) {
+            verify_recorded_artifact(
+                &transaction_directory.join(backup_path),
+                size,
+                hash,
+                operation.original_raw,
+            )
             .map_err(|source| {
                 TransactionPrepareError::failed(
                     PrepareStage::VerifyManifest,
@@ -2087,21 +2139,6 @@ fn verify_manifest(
                     source,
                 )
             })?;
-        if let (Some(backup_path), Some(size), Some(hash)) = (
-            operation.backup_path.as_deref(),
-            operation.original_size,
-            operation.original_sha256.as_deref(),
-        ) {
-            verify_recorded_artifact(&transaction_directory.join(backup_path), size, hash)
-                .map_err(|source| {
-                    TransactionPrepareError::failed(
-                        PrepareStage::VerifyManifest,
-                        project,
-                        Some(transaction_id),
-                        Some(&operation.target_path),
-                        source,
-                    )
-                })?;
         }
     }
     sync_directory(transaction_directory).map_err(|source| {
@@ -2119,6 +2156,7 @@ fn verify_recorded_artifact(
     path: &Path,
     expected_size: u64,
     expected_sha256: &str,
+    raw_original: bool,
 ) -> Result<(), PrepareFailureSource> {
     let bytes = fs::read(path).map_err(PrepareFailureSource::Io)?;
     if u64::try_from(bytes.len()).ok() != Some(expected_size)
@@ -2130,7 +2168,11 @@ fn verify_recorded_artifact(
             "artifact does not match manifest size or SHA-256",
         )));
     }
-    validate_managed_json(&bytes).map_err(PrepareFailureSource::Json)
+    if raw_original {
+        Ok(())
+    } else {
+        validate_managed_json(&bytes).map_err(PrepareFailureSource::Json)
+    }
 }
 
 pub(super) fn validate_managed_json(bytes: &[u8]) -> Result<(), ManagedJsonError> {

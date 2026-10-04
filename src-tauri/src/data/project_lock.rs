@@ -372,7 +372,7 @@ fn canonical_project_directory(project_root: &Path) -> Result<PathBuf, ProjectLo
         })
 }
 
-fn project_fingerprint(canonical: &Path) -> String {
+pub(super) fn project_fingerprint(canonical: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(LOCK_KEY_VERSION);
     hasher.update([0]);

@@ -26,7 +26,10 @@ fn archive_recovery_freeze_corrected_manual_records() {
     }
 }
 fn seed(h: &Harness, p: &str) -> String {
-    let (id, _) = h.template(p);
+    seed_with_session(h, p).0
+}
+fn seed_with_session(h: &Harness, p: &str) -> (String, String) {
+    let (id, creation_session) = h.template(p);
     let path = h.root.join(format!("templates/{id}.json"));
     let mut wire: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     wire["fieldOrder"] = json!([LEFT, RIGHT]);
@@ -35,7 +38,97 @@ fn seed(h: &Harness, p: &str) -> String {
         wire["fields"][id] = json!({"label":label,"kind":"singleLineText","lifecycle":"active","required":false,"introducedRevision":1,"defaultValue":{"kind":"text","value":"base"},"initialDefaultValue":{"kind":"text","value":"base"},"configuration":{"kind":"singleLineText"},"presentation":{}});
     }
     fs::write(&path, serde_json::to_vec(&wire).unwrap()).unwrap();
-    id
+    (id, creation_session)
+}
+
+#[test]
+fn document_edit_known_snapshot_renders_once_before_and_after_definition_restore() {
+    let h = Harness::new();
+    let p = h.open();
+    let (t, creation_session) = seed_with_session(&h, &p);
+    assert!(h.control(
+        json!({"kind":"session_control","project":p,"session":creation_session,"control":"end"})
+    )["error"]
+        .is_null());
+    let id = create(&h, &p, &t, "snapshot input projection");
+    let tp = h.root.join(format!("templates/{t}.json"));
+    let dp = h.root.join(format!("documents/{id}.json"));
+    let mut template: Value = serde_json::from_slice(&fs::read(&tp).unwrap()).unwrap();
+    let mut document: Value = serde_json::from_slice(&fs::read(&dp).unwrap()).unwrap();
+    document["fieldValues"][LEFT] = json!({"kind":"text","value":"saved archived value"});
+    document["orphanedFieldDefinitions"][LEFT] =
+        json!({"label":"왼쪽","kind":"singleLineText","options":{}});
+    fs::write(&dp, serde_json::to_vec(&document).unwrap()).unwrap();
+    for archived in [true, false] {
+        template["fields"][LEFT]["lifecycle"] = if archived { "archived" } else { "active" }.into();
+        template["fieldOrder"] = if archived {
+            json!([RIGHT])
+        } else {
+            json!([RIGHT, LEFT])
+        };
+        fs::write(&tp, serde_json::to_vec(&template).unwrap()).unwrap();
+        let before = fs::read(&dp).unwrap();
+        let editing = edit_begin(&h, &p, &id);
+        let rows = editing["read"]["fields"].as_array().unwrap();
+        assert_eq!(
+            rows.iter().filter(|row| row["id"] == LEFT).count(),
+            1,
+            "{editing}"
+        );
+        assert_eq!(
+            rows.iter().find(|row| row["id"] == LEFT).unwrap()["value"]["value"],
+            "saved archived value"
+        );
+        assert_eq!(
+            editing["body"]["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| row["field"] == LEFT)
+                .count(),
+            0,
+            "unchanged fields stay implicit Keep in the input body"
+        );
+        assert_eq!(
+            editing["editable"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|field| **field == LEFT)
+                .count(),
+            usize::from(!archived)
+        );
+        assert_eq!(
+            fs::read(&dp).unwrap(),
+            before,
+            "projection must not modify canonical input"
+        );
+        if archived {
+            let deposited = request(&h, &p, json!({"action":"edit_deposit","owner":editing["owner"],"generation":editing["generation"],"body":editing["body"]}))["value"].clone();
+            edit_release(&h, &p, &deposited);
+        } else {
+            let mut body = editing["body"].clone();
+            body["fields"] = json!([set(LEFT, "edited restored value")]);
+            let saved = edit_save(&h, &p, &editing, "2", body);
+            assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+            assert_eq!(
+                saved["read"]["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|row| row["id"] == LEFT)
+                    .count(),
+                1
+            );
+            edit_release(&h, &p, &saved);
+            let stored: Value = serde_json::from_slice(&fs::read(&dp).unwrap()).unwrap();
+            assert_eq!(
+                stored["fieldValues"][LEFT]["value"],
+                "edited restored value"
+            );
+        }
+    }
+    h.close_clean();
 }
 fn set(field: &str, value: &str) -> Value {
     json!({"field":field,"value":{"intent":"set","value":{"kind":"single_line_text","value":value}}})
@@ -122,6 +215,7 @@ fn archive_recovery_existing_document_merges_independent_fields_and_rejects_stal
     )["value"]
         .clone();
     edit_release(&h, &p, &d);
+    stage_latest_as_legacy_archive(&h, &d["owner"]);
     let listing = h.work(json!({"kind":"recovery_page","cursor":null}));
     let listed = listing["page"]["entries"]
         .as_array()
@@ -235,6 +329,7 @@ fn archive_recovery_group_from_unset_and_partial_cells_preserves_other_current_c
     )["value"]
         .clone();
     edit_release(&h, &p, &dep);
+    stage_latest_as_legacy_archive(&h, &dep["owner"]);
     let r = row(&h, &dep["owner"]);
     let preserved = stored(&h, &r);
     let (_, c) = compare(&h, &p, &inspect(&h, &r));
@@ -257,6 +352,7 @@ fn archive_recovery_group_from_unset_and_partial_cells_preserves_other_current_c
     )["value"]
         .clone();
     edit_release(&h, &p, &dep);
+    stage_latest_as_legacy_archive(&h, &dep["owner"]);
     let r = row(&h, &dep["owner"]);
     let path = h.root.join(format!("documents/{id}.json"));
     let mut raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -320,6 +416,7 @@ fn archive_recovery_clone_keeps_archived_child_and_unknown_source_metadata() {
     )["value"]
         .clone();
     edit_release(&h, &p, &d);
+    stage_latest_as_legacy_archive(&h, &d["owner"]);
     let r = row(&h, &d["owner"]);
     let bytes = stored(&h, &r);
     let (_, c) = compare(&h, &p, &inspect(&h, &r));
@@ -464,6 +561,146 @@ fn archive_recovery_composite_stages_new_definition_then_document_same_record() 
 }
 
 #[test]
+fn startup_composite_transition_normal_template_resume_reconnects_document_input() {
+    for concurrent_value in [false, true] {
+        let provider = Arc::new(Provider::new());
+        let h = Harness::with_provider(provider.clone());
+        let p = h.open();
+        let (t, creation_session) = seed_with_session(&h, &p);
+        assert!(h.control(
+            json!({"kind":"session_control","project":p,"session":creation_session,"control":"end"})
+        )["error"]
+            .is_null());
+        let id = create(&h, &p, &t, "normal composite transition");
+        let tv = h.read_template(&p, &t);
+        let dv = h.work(json!({"kind":"read_document","project":p,"document":id}));
+        let session = h.session(
+            &p,
+            vec![dv["view"].clone(), tv["view"].clone()],
+            "composite",
+        );
+        provider
+            .lose
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        const NEW: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+        let failed = h.work(json!({"kind":"save_composite","project":p,"session":session,"document":dv["view"],"template":tv["view"],"revision":"1","edit":{"kind":"create_field","field":NEW,"label":"linked composite field","configuration":{"kind":"single_line_text"},"required":false,"presentation":null,"default":{"kind":"unset"},"index":null},"edits":[{"kind":"set","field":NEW,"value":{"kind":"single_line_text","value":"linked preserved document value"}}]}));
+        assert_eq!(failed["custody"], "Preserved", "{failed}");
+        h.control(
+            json!({"kind":"session_control","project":p,"session":session,"control":"accept"}),
+        );
+        h.control(json!({"kind":"session_control","project":p,"session":session,"control":"acknowledge_recovery"}));
+        provider
+            .lose
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        let ended = h.control(
+            json!({"kind":"session_control","project":p,"session":session,"control":"end"}),
+        );
+        assert!(ended["error"].is_null(), "{ended}");
+        let listed = h.work(json!({"kind":"list_templates","project":p}));
+        assert_eq!(listed["kind"], "templates", "{listed}");
+        let view = h.read_template(&p, &t);
+        let resumed = super::super::workspace::begin(&h, &p, view["view"].clone());
+        let body = super::super::workspace::content(&h, &p, &resumed)["body"].clone();
+        assert!(
+            body["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["label"] == "linked composite field"),
+            "{resumed} {body}"
+        );
+        let saved = super::super::workspace::submit(
+            &h,
+            &p,
+            &resumed,
+            resumed["generation"].as_str().unwrap(),
+            &body,
+            "save",
+        );
+        assert!(saved["error"].is_null(), "{saved}");
+        assert!(super::super::workspace::release(&h, &p, &saved, false)["error"].is_null());
+        let document_path = h.root.join(format!("documents/{id}.json"));
+        if concurrent_value {
+            let template: Value = serde_json::from_slice(
+                &fs::read(h.root.join(format!("templates/{t}.json"))).unwrap(),
+            )
+            .unwrap();
+            let field = template["fields"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .find(|(_, definition)| definition["label"] == "linked composite field")
+                .unwrap()
+                .0
+                .clone();
+            let mut current: Value =
+                serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
+            current["fieldValues"][field] =
+                json!({"kind":"text","value":"different explicitly saved current value"});
+            fs::write(&document_path, serde_json::to_vec(&current).unwrap()).unwrap();
+        }
+        let before_resume = fs::read(&document_path).unwrap();
+        let mut doc = edit_begin(&h, &p, &id);
+        assert_eq!(doc["remaining_input"], false, "{doc}");
+        assert_eq!(
+            fs::read(&document_path).unwrap(),
+            before_resume,
+            "Opening never overwrites canonical content"
+        );
+        if concurrent_value {
+            assert_eq!(doc["problem"], "DraftConflict", "{doc}");
+            assert!(doc["comparison"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|change| change["status"] == "conflict"));
+            let selected: Vec<_> = doc["comparison"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|change| change["id"].clone())
+                .collect();
+            doc = request(
+                &h,
+                &p,
+                json!({"action":"edit_resume","owner":doc["owner"],"selected":selected}),
+            )["value"]
+                .clone();
+            assert_eq!(
+                fs::read(&document_path).unwrap(),
+                before_resume,
+                "Selection is not a canonical save"
+            );
+        } else {
+            assert!(doc["problem"].is_null(), "{doc}");
+            assert!(doc.get("comparison").is_none(), "{doc}");
+        }
+        assert!(
+            doc["body"]["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|f| f["value"]["value"]["value"] == "linked preserved document value"),
+            "{doc}"
+        );
+        let generation =
+            (doc["generation"].as_str().unwrap().parse::<u64>().unwrap() + 1).to_string();
+        let saved = edit_save(&h, &p, &doc, &generation, doc["body"].clone());
+        assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+        edit_release(&h, &p, &saved);
+        let raw: Value =
+            serde_json::from_slice(&fs::read(h.root.join(format!("documents/{id}.json"))).unwrap())
+                .unwrap();
+        assert!(raw["fieldValues"]
+            .as_object()
+            .unwrap()
+            .values()
+            .any(|v| v["value"] == "linked preserved document value"));
+        h.close_clean();
+    }
+}
+
+#[test]
 fn archive_recovery_partial_missing_definition_keeps_original_and_restores_supported_field() {
     let h = Harness::new();
     let p = h.open();
@@ -482,6 +719,7 @@ fn archive_recovery_partial_missing_definition_keeps_original_and_restores_suppo
     )["value"]
         .clone();
     edit_release(&h, &p, &d);
+    stage_latest_as_legacy_archive(&h, &d["owner"]);
     let r = row(&h, &d["owner"]);
     let bytes = stored(&h, &r);
     let path = h.root.join(format!("templates/{t}.json"));
@@ -576,6 +814,7 @@ fn archive_recovery_m11_seven_template_changes_save_reopen_and_preserve_current_
     let deposited = h.control(json!({"kind":"template_draft","project":p,"session":status["owner"],"generation":"2","body":body,"action":"deposit"}));
     let d = &deposited["status"];
     assert!(h.control(json!({"kind":"release_template_draft","project":p,"session":d["owner"],"generation":d["generation"],"body":null,"discard":false}))["error"].is_null());
+    stage_latest_as_legacy_archive(&h, &d["draftId"]);
     let r = row(&h, &d["draftId"]);
     let bytes = stored(&h, &r);
     raw["fields"][LEFT]["label"] = "independent current label".into();
@@ -662,6 +901,7 @@ fn archive_recovery_deleted_known_card_materializes_kept_original_cell() {
     )["value"]
         .clone();
     edit_release(&h, &p, &d);
+    stage_latest_as_legacy_archive(&h, &d["owner"]);
     let r = row(&h, &d["owner"]);
     let dp = h.root.join(format!("documents/{id}.json"));
     let mut raw: Value = serde_json::from_slice(&fs::read(&dp).unwrap()).unwrap();
@@ -697,6 +937,7 @@ fn archive_recovery_corrupt_missing_snapshot_blocks_before_entry_and_keeps_reada
     )["value"]
         .clone();
     edit_release(&h, &p, &d);
+    stage_latest_as_legacy_archive(&h, &d["owner"]);
     let r = row(&h, &d["owner"]);
     let bytes = stored(&h, &r);
     let path = h.root.join(format!("templates/{t}.json"));
@@ -741,6 +982,7 @@ fn archive_recovery_reads_100_schema_four_record_from_store_and_saves_selected_i
     )["value"]
         .clone();
     edit_release(&h, &p, &d);
+    stage_latest_as_legacy_archive(&h, &d["owner"]);
     let r = row(&h, &d["owner"]);
     let mut envelope = Deposit::decode(&stored(&h, &r)).unwrap().envelope().clone();
     envelope.key.draft_id = uuid::Uuid::new_v4().to_string();
@@ -895,6 +1137,7 @@ fn archive_recovery_prepare_manual_fixtures() {
         )["value"]
             .clone();
         edit_release(&h, &p, &d);
+        stage_latest_as_legacy_archive(&h, &d["owner"]);
         let r = row(&h, &d["owner"]);
         if manual == "M07" {
             let mut envelope = Deposit::decode(&stored(&h, &r)).unwrap().envelope().clone();
@@ -1097,15 +1340,23 @@ fn archive_recovery_document_snapshot_reattaches_after_field_and_group_restore()
         assert!(saved["status"]["error"].is_null(), "{saved}");
         let status = &saved["status"];
         assert!(h.control(json!({"kind":"release_template_draft","project":p,"session":status["owner"],"generation":status["generation"],"body":null,"discard":false}))["error"].is_null());
-        if restoring {
+        {
             let path = h.root.join(format!("documents/{id}.json"));
             let before = fs::read(&path).unwrap();
             let read = request(&h, &p, json!({"action":"read","document":id}));
             let fields = read["value"]["fields"].as_array().unwrap();
             for field in [LEFT, G, SC] {
                 let rows: Vec<_> = fields.iter().filter(|row| row["id"] == field).collect();
-                assert_eq!(rows.len(), 1, "restored field duplicated: {read}");
-                assert_eq!(rows[0]["state"], "Active", "{read}");
+                assert_eq!(rows.len(), 1, "snapshot field duplicated: {read}");
+                assert_eq!(
+                    rows[0]["state"],
+                    if !restoring && field != SC {
+                        "Archived"
+                    } else {
+                        "Active"
+                    },
+                    "{read}"
+                );
             }
             assert_eq!(
                 fs::read(&path).unwrap(),
@@ -1123,6 +1374,19 @@ fn archive_recovery_document_snapshot_reattaches_after_field_and_group_restore()
         let saved = edit_save(&h, &p, &e, "2", b);
         assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
         edit_release(&h, &p, &saved);
+        let read = request(&h, &p, json!({"action":"read","document":id}));
+        for field in [LEFT, G, SC] {
+            assert_eq!(
+                read["value"]["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|row| row["id"] == field)
+                    .count(),
+                1,
+                "preserved snapshot duplicated after save: {read}"
+            );
+        }
         let raw: Value =
             serde_json::from_slice(&fs::read(h.root.join(format!("documents/{id}.json"))).unwrap())
                 .unwrap();
@@ -1152,4 +1416,485 @@ fn archive_recovery_document_snapshot_reattaches_after_field_and_group_restore()
     assert!(e["read"]["warnings"].as_array().unwrap().is_empty(), "{e}");
     edit_release(&h, &p, &e);
     h.close_clean();
+}
+
+#[test]
+fn read_snapshot_dedup_preserves_genuine_orphan_and_conflict_diagnostics() {
+    for conflict in [false, true] {
+        let h = Harness::new();
+        let p = h.open();
+        let t = seed(&h, &p);
+        let id = create(&h, &p, &t, "snapshot boundary");
+        let path = h.root.join(format!("documents/{id}.json"));
+        let mut doc: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        doc["fieldValues"][LEFT] = json!({"kind":"text","value":"base"});
+        doc["orphanedFieldDefinitions"][LEFT] = json!({
+            "label":"retained historical field",
+            "kind":"singleLineText",
+            "options":{}
+        });
+        if conflict {
+            doc["orphanedFieldDefinitions"][LEFT]["futureSynthetic"] =
+                "must not disappear when reattaching".into();
+        }
+        fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        if !conflict {
+            let tp = h.root.join(format!("templates/{t}.json"));
+            let mut template: Value = serde_json::from_slice(&fs::read(&tp).unwrap()).unwrap();
+            template["fields"].as_object_mut().unwrap().remove(LEFT);
+            template["fieldOrder"] = json!([RIGHT]);
+            template["revision"] = 2.into();
+            fs::write(tp, serde_json::to_vec(&template).unwrap()).unwrap();
+        }
+        let before = fs::read(&path).unwrap();
+        let read = request(&h, &p, json!({"action":"read","document":id}));
+        assert_eq!(read["value"]["kind"], "read", "{read}");
+        let fields = read["value"]["fields"].as_array().unwrap();
+        let orphan = fields
+            .iter()
+            .find(|row| row["id"] == LEFT && row["state"] == "Orphan")
+            .unwrap_or_else(|| panic!("real orphan or conflict hidden: {read}"));
+        assert_eq!(orphan["value"]["value"], "base", "{read}");
+        if conflict {
+            assert!(
+                read["value"]["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|warning| warning == "LossyOrphanReattachment"),
+                "{read}"
+            );
+            assert!(
+                fields
+                    .iter()
+                    .any(|row| row["id"] == LEFT && !row["problem"].is_null()),
+                "{read}"
+            );
+        } else {
+            assert_eq!(fields.iter().filter(|row| row["id"] == LEFT).count(), 1);
+        }
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before,
+            "read mutated snapshot storage"
+        );
+        let editing = edit_begin(&h, &p, &id);
+        let editor_fields = editing["read"]["fields"].as_array().unwrap();
+        assert!(
+            editor_fields.iter().any(|row| row["id"] == LEFT
+                && row["state"] == "Orphan"
+                && row["value"]["value"] == "base"),
+            "{editing}"
+        );
+        if conflict {
+            assert!(
+                editing["read"]["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|warning| warning == "LossyOrphanReattachment"),
+                "{editing}"
+            );
+            assert!(
+                editor_fields
+                    .iter()
+                    .any(|row| row["id"] == LEFT && !row["problem"].is_null()),
+                "{editing}"
+            );
+        } else {
+            assert_eq!(
+                editor_fields.iter().filter(|row| row["id"] == LEFT).count(),
+                1
+            );
+        }
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before,
+            "editor projection mutated retained snapshot"
+        );
+        edit_release(&h, &p, &editing);
+        h.close_clean();
+    }
+}
+
+#[test]
+fn latest_partial_input_survives_normal_save_end_and_resumes_after_definition_restore() {
+    let h = Harness::new();
+    let p = h.open();
+    let template = seed(&h, &p);
+    let id = create(&h, &p, &template, "부분 입력 보존");
+    let editor = edit_begin(&h, &p, &id);
+    let mut body = editor["body"].clone();
+    body["fields"] = json!([
+        set(LEFT, "나중에 복원할 입력"),
+        set(RIGHT, "지금 적용할 입력")
+    ]);
+    let deposited = request(
+        &h,
+        &p,
+        json!({"action":"edit_deposit","owner":editor["owner"],"generation":"2","body":body}),
+    )["value"]
+        .clone();
+    assert_eq!(deposited["deposited"], true, "{deposited}");
+    edit_release(&h, &p, &deposited);
+    let template_path = h.root.join(format!("templates/{template}.json"));
+    let mut source: Value = serde_json::from_slice(&fs::read(&template_path).unwrap()).unwrap();
+    source["fields"][LEFT]["lifecycle"] = "archived".into();
+    source["fieldOrder"] = json!([RIGHT]);
+    source["revision"] = 2.into();
+    fs::write(&template_path, serde_json::to_vec(&source).unwrap()).unwrap();
+    let document_path = h.root.join(format!("documents/{id}.json"));
+    let before = fs::read(&document_path).unwrap();
+    for pass in 0..2 {
+        let resumed = edit_begin(&h, &p, &id);
+        assert!(resumed["problem"].is_null(), "{resumed}");
+        assert!(
+            resumed["comparison"].is_null(),
+            "blocked-only input needs no choice: {resumed}"
+        );
+        assert_eq!(resumed["remaining_input"], true, "{resumed}");
+        if pass == 0 {
+            assert_eq!(fs::read(&document_path).unwrap(), before);
+        }
+        let saved = edit_save(
+            &h,
+            &p,
+            &resumed,
+            resumed["generation"].as_str().unwrap(),
+            resumed["body"].clone(),
+        );
+        assert!(saved["problem"].is_null(), "{saved}");
+        edit_release(&h, &p, &saved);
+        let current: Value = serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
+        assert_eq!(
+            current["fieldValues"][RIGHT]["value"], "지금 적용할 입력",
+            "{current}"
+        );
+        let entries = fs::read_dir(
+            h.root
+                .join(format!(".worldbuild/latest-drafts/document-{id}")),
+        )
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        let record: Value = serde_json::from_slice(&fs::read(&entries[0]).unwrap()).unwrap();
+        assert!(record["envelope"]["residual"]
+            .to_string()
+            .contains("나중에 복원할 입력"));
+    }
+    source["fields"][LEFT]["lifecycle"] = "active".into();
+    source["fieldOrder"] = json!([LEFT, RIGHT]);
+    source["revision"] = 3.into();
+    fs::write(&template_path, serde_json::to_vec(&source).unwrap()).unwrap();
+    let resumed = edit_begin(&h, &p, &id);
+    assert!(resumed["problem"].is_null(), "{resumed}");
+    assert_eq!(resumed["remaining_input"], false, "{resumed}");
+    let saved = edit_save(
+        &h,
+        &p,
+        &resumed,
+        resumed["generation"].as_str().unwrap(),
+        resumed["body"].clone(),
+    );
+    assert!(saved["problem"].is_null(), "{saved}");
+    edit_release(&h, &p, &saved);
+    let current: Value = serde_json::from_slice(&fs::read(&document_path).unwrap()).unwrap();
+    assert_eq!(
+        current["fieldValues"][LEFT]["value"], "나중에 복원할 입력",
+        "{current}"
+    );
+    assert_eq!(
+        current["fieldValues"][RIGHT]["value"], "지금 적용할 입력",
+        "{current}"
+    );
+    assert_eq!(
+        fs::read_dir(
+            h.root
+                .join(format!(".worldbuild/latest-drafts/document-{id}"))
+        )
+        .unwrap()
+        .count(),
+        0
+    );
+    h.close_clean();
+}
+
+#[test]
+fn latest_residual_keeps_opaque_original_provenance_across_repeated_save_and_reopen() {
+    let h = Harness::new();
+    let p = h.open();
+    let template = seed(&h, &p);
+    let id = create(&h, &p, &template, "원문 메타데이터 보호");
+    let editor = edit_begin(&h, &p, &id);
+    let mut body = editor["body"].clone();
+    body["fields"] = json!([set(LEFT, "7"), set(RIGHT, "기존")]);
+    let saved = edit_save(&h, &p, &editor, "2", body);
+    assert!(saved["problem"].is_null(), "{saved}");
+    edit_release(&h, &p, &saved);
+    let path = h.root.join(format!("documents/{id}.json"));
+    let mut source: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    source["fieldValues"][LEFT]["futureSynthetic"] = "preserve opaque original".into();
+    fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+    let editor = edit_begin(&h, &p, &id);
+    let mut body = editor["body"].clone();
+    body["fields"] = json!([set(LEFT, "8"), set(RIGHT, "적용 가능한 입력")]);
+    let deposited = request(
+        &h,
+        &p,
+        json!({"action":"edit_deposit","owner":editor["owner"],"generation":"2","body":body}),
+    )["value"]
+        .clone();
+    assert_eq!(deposited["deposited"], true, "{deposited}");
+    edit_release(&h, &p, &deposited);
+    source["fieldValues"][LEFT] = json!({"kind":"unset"});
+    fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+    for _ in 0..3 {
+        let resumed = edit_begin(&h, &p, &id);
+        assert!(resumed["problem"].is_null(), "{resumed}");
+        assert_eq!(resumed["remaining_input"], true, "{resumed}");
+        assert!(resumed["comparison"].is_null());
+        let saved = edit_save(
+            &h,
+            &p,
+            &resumed,
+            resumed["generation"].as_str().unwrap(),
+            resumed["body"].clone(),
+        );
+        assert!(saved["problem"].is_null(), "{saved}");
+        edit_release(&h, &p, &saved);
+        let current: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(current["fieldValues"][LEFT]["kind"], "unset", "{current}");
+        assert_eq!(current["fieldValues"][RIGHT]["value"], "적용 가능한 입력");
+        let entries = fs::read_dir(
+            h.root
+                .join(format!(".worldbuild/latest-drafts/document-{id}")),
+        )
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+        assert_eq!(entries.len(), 1);
+        let record: Value = serde_json::from_slice(&fs::read(&entries[0]).unwrap()).unwrap();
+        assert!(
+            record["envelope"]["residual"]
+                .to_string()
+                .contains("preserve opaque original"),
+            "{record}"
+        );
+    }
+    h.close_clean();
+}
+
+#[test]
+fn own_committed_resolved_residual_advances_cached_scan_on_normal_begin() {
+    use sha2::Digest;
+    use std::sync::atomic::Ordering;
+    let h = Harness::new();
+    let armed = fail_next_commit_cleanup(&h);
+    let p = h.open();
+    let template = seed(&h, &p);
+    let id = create(&h, &p, &template, "잔여 입력 저장 기준");
+    let editor = edit_begin(&h, &p, &id);
+    let mut body = editor["body"].clone();
+    body["fields"] = json!([set(LEFT, "7"), set(RIGHT, "기존")]);
+    let saved = edit_save(&h, &p, &editor, "2", body);
+    assert!(saved["problem"].is_null(), "{saved}");
+    edit_release(&h, &p, &saved);
+    let path = h.root.join(format!("documents/{id}.json"));
+    let mut source: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    source["fieldValues"][LEFT]["futureSynthetic"] = "opaque original custody".into();
+    fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+    let editor = edit_begin(&h, &p, &id);
+    let mut body = editor["body"].clone();
+    body["fields"] = json!([set(LEFT, "8"), set(RIGHT, "먼저 반영할 입력")]);
+    let deposited = request(
+        &h,
+        &p,
+        json!({"action":"edit_deposit","owner":editor["owner"],"generation":"2","body":body}),
+    )["value"]
+        .clone();
+    assert_eq!(deposited["deposited"], true, "{deposited}");
+    edit_release(&h, &p, &deposited);
+    source["fieldValues"][LEFT] = json!({"kind":"unset"});
+    fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+    let editor = edit_begin(&h, &p, &id);
+    assert_eq!(editor["remaining_input"], true, "{editor}");
+    let saved = edit_save(
+        &h,
+        &p,
+        &editor,
+        editor["generation"].as_str().unwrap(),
+        editor["body"].clone(),
+    );
+    assert!(saved["problem"].is_null(), "{saved}");
+    edit_release(&h, &p, &saved);
+    // Resolve the retained value through a real edit. Interrupt only cleanup,
+    // keeping the actual committed candidate and its previous-source evidence.
+    let editor = edit_begin(&h, &p, &id);
+    assert_eq!(editor["remaining_input"], true, "{editor}");
+    let listed = list(&h, &p);
+    let generation = (editor["generation"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        + 1)
+    .to_string();
+    let mut body = editor["body"].clone();
+    body["fields"] = json!([set(LEFT, "8"), set(RIGHT, "먼저 반영할 입력")]);
+    body["name"] = json!({"intent":"set","value":"잔여 입력까지 반영됨"});
+    armed.store(true, Ordering::SeqCst);
+    let saved = edit_save(&h, &p, &editor, &generation, body.clone());
+    assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+    assert_eq!(saved["problem"], "SavedReadRequired", "{saved}");
+    let failed = request(
+        &h,
+        &p,
+        json!({"action":"edit_refresh","owner":editor["owner"]}),
+    );
+    assert_eq!(failed["error"]["code"], "runtime_rejected", "{failed}");
+    let deposited = request(&h, &p, json!({"action":"edit_deposit","owner":editor["owner"],"generation":generation,"body":body}))["value"].clone();
+    assert_eq!(deposited["deposited"], true, "{deposited}");
+    let before = latest_target_deposit(&h, "document", &id);
+    assert!(before.envelope().residual.is_some());
+    let attempt = before.envelope().attempt.as_ref().unwrap();
+    assert_eq!(
+        attempt.result,
+        crate::data::edit_recovery::model::SaveState::Committed
+    );
+    assert_eq!(
+        attempt.candidate_digest.as_deref(),
+        Some(format!("{:x}", sha2::Sha256::digest(fs::read(&path).unwrap())).as_str())
+    );
+    let recovered = h.control(json!({"kind":"recover","project":p}));
+    assert!(recovered["error"].is_null(), "{recovered}");
+    edit_release(&h, &p, &deposited);
+    let resumed = edit_begin(&h, &p, &id);
+    assert!(resumed["problem"].is_null(), "{resumed}");
+    assert!(resumed["comparison"].is_null(), "{resumed}");
+    assert_eq!(
+        resumed["generation"],
+        (generation.parse::<u64>().unwrap() + 1).to_string()
+    );
+    assert_eq!(resumed["saved_generation"], resumed["generation"]);
+    assert_eq!(resumed["body"]["fields"], json!([]), "{resumed}");
+    edit_release(&h, &p, &resumed);
+    // No new List/refresh: only normal begin could advance this stale snapshot.
+    let draft = request(
+        &h,
+        &p,
+        json!({"action":"begin","template":template,"snapshot":listed["snapshot"]}),
+    )["value"]
+        .clone();
+    let mut body = draft["body"].clone();
+    body["name"] = "재개 후 새 문서".into();
+    let created = save(&h, &p, &draft, "2", body);
+    assert_eq!(created["outcome"]["disk"], "committed", "{created}");
+    release(&h, &p, &created, false);
+    assert_eq!(list(&h, &p)["documents"].as_array().unwrap().len(), 2);
+    h.close_clean();
+}
+
+#[test]
+fn latest_group_residual_keeps_only_relevant_opaque_custody_across_save_and_reopen() {
+    const G: &str = "aaaaaaaa-aaaa-4aaa-8aaa-000000000001";
+    const N: &str = "aaaaaaaa-aaaa-4aaa-8aaa-000000000002";
+    const A: &str = "bbbbbbbb-bbbb-4bbb-8bbb-000000000001";
+    const B: &str = "bbbbbbbb-bbbb-4bbb-8bbb-000000000002";
+    for level in ["child", "card", "group"] {
+        let h = Harness::new();
+        let p = h.open();
+        let template = super::groups::template(&h, &p);
+        let id = create(&h, &p, &template, "반복 입력 원문 보호");
+        let e = edit_begin(&h, &p, &id);
+        let mut body = e["body"].clone();
+        body["fields"] = json!([{"field":G,"value":{"intent":"set","value":{"kind":"group","instances":[{"id":A,"source":null,"fields":[{"field":N,"value":{"intent":"set","value":{"kind":"number","value":"3"}}}]},{"id":B,"source":null,"fields":[{"field":N,"value":{"intent":"set","value":{"kind":"number","value":"5"}}}]}]}}}]);
+        let saved = edit_save(&h, &p, &e, "2", body);
+        assert_eq!(saved["outcome"]["disk"], "committed", "{saved}");
+        edit_release(&h, &p, &saved);
+        let path = h.root.join(format!("documents/{id}.json"));
+        let mut source: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        match level {
+            "child" => {
+                source["fieldValues"][G]["instances"][A]["values"][N]["futureSynthetic"] =
+                    "opaque original child".into()
+            }
+            "card" => {
+                source["fieldValues"][G]["instances"][A]["futureSynthetic"] =
+                    "opaque original card".into()
+            }
+            _ => source["fieldValues"][G]["futureSynthetic"] = "opaque original group".into(),
+        };
+        fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+        let e = edit_begin(&h, &p, &id);
+        let mut body = e["body"].clone();
+        body["fields"] = json!([{"field":G,"value":{"intent":"set","value":{"kind":"group","instances":[{"id":A,"source":A,"fields":[{"field":N,"value":{"intent":"set","value":{"kind":"number","value":"8"}}}]},{"id":B,"source":B,"fields":[{"field":N,"value":{"intent":"set","value":{"kind":"number","value":"11"}}}]}]}}}]);
+        let deposited = request(
+            &h,
+            &p,
+            json!({"action":"edit_deposit","owner":e["owner"],"generation":"2","body":body}),
+        )["value"]
+            .clone();
+        assert_eq!(deposited["deposited"], true, "{deposited}");
+        edit_release(&h, &p, &deposited);
+        match level {
+            "child" => {
+                source["fieldValues"][G]["instances"][A]["values"][N]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("futureSynthetic");
+            }
+            "card" => {
+                source["fieldValues"][G]["instances"][A]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("futureSynthetic");
+            }
+            _ => {
+                source["fieldValues"][G]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("futureSynthetic");
+            }
+        }
+        fs::write(&path, serde_json::to_vec(&source).unwrap()).unwrap();
+        for cycle in 0..3 {
+            eprintln!("synthetic group level={level}, cycle={cycle}");
+            let e = edit_begin(&h, &p, &id);
+            assert_eq!(e["remaining_input"], true, "{e}");
+            assert!(e["comparison"].is_null());
+            let saved = edit_save(
+                &h,
+                &p,
+                &e,
+                e["generation"].as_str().unwrap(),
+                e["body"].clone(),
+            );
+            assert!(
+                ["committed", "no_write"].contains(&saved["outcome"]["disk"].as_str().unwrap()),
+                "{saved}"
+            );
+            edit_release(&h, &p, &saved);
+            let current: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(
+                current["fieldValues"][G]["instances"][A]["values"][N]["value"],
+                "3"
+            );
+            assert_eq!(
+                current["fieldValues"][G]["instances"][B]["values"][N]["value"],
+                if level == "group" { "5" } else { "11" }
+            );
+            let entries = fs::read_dir(
+                h.root
+                    .join(format!(".worldbuild/latest-drafts/document-{id}")),
+            )
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+            assert_eq!(entries.len(), 1);
+            let raw = String::from_utf8(fs::read(entries[0].path()).unwrap()).unwrap();
+            assert!(raw.contains(&format!("opaque original {level}")));
+        }
+        h.close_clean();
+    }
 }

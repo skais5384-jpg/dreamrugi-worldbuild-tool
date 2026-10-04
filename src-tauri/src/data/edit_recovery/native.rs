@@ -13,6 +13,18 @@ pub(crate) fn open(path: &Path, create_new: bool, writable: bool) -> io::Result<
 pub(crate) fn open_for_discard(path: &Path) -> io::Result<File> {
     open_with_access(path, false, false, true)
 }
+/// Resume only a deterministic, exact-prefix private pending record.
+#[cfg(windows)]
+pub(crate) fn open_for_resume(path: &Path) -> io::Result<File> {
+    open_with_access(path, false, true, true)
+}
+#[cfg(not(windows))]
+pub(crate) fn open_for_resume(_: &Path) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "owned pending resume",
+    ))
+}
 /// 이미 read+delete sharing으로 고정해 둔 검증 handle이 있는 파일을 같은 identity로
 /// 삭제할 때 사용한다. 새 handle도 기존 read access를 허용하되 write sharing은 열지 않는다.
 #[cfg(windows)]

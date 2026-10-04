@@ -459,7 +459,7 @@ describe("Field 정의 편집", () => {
       (c) => c.action === "submit" && c.input.kind === "update_template",
     );
     fireEvent.click(
-      screen.getByRole("button", { name: "같은 ID로 제출 재시도" }),
+      screen.getByRole("button", { name: text("followUp.message07") }),
     );
     await idle(controller);
     const after = transport.commands.filter(

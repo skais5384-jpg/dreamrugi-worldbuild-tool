@@ -24,7 +24,85 @@ beforeEach(() => {
 });
 
 describe("whole template workspace", () => {
-  it("shows one creation failure notice while retaining the field error and draft", async () => {
+  it("offers minimal template creation retry only after native custody is safely released", async () => {
+    const fixture = transportFixture();
+    fixture.transport.rejectWrite = true;
+    const shell = new TemplateController(
+      new GuardedClient(fixture.transport),
+      vi.fn().mockResolvedValue("C:\\fixture"),
+    );
+    const controller = new WorkspaceController(shell);
+    render(<WorkspaceApp controller={controller} />);
+    const open = await screen.findByRole("button", {
+      name: text("app.message07"),
+    });
+    await waitFor(() => expect(open).toBeEnabled());
+    fireEvent.click(open);
+    const templates = await screen.findByRole("button", {
+      name: text("documents.templates"),
+    });
+    await waitFor(() => expect(templates).toBeEnabled());
+    fireEvent.click(templates);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: text("app.message14") }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: text("app.message14") }),
+    );
+    const retry = await screen.findByRole("button", {
+      name: text("whole.retryCreate"),
+    });
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(shell.snapshot().retainedRefs).toHaveLength(0);
+    expect(shell.snapshot().form?.submitted).toBe(false);
+    expect(screen.getByText(text("whole.createFailed"))).toBeVisible();
+    fixture.transport.rejectWrite = false;
+    fireEvent.click(retry);
+    await waitFor(() => expect(controller.snapshot().draft).not.toBeNull());
+    expect(shell.snapshot().form).toBeNull();
+    expect(fixture.transport.templates.size).toBe(1);
+  });
+  it("protects post-acquisition rejected template creation from an unsafe duplicate retry", async () => {
+    const fixture = transportFixture();
+    fixture.transport.rejectWrite = true;
+    fixture.transport.creationRejectHasOwner = true;
+    const shell = new TemplateController(
+      new GuardedClient(fixture.transport),
+      vi.fn().mockResolvedValue("C:\\fixture"),
+    );
+    const controller = new WorkspaceController(shell);
+    render(<WorkspaceApp controller={controller} />);
+    const open = await screen.findByRole("button", {
+      name: text("app.message07"),
+    });
+    await waitFor(() => expect(open).toBeEnabled());
+    fireEvent.click(open);
+    const templates = await screen.findByRole("button", {
+      name: text("documents.templates"),
+    });
+    await waitFor(() => expect(templates).toBeEnabled());
+    fireEvent.click(templates);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: text("app.message14") }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: text("app.message14") }),
+    );
+    const retry = await screen.findByRole("button", {
+      name: text("whole.retryCreate"),
+    });
+    await waitFor(() => expect(controller.snapshot().busy).toBe(false));
+    expect(retry).toBeDisabled();
+    expect(shell.snapshot().retainedRefs).toHaveLength(1);
+    expect(shell.snapshot().form?.submitted).toBe(true);
+    expect(fixture.transport.templates.size).toBe(0);
+  });
+
+  it("keeps a failed creation minimal and preserves its input for retry", async () => {
     const fixture = transportFixture();
     fixture.base.fields[0].required = true;
     const originalWork = fixture.transport.workspaceResult;
@@ -54,7 +132,7 @@ describe("whole template workspace", () => {
             ...draft,
             body: request.body,
             generation: request.generation,
-            problem: "Required",
+            problem: "InvalidNumber",
             field: "number-field",
           };
           return { kind: "document_workspace", value: draft };
@@ -79,23 +157,25 @@ describe("whole template workspace", () => {
     await waitFor(() => expect(start).toBeEnabled());
     fireEvent.click(start);
     await act(() => controller.documents.begin(fixture.base.id));
-    const create = await screen.findByRole("button", {
-      name: text("documents.create"),
+    const retry = await screen.findByRole("button", {
+      name: text("project.retryDefault"),
     });
-    await waitFor(() => expect(create).toBeEnabled());
-    fireEvent.click(create);
-    await waitFor(() =>
-      expect(controller.documents.snapshot().error).toBe(
-        text("documents.invalid"),
-      ),
-    );
-    await waitFor(() =>
-      expect(screen.getAllByText(text("documents.invalid"))).toHaveLength(1),
-    );
-    expect(screen.getByText(text("documents.requiredValue"))).toBeVisible();
+    await waitFor(() => expect(retry).toBeEnabled());
+    expect(screen.getByText(text("documents.createFailed"))).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: text("documents.create") }),
+    ).toBeNull();
+    expect(screen.queryByText(text("documents.requiredValue"))).toBeNull();
     expect(controller.documents.snapshot().draft?.body.name).toBe(
-      "recovered draft",
+      text("documents.newDocumentName"),
     );
+    const generation = controller.documents.snapshot().draft?.generation;
+    fireEvent.click(retry);
+    await waitFor(() =>
+      expect(controller.documents.snapshot().busy).toBe(false),
+    );
+    expect(controller.documents.snapshot().draft?.generation).toBe(generation);
+    expect(screen.getAllByText(text("documents.createFailed"))).toHaveLength(1);
   });
   it("keeps local work available without YouTube consent and exposes privacy settings in Help", async () => {
     const fixture = transportFixture();
@@ -240,7 +320,6 @@ describe("whole template workspace", () => {
       text("app.message03"),
       text("health.menu"),
       text("backup.manage"),
-      text("whole.center"),
       text("app.message10"),
       text("app.message04"),
     ]);

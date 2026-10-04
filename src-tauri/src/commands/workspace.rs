@@ -57,6 +57,7 @@ impl TemplateBody {
 #[derive(Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DraftAction {
+    Checkpoint,
     Save,
     Deposit,
 }
@@ -130,6 +131,9 @@ pub(crate) struct DraftStatus {
     pub(crate) problems: Vec<DraftProblem>,
     pub(crate) identities: std::collections::BTreeMap<String, String>,
     pub(crate) outcome: Option<Box<ResultDto>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) comparison: Option<Vec<super::backend::recovery_merge::Change>>,
+    pub(crate) remaining_input: bool,
 }
 
 /// snapshot별로 고정한 projection을 UTF-8 조각으로 읽는다. 원 artifact JSON은 노출하지 않는다.

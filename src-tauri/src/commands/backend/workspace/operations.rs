@@ -95,6 +95,14 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             .transpose()?;
         if let Some(v) = &base {
             let source = v.template()?;
+            if registry.entries.values().any(|entry| {
+                entry.project == *project
+                    && entry
+                        .artifact()
+                        .is_ok_and(|artifact| artifact.template_id() == source.id)
+            }) {
+                return Err(Code::DuplicateConflict.into());
+            }
             let loaded = ctx
                 .read(|r| ArtifactRepository::new(r)?.load_template(source.id))
                 .map_err(|_| Code::RuntimeRejected)?
@@ -102,6 +110,17 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             if loaded.source() != &source.token {
                 return Err(Code::WrongBinding.into());
             }
+            let time = timestamp()?;
+            ctx.read(|ready| {
+                let repository = ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                crate::data::repository::versions::ensure_baseline(
+                    &repository,
+                    ArtifactSourceId::Template(source.id),
+                    &time,
+                )
+            })
+            .map_err(|_| Code::RuntimeRejected)?
+            .map_err(|_| Code::RepositoryRejected)?;
         }
         let seed = if base.is_none() {
             Some(
@@ -135,6 +154,11 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
         };
         let body = body_from_source(t)?;
         let mut entry = Entry {
+            resume: None,
+            comparison_checkpoint: None,
+            residual: None,
+            residual_ack: None,
+            resumed_attempt: None,
             owner: binding.id,
             project: *project,
             fingerprint,
@@ -168,6 +192,131 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             handoff_failure: None,
             discarded_input: None,
         };
+        if entry.base.is_some() && entry.error.is_none() {
+            let resumed = (|| -> Reply<()> {
+                let id = ArtifactSourceId::Template(entry.artifact()?.template_id());
+                let pending = ctx
+                    .read(|ready| {
+                        let repository =
+                            ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                        crate::data::repository::drafts::latest_checkpoint(&repository, id)
+                    })
+                    .map_err(|_| Code::RuntimeRejected)?
+                    .map_err(|_| Code::RecoveryRejected)?;
+                let Some((mut envelope, checkpoint)) = pending else {
+                    return Ok(());
+                };
+                // New field/option identities belong to the preserved input, not
+                // the newly acquired editor owner. Compound document components
+                // and repeated resume use this same deterministic allocation key.
+                entry.draft_id = envelope.key.draft_id.clone();
+                if envelope
+                    .attempt
+                    .as_ref()
+                    .is_some_and(|attempt| attempt.unresolved())
+                {
+                    let target = id.path().map_err(|_| Code::WrongBinding)?;
+                    if !ctx.can_recheck_latest_input(&binding.registration, &target) {
+                        entry.phase = "uncertain";
+                        entry.error = Some(Code::RecoveryRejected.into());
+                        entry.original = Some(Box::new(envelope));
+                        return Ok(());
+                    }
+                    envelope
+                        .attempt
+                        .as_mut()
+                        .ok_or(Code::WrongBinding)?
+                        .recovery_checked = true;
+                }
+                let plan = recovery::input_plan(&envelope, |input| {
+                    let original = input
+                        .originals
+                        .iter()
+                        .find(|original| {
+                            original.kind
+                                == crate::data::edit_recovery::model::OriginalKind::Template
+                        })
+                        .ok_or(Code::WrongBinding)?;
+                    let original = artifact::decode_template(original.snapshot.as_bytes())
+                        .map_err(|_| Code::RecoveryRejected)?;
+                    let body =
+                        TemplateBody::from_recovery(&input.draft).ok_or(Code::WrongBinding)?;
+                    recovery_template::plan(&body, &original, entry.artifact()?)
+                })?;
+                if !plan.changes.is_empty() {
+                    entry.resumed_attempt = envelope.attempt.clone();
+                    entry.generation = envelope.key.generation.checked_add(1).ok_or(Code::Full)?;
+                    entry.saved_generation = None;
+                }
+                if plan
+                    .changes
+                    .iter()
+                    .any(|change| change.status == "conflict")
+                {
+                    entry.phase = "draft_conflict";
+                    entry.error = Some(Code::OwnersRemain.into());
+                    entry.resume = Some((envelope, plan));
+                    entry.comparison_checkpoint = Some(checkpoint);
+                    return Ok(());
+                }
+                if plan.changes.is_empty() {
+                    let checkpoint = if envelope.residual.is_some() {
+                        entry.generation =
+                            envelope.key.generation.checked_add(1).ok_or(Code::Full)?;
+                        entry.saved_generation = Some(entry.generation);
+                        entry.resumed_attempt = envelope.attempt.clone();
+                        entry.residual_ack = recovery::residual_ack(&envelope)?;
+                        ctx.preserve_latest_input(entry.record(job, false)?.envelope)
+                            .map_err(|_| Code::RecoveryRejected)?
+                    } else {
+                        checkpoint
+                    };
+                    let source = entry
+                        .base
+                        .as_ref()
+                        .ok_or(Code::WrongBinding)?
+                        .template()?
+                        .token
+                        .clone();
+                    ctx.read(|ready| {
+                        let repository =
+                            ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                        crate::data::repository::drafts::clear_if_sources_match(
+                            &repository,
+                            &checkpoint,
+                            &[&source],
+                        )
+                    })
+                    .map_err(|_| Code::RuntimeRejected)?
+                    .map_err(|_| Code::RecoveryRejected)?;
+                    return Ok(());
+                }
+                entry.residual = recovery::remaining_input(&envelope, &plan)?;
+                entry.residual_ack = recovery::residual_ack(&envelope)?;
+                let choices = plan
+                    .changes
+                    .iter()
+                    .filter(|change| change.status == "proposed")
+                    .map(|change| change.id.clone())
+                    .collect::<Vec<_>>();
+                entry.body = serde_json::from_value(
+                    plan.apply(&choices)
+                        .map_err(|_| Code::PreparationRejected)?,
+                )
+                .map_err(|_| Code::SerializationFailed)?;
+                entry.body.composing = false;
+                entry.generation = envelope.key.generation.checked_add(1).ok_or(Code::Full)?;
+                entry.saved_generation = None;
+                ctx.preserve_latest_input(entry.record(job, false)?.envelope)
+                    .map_err(|_| Code::RecoveryRejected)?;
+                entry.original = Some(Box::new(envelope));
+                Ok(())
+            })();
+            if let Err(error) = resumed {
+                entry.error = Some(error);
+                entry.phase = "resume_failed";
+            }
+        }
         entry.rebuild_content()?;
         let mut notes = vec![];
         let capture = (|| {
@@ -195,7 +344,54 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
     if Some(entry.project) != job.input.project() {
         return Err(Code::WrongBinding.into());
     }
+    let latest = if let Work::TemplateDraft {
+        generation,
+        body,
+        action: DraftAction::Save | DraftAction::Checkpoint,
+        ..
+    } = &*job.input
+    {
+        if matches!(
+            entry.phase,
+            "draft_conflict" | "resume_failed" | "uncertain" | "saved_read_required"
+        ) {
+            return reply(entry);
+        }
+        if generation
+            .parse::<u64>()
+            .is_ok_and(|next| next > entry.generation)
+        {
+            let previous = ctx
+                .session_control()
+                .deposit_whole_draft(&job.binding.as_ref().ok_or(Code::WrongBinding)?.registration);
+            match previous {
+                Ok(Ok(Some(receipt))) => entry.handoff_receipt = Some(receipt),
+                Ok(Ok(None)) => (),
+                original => {
+                    entry.handoff_failure = Some(Box::new(original));
+                    entry.error = Some(Code::RecoveryRejected.into());
+                    return reply(entry);
+                }
+            }
+        }
+        entry.accept_body(generation, body)?;
+        if entry.base.is_some() {
+            let envelope = entry.record(job, false)?.envelope;
+            Some(
+                ctx.preserve_latest_input(envelope)
+                    .map_err(|_| Code::RecoveryRejected)?,
+            )
+        } else {
+            None
+        }
+    } else {
+        None
+    };
     match &*job.input {
+        Work::TemplateDraft {
+            action: DraftAction::Checkpoint,
+            ..
+        } => reply(entry),
         Work::TemplateDraftContent {
             snapshot, offset, ..
         } => {
@@ -204,6 +400,78 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                 (),
                 Ok(ResultDto::TemplateDraftContent { content }),
             ))
+        }
+        Work::ResumeTemplateDraft { selected, .. } => {
+            if entry.phase != "draft_conflict" {
+                return Err(Code::WrongBinding.into());
+            }
+            let (envelope, _) = entry.resume.as_ref().ok_or(Code::NoDraft)?;
+            let envelope = envelope.clone();
+            let id = entry.artifact()?.template_id();
+            let current = ctx
+                .read(|ready| ArtifactRepository::new(ready)?.load_template(id))
+                .map_err(|_| Code::RuntimeRejected)?;
+            let loaded = current.map_err(|_| Code::RepositoryRejected)?;
+            let plan = recovery::input_plan(&envelope, |input| {
+                let original = input
+                    .originals
+                    .iter()
+                    .find(|original| {
+                        original.kind == crate::data::edit_recovery::model::OriginalKind::Template
+                    })
+                    .ok_or(Code::WrongBinding)?;
+                let original = artifact::decode_template(original.snapshot.as_bytes())
+                    .map_err(|_| Code::RecoveryRejected)?;
+                let body = TemplateBody::from_recovery(&input.draft).ok_or(Code::WrongBinding)?;
+                recovery_template::plan(&body, &original, loaded.artifact())
+            })?;
+            if entry
+                .base
+                .as_ref()
+                .ok_or(Code::WrongBinding)?
+                .template()?
+                .token
+                != *loaded.source()
+            {
+                entry.body = body_from_source(loaded.artifact())?;
+                entry.base = Some(Arc::new(View::Template(loaded)));
+                entry.resume = Some((envelope, plan));
+                entry.rebuild_content()?;
+                return reply(entry);
+            }
+            entry.residual = recovery::remaining_input(&envelope, &plan)?;
+            entry.residual_ack = recovery::residual_ack(&envelope)?;
+            if selected.iter().any(|id| {
+                !plan
+                    .changes
+                    .iter()
+                    .any(|change| change.id == *id && change.status == "conflict")
+            }) {
+                return Err(Code::InvalidInput.into());
+            }
+            let mut choices = plan
+                .changes
+                .iter()
+                .filter(|change| change.status == "proposed")
+                .map(|change| change.id.clone())
+                .collect::<Vec<_>>();
+            choices.extend(selected.iter().cloned());
+            entry.body = serde_json::from_value(
+                plan.apply(&choices)
+                    .map_err(|_| Code::PreparationRejected)?,
+            )
+            .map_err(|_| Code::SerializationFailed)?;
+            entry.body.composing = false;
+            entry.generation = envelope.key.generation.checked_add(1).ok_or(Code::Full)?;
+            entry.saved_generation = None;
+            entry.resume = None;
+            entry.phase = "editing";
+            entry.error = None;
+            entry.rebuild_content()?;
+            ctx.preserve_latest_input(entry.record(job, false)?.envelope)
+                .map_err(|_| Code::RecoveryRejected)?;
+            entry.original = Some(Box::new((entry.original.take(), envelope)));
+            reply(entry)
         }
         Work::RefreshTemplateDraft { .. } => {
             refresh(ctx, entry)?;
@@ -216,7 +484,10 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
             ..
         } => {
             entry.accept_body(generation, body)?;
-            if matches!(entry.phase, "uncertain" | "saved_read_required") {
+            if matches!(
+                entry.phase,
+                "uncertain" | "saved_read_required" | "draft_conflict" | "resume_failed"
+            ) {
                 entry.error = Some(Code::OwnersRemain.into());
                 return reply(entry);
             }
@@ -342,6 +613,15 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                     return reply(entry);
                 }
             };
+            if latest.is_some() {
+                ctx.read(|ready| {
+                    let repository =
+                        ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                    crate::data::repository::drafts::preserve(&repository, record.envelope.clone())
+                })
+                .map_err(|_| Code::RuntimeRejected)?
+                .map_err(|_| Code::RecoveryRejected)?;
+            }
             let (diagnostic, candidate, original): (_, _, Box<dyn Any + Send>) =
                 if let Some(base) = &entry.base {
                     let input = templates::whole::WholeTemplateInput {
@@ -442,7 +722,14 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                 .map_err(|_| Code::DuplicateConflict)?;
             record.envelope.attempt = Some(attempt);
             entry.original = Some(Box::new((previous, original)));
-            entry.submitted = Some(record);
+            entry.submitted = Some(record.clone());
+            let completed_checkpoint = if latest.is_some() {
+                ctx.preserve_latest_input(record.envelope.clone())
+                    .map(Some)
+                    .map_err(|_| Code::RecoveryRejected.into())
+            } else {
+                Ok(None)
+            };
             if let Some(d) = diagnostic {
                 let disk = d.disk;
                 entry.outcome = Some(Box::new(write(
@@ -479,6 +766,27 @@ pub(crate) fn execute(ctx: &mut Context, job: &Job) -> Reply<Completed> {
                 }
             } else {
                 entry.error = Some(Code::SaveRejected.into());
+            }
+            let completed_checkpoint = match completed_checkpoint {
+                Ok(checkpoint) => checkpoint,
+                Err(error) => {
+                    entry.error = Some(error);
+                    if entry.phase == "saved" {
+                        entry.phase = "saved_read_required";
+                    }
+                    return reply(entry);
+                }
+            };
+            if entry.phase == "saved" {
+                if let Some(completed_checkpoint) = completed_checkpoint {
+                    ctx.read(|ready| {
+                        let repository =
+                            ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                        crate::data::repository::drafts::clear(&repository, &completed_checkpoint)
+                    })
+                    .map_err(|_| Code::RuntimeRejected)?
+                    .map_err(|_| Code::RecoveryRejected)?;
+                }
             }
             reply(entry)
         }
@@ -580,17 +888,8 @@ pub(crate) fn control(
             let record = entry.deposit.as_ref().ok_or(Code::NoDraft)?;
             let result = (|| {
                 let deposit = Deposit::freeze(record.envelope.clone()).map_err(Arc::new)?;
-                let store = job.recovery.connect()?;
-                let proof = store
-                    .lock()
-                    .map_err(|_| {
-                        Arc::new(crate::data::edit_recovery::error::RecoveryError::new(
-                            crate::data::edit_recovery::error::Category::Unavailable,
-                            crate::data::edit_recovery::error::Stage::Write,
-                        ))
-                    })?
-                    .accept(&deposit)
-                    .map_err(Arc::new)?;
+                let proof =
+                    recovery::accept_latest_or_legacy(ctx, job, &deposit).map_err(Arc::new)?;
                 if !proof.matches(
                     deposit.key(),
                     &deposit.envelope().deposit_id,
@@ -636,13 +935,40 @@ pub(crate) fn control(
             discard,
             ..
         } => {
+            let cancel_comparison = entry.phase == "draft_conflict"
+                && entry.resume.is_some()
+                && entry.submitted.is_none()
+                && entry.expected_digest.is_none()
+                && entry.saved_generation.is_none();
+            let _comparison_custody = if cancel_comparison {
+                if *discard
+                    || parse_generation(generation)? != entry.generation
+                    || body.as_ref().is_some_and(|body| body != &entry.body)
+                {
+                    return Err(Code::WrongBinding.into());
+                }
+                let checkpoint = entry
+                    .comparison_checkpoint
+                    .as_ref()
+                    .ok_or(Code::NoReceipt)?;
+                let durable = ctx
+                    .hold_comparison_input(
+                        &job.binding.as_ref().ok_or(Code::WrongBinding)?.registration,
+                        checkpoint,
+                    )
+                    .map_err(|_| Code::RecoveryRejected)?;
+                Some(durable)
+            } else {
+                None
+            };
             if let Some(body) = body {
                 entry.accept_body(generation, body)?;
             }
             if parse_generation(generation)? != entry.generation {
                 return Err(Code::WrongBinding.into());
             }
-            if !discard
+            if !cancel_comparison
+                && !discard
                 && entry.saved_generation != Some(entry.generation)
                 && !entry.receipt.as_ref().is_some_and(|r| {
                     r.key.generation == entry.generation && r.key.draft_id == entry.draft_id
@@ -685,6 +1011,28 @@ pub(crate) fn control(
                         entry.release_latest = Some(Box::new(release));
                     }
                     return reply(entry);
+                }
+            }
+            if !discard && entry.saved_generation == Some(entry.generation) {
+                if let Some(source) = &entry.base {
+                    let source = source.template()?;
+                    let expected = source
+                        .token
+                        .sha256()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>();
+                    let time = timestamp()?;
+                    ctx.confirm_content_version(
+                        &binding.registration,
+                        ArtifactSourceId::Template(source.id),
+                        &time,
+                        &expected,
+                    )
+                    .map_err(|error| {
+                        entry.original = Some(Box::new(error));
+                        Code::RepositoryRejected
+                    })?;
                 }
             }
             ctx.remove_session(&binding.registration)

@@ -625,6 +625,7 @@ export type Response =
       intent: G6Intent | null;
       result: ResultDto;
       g6_clearable: boolean;
+      create_retry_safe?: boolean;
     }
   | {
       kind: "project";

@@ -263,6 +263,25 @@ impl ProjectRuntime {
         Ok(summary)
     }
 
+    /// Preserve raw input even when product-file transactions need recovery.
+    /// Recovery revocation never grants canonical access; the worker rejects external invalidation.
+    pub(crate) fn latest_input_sink(
+        &self,
+        epoch: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) -> std::io::Result<super::repository::drafts::InputSink> {
+        let project =
+            LockedProject::bind(&self.lock, &self.canonical_root).map_err(std::io::Error::other)?;
+        super::repository::drafts::InputSink::bind(&project, epoch)
+    }
+    pub(crate) fn preserve_latest_input(
+        &self,
+        envelope: super::edit_recovery::model::Envelope,
+    ) -> std::io::Result<super::repository::drafts::Checkpoint> {
+        let project =
+            LockedProject::bind(&self.lock, &self.canonical_root).map_err(std::io::Error::other)?;
+        super::repository::drafts::preserve_locked(&project, envelope)
+    }
+
     pub(crate) fn ready(&mut self) -> Result<RecoveryReadyProject<'_>, RuntimeError> {
         if self.access_revoked || self.state != RuntimeState::Ready {
             return Err(self.last_error.clone().unwrap_or_else(|| {

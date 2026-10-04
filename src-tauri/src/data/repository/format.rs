@@ -1,6 +1,5 @@
 //! 사용자 명시 형식 전환/버전 복원. 영구 원문은 임시 transaction backup과 별개다.
 use super::*;
-use std::io::Write;
 use std::path::PathBuf;
 
 fn invalid(id: ArtifactSourceId, reason: &'static str) -> ArtifactWriteError {
@@ -133,30 +132,24 @@ pub(super) fn preserve(
     id: ArtifactSourceId,
     bytes: &[u8],
 ) -> Result<(), ArtifactWriteError> {
-    let (path, _guards) = directory(repository, id, true)?
-        .ok_or_else(|| invalid(id, "history directory unavailable"))?;
-    let hash = digest(bytes);
-    let target = path.join(format!("{hash}.json"));
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&target)
-    {
-        Ok(mut file) => {
-            file.write_all(bytes)
-                .and_then(|_| file.flush())
-                .and_then(|_| file.sync_all())
-                .map_err(|e| cause(id, e))?;
-        }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
-        Err(e) => return Err(cause(id, e)),
-    }
-    // create/write 실패 뒤 불완전한 파일을 자동 덮어쓰지 않는다. canonical은 아직 바꾸지 않았다.
-    if read_snapshot(&path, id, &hash)? != bytes {
-        return Err(invalid(id, "history verification failed"));
-    }
+    validate_identity(id, bytes)?;
+    let timestamp = match id {
+        ArtifactSourceId::Template(_) => artifact::decode_template(bytes)
+            .map_err(|e| cause(id, e))?
+            .updated_at_utc()
+            .to_owned(),
+        ArtifactSourceId::Document(_) => artifact::decode_document(bytes)
+            .map_err(|e| cause(id, e))?
+            .updated_at_utc()
+            .to_owned(),
+        _ => return Err(invalid(id, "invalid version target")),
+    };
+    let expected = digest(bytes);
+    super::versions::confirm_source(repository, id, &timestamp, Some(&expected))
+        .map_err(|e| cause(id, e))?;
     Ok(())
 }
+
 #[derive(Clone, serde::Serialize)]
 pub(crate) struct Snapshot {
     pub(crate) digest: String,
@@ -212,6 +205,16 @@ pub(crate) fn build(
     expected: &str,
     restore: Option<&str>,
 ) -> Result<CanonicalWritePlan, ArtifactWriteError> {
+    append(repository, CanonicalWritePlan::new(), id, expected, restore)
+}
+
+fn append(
+    repository: &ArtifactRepository<'_, '_>,
+    plan: CanonicalWritePlan,
+    id: ArtifactSourceId,
+    expected: &str,
+    restore: Option<&str>,
+) -> Result<CanonicalWritePlan, ArtifactWriteError> {
     let token = source(repository, id)?;
     let bytes = read_source(repository, &token)?;
     if digest(&bytes) != expected {
@@ -220,12 +223,44 @@ pub(crate) fn build(
     let next = if let Some(hash) = restore {
         let (path, _guards) = directory(repository, id, false)?
             .ok_or_else(|| invalid(id, "format history unavailable"))?;
-        read_snapshot(&path, id, hash)?
+        let historical = read_snapshot(&path, id, hash)?;
+        let header =
+            artifact::inspect_artifact_header(&historical).map_err(|error| cause(id, error))?;
+        let current = match id {
+            ArtifactSourceId::Template(_) => artifact::TEMPLATE_SCHEMA_VERSION,
+            ArtifactSourceId::Document(_) => artifact::DOCUMENT_SCHEMA_VERSION,
+            _ => return Err(invalid(id, "invalid format restore target")),
+        };
+        if header.schema_version() == current {
+            historical
+        } else {
+            artifact::transition_format(&historical, token.path())
+                .map_err(|error| cause(id, error))?
+        }
     } else {
         artifact::transition_format(&bytes, token.path()).map_err(|e| cause(id, e))?
     };
     validate_identity(id, &next)?;
-    CanonicalWritePlan::new().format_change(&token, next)
+    plan.format_change(&token, next)
+}
+
+/// All members cross the policy boundary in the same canonical transaction.
+pub(crate) fn build_policy_batch(
+    repository: &ArtifactRepository<'_, '_>,
+    sources: &[(ArtifactSourceId, String)],
+) -> Result<CanonicalWritePlan, ArtifactWriteError> {
+    let mut plan = CanonicalWritePlan::new();
+    for (id, expected) in sources {
+        plan = append(repository, plan, *id, expected, None)?;
+    }
+    Ok(plan)
+}
+pub(crate) fn validate_policy_backup(
+    prepared: &crate::data::edit_recovery::policy_transition::Prepared,
+) -> Result<(), ArtifactWriteError> {
+    prepared
+        .validate()
+        .map_err(|error| cause(prepared.sources[0].0, error))
 }
 pub(crate) fn inspect(
     repository: &ArtifactRepository<'_, '_>,

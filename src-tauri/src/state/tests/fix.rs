@@ -294,13 +294,13 @@ fn f2_no_draft_32_then_8_acknowledgements_recover_control_capacity() {
 #[test]
 fn f2_real_returned_p_and_g6_owner_survive_data_free_errors_and_g6_abandonment() {
     let h = Harness::new();
-    super::recovery::unavailable(&h);
     let s = stale(&h);
     h.ack(&s.operation);
     let t = h.read_template(&s.project, &s.template);
     let created=h.work(json!({"kind":"create_document","project":s.project,"view":t["view"],"name":"payload document"}));
     let d =
         h.work(json!({"kind":"read_document","project":s.project,"document":created["artifact"]}));
+    let _canary = block_latest_target(&h, "document", created["artifact"].as_str().unwrap());
     let session = h.session(
         &s.project,
         vec![d["view"].clone(), t["view"].clone()],

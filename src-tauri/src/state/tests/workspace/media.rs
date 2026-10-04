@@ -3,11 +3,12 @@ fn request(h: &Harness, p: &str, r: Value) -> Value {
     h.work(json!({"kind":"document_workspace","project":p,"request":r}))
 }
 fn release_doc(h: &Harness, p: &str, d: &Value, edit: bool) {
-    let r = request(
-        h,
-        p,
-        json!({"action":if edit{"edit_release"}else{"release"},"owner":d["owner"],"generation":d["generation"],"discard":false}),
-    );
+    let command = if edit {
+        json!({"action":"edit_release","owner":d["owner"],"generation":d["generation"]})
+    } else {
+        json!({"action":"release","owner":d["owner"],"generation":d["generation"],"discard":false})
+    };
+    let r = request(h, p, command);
     // edit_release has a closed wire shape without discard.
     assert_eq!(r["value"]["kind"], "released", "{r}");
 }
@@ -26,7 +27,10 @@ fn m37_template_document_gallery_shared_refs_and_missing_bytes_keep_canonical() 
     let template: Value =
         serde_json::from_slice(&fs::read(h.root.join(format!("templates/{t}.json"))).unwrap())
             .unwrap();
-    assert_eq!(template["schemaVersion"], 7);
+    assert_eq!(
+        template["schemaVersion"],
+        artifact::TEMPLATE_SCHEMA_VERSION.get()
+    );
     let fields = template["fieldOrder"].as_array().unwrap();
     let mut png = vec![];
     {
@@ -63,21 +67,23 @@ fn m37_template_document_gallery_shared_refs_and_missing_bytes_keep_canonical() 
             &p,
             json!({"action":"draft","owner":d["owner"],"generation":"2","body":body,"save":true}),
         );
-        assert_eq!(empty["value"]["field"], fields[0], "{empty}");
+        assert_eq!(empty["value"]["outcome"]["disk"], "committed", "{empty}");
+        let id = empty["value"]["outcome"]["artifact"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        release_doc(&h, &p, &empty["value"], false);
+        let editor = request(&h, &p, json!({"action":"edit_begin","document":id}))["value"].clone();
+        let mut body = editor["body"].clone();
         body["fields"] = values.clone();
         let r = request(
             &h,
             &p,
-            json!({"action":"draft","owner":d["owner"],"generation":"3","body":body,"save":true}),
+            json!({"action":"edit_draft","owner":editor["owner"],"generation":"2","body":body,"save":true}),
         );
         assert_eq!(r["value"]["outcome"]["disk"], "committed", "{r}");
-        ids.push(
-            r["value"]["outcome"]["artifact"]
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        );
-        release_doc(&h, &p, &r["value"], false);
+        ids.push(id);
+        release_doc(&h, &p, &r["value"], true);
     }
     let d = request(&h, &p, json!({"action":"edit_begin","document":ids[0]}))["value"].clone();
     let mut body = d["body"].clone();
@@ -98,7 +104,10 @@ fn m37_template_document_gallery_shared_refs_and_missing_bytes_keep_canonical() 
     );
     assert_eq!(released["value"]["kind"], "released", "{released}");
     let other = request(&h, &p, json!({"action":"read","document":ids[1]}));
-    assert_eq!(other["value"]["schema"], 6);
+    assert_eq!(
+        other["value"]["schema"],
+        artifact::DOCUMENT_SCHEMA_VERSION.get()
+    );
     assert_eq!(
         other["value"]["fields"][0]["value"]["value"],
         json!([a.id, b.id])
@@ -115,34 +124,22 @@ fn m37_template_document_gallery_shared_refs_and_missing_bytes_keep_canonical() 
         &p,
         json!({"action":"edit_draft","owner":d["owner"],"generation":"2","body":raw,"save":true}),
     );
-    assert!(!rejected["error"].is_null(), "{rejected}");
-    assert_eq!(fs::read(&path).unwrap(), original);
     assert_eq!(
-        request(
-            &h,
-            &p,
-            json!({"action":"edit_release","owner":d["owner"],"generation":"2"})
-        )["error"]["code"],
-        "no_receipt"
+        rejected["value"]["outcome"]["disk"], "committed",
+        "{rejected}"
     );
+    let after: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let before: Value = serde_json::from_slice(&original).unwrap();
+    assert_eq!(
+        after["fieldValues"], before["fieldValues"],
+        "missing historical bytes must not erase resource references"
+    );
+    assert_eq!(after["name"], "retained after missing attachment");
+    release_doc(&h, &p, &rejected["value"], true);
     crate::data::assets::Store::open(&h.root, false)
         .unwrap()
         .put(&a, &png)
         .unwrap();
-    let retry = request(
-        &h,
-        &p,
-        json!({"action":"edit_draft","owner":d["owner"],"generation":"2","body":raw,"save":true}),
-    );
-    assert_eq!(retry["value"]["outcome"]["disk"], "committed", "{retry}");
-    assert_eq!(
-        request(
-            &h,
-            &p,
-            json!({"action":"edit_release","owner":d["owner"],"generation":"2"})
-        )["value"]["kind"],
-        "released"
-    );
     assert_eq!(fs::read(&source).unwrap(), png);
     // 입력 중의 짧은 YouTube 주소도 worker를 죽이지 않고 원문만 보존한다.
     let editing =

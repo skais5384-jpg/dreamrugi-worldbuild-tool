@@ -549,6 +549,11 @@ pub(super) fn restore(ctx: &mut Context, job: &Job) -> Reply<Completed> {
         .map_err(|_| Code::InvalidInput)?;
     let unpublished = base.is_none();
     let mut entry = Entry {
+        resume: None,
+        comparison_checkpoint: None,
+        residual: None,
+        residual_ack: None,
+        resumed_attempt: None,
         owner: job.allocated,
         project: *project,
         fingerprint: envelope.key.project_fingerprint.clone(),

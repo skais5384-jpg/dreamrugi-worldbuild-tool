@@ -31,6 +31,7 @@ type NoticeEvent = {
   message: string;
   summary: string;
   intent: string;
+  recordDetail?: ReactNode;
 };
 const Registry = createContext<{
   put: (entry: Entry, event?: NoticeEvent) => void;
@@ -104,6 +105,7 @@ export function FloatingNoticeProvider({ children }: { children: ReactNode }) {
         projectFingerprint: null,
         summary: event.summary.slice(0, 100),
         detail: event.message,
+        recordDetail: event.recordDetail,
         noticeId: entry.id,
         noticeKey: event.key,
       };
@@ -204,8 +206,11 @@ export function FloatingNotice({
   eventId,
   scope = "",
   isCurrent,
+  recordDetail,
 }: {
   children: ReactNode;
+  /** Diagnostic content is rendered only inside the execution record. */
+  recordDetail?: ReactNode;
   intent?: "info" | "success" | "warning" | "error";
   /** Stable request/result identity. Action notices supply their actual owner. */
   eventId?: string | number | object;
@@ -252,10 +257,11 @@ export function FloatingNotice({
       >
         <Fieldset className="notice-control-scope" disabled={disabled}>
           {children}
+          {recordDetail}
         </Fieldset>
       </div>
     ),
-    [children, disabled, id, key, registry],
+    [children, recordDetail, disabled, id, key, registry],
   );
   const [dismissed, setDismissed] = useState<string | null>(null);
   const content = useMemo(
@@ -296,9 +302,20 @@ export function FloatingNotice({
         detail,
         noticeKey: key,
       },
-      { key, message, summary, intent },
+      { key, message, summary, intent, recordDetail },
     );
-  }, [registry, id, key, message, summary, intent, dismissed, content, detail]);
+  }, [
+    registry,
+    id,
+    key,
+    message,
+    summary,
+    intent,
+    dismissed,
+    content,
+    detail,
+    recordDetail,
+  ]);
   useLayoutEffect(() => () => registry?.remove(id), [registry, id]);
   return registry || dismissed === key ? null : content;
 }
@@ -313,5 +330,12 @@ export function NoticeEventDetail({ event }: { event: ActivityEvent }) {
     (entry) =>
       entry.id === event.noticeId && entry.noticeKey === event.noticeKey,
   );
-  return current?.detail ?? event.detail;
+  return (
+    current?.detail ?? (
+      <>
+        {event.detail}
+        {event.recordDetail}
+      </>
+    )
+  );
 }

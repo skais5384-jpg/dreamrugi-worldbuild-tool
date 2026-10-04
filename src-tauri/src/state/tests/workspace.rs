@@ -7,12 +7,12 @@ mod restore;
 #[path = "m36_verify.rs"]
 mod verify;
 
-fn begin(h: &Harness, p: &str, view: Value) -> Value {
+pub(super) fn begin(h: &Harness, p: &str, view: Value) -> Value {
     let result = h.work(json!({"kind":"begin_template_draft","project":p,"view":view}));
     assert_eq!(result["kind"], "template_draft", "{result}");
     result["status"].clone()
 }
-fn content(h: &Harness, p: &str, s: &Value) -> Value {
+pub(super) fn content(h: &Harness, p: &str, s: &Value) -> Value {
     let mut offset = Value::String("0".into());
     let mut text = String::new();
     loop {
@@ -27,7 +27,14 @@ fn content(h: &Harness, p: &str, s: &Value) -> Value {
     }
     serde_json::from_str(&text).unwrap()
 }
-fn submit(h: &Harness, p: &str, s: &Value, g: &str, body: &Value, action: &str) -> Value {
+pub(super) fn submit(
+    h: &Harness,
+    p: &str,
+    s: &Value,
+    g: &str,
+    body: &Value,
+    action: &str,
+) -> Value {
     let input = json!({"kind":"template_draft","project":p,"session":s["owner"],"generation":g,"body":body,"action":action});
     let r = if action == "deposit" {
         h.control(input)
@@ -37,7 +44,7 @@ fn submit(h: &Harness, p: &str, s: &Value, g: &str, body: &Value, action: &str) 
     assert_eq!(r["kind"], "template_draft", "{r}");
     r["status"].clone()
 }
-fn release(h: &Harness, p: &str, s: &Value, discard: bool) -> Value {
+pub(super) fn release(h: &Harness, p: &str, s: &Value, discard: bool) -> Value {
     h.control(json!({"kind":"release_template_draft","project":p,"session":s["owner"],"generation":s["generation"],"body":null,"discard":discard}))
 }
 fn number() -> Value {
@@ -201,6 +208,7 @@ fn workspace_center_without_project_read_restore_conflict_reapply_and_discard() 
     body["name"] = "복원할 이름".into();
     let deposited = submit(&h, &p, &s, "2", &body, "deposit");
     assert!(release(&h, &p, &deposited, false)["error"].is_null());
+    stage_latest_as_legacy_archive(&h, &deposited["draftId"]);
     let page = h.work(json!({"kind":"recovery_page","cursor":null}));
     let row = &page["page"]["entries"][0];
     let r = &row["row"];
@@ -350,21 +358,16 @@ fn workspace_lock_lost_old_pending_payload_is_deposited_before_new_generation() 
         deposited["receipt"]["key"]["generation"], "8",
         "{deposited}"
     );
-    let store = h.state.recovery.connect().unwrap();
-    let rows = store.lock().unwrap().list().unwrap();
-    assert_eq!(rows.entries.len(), 2);
-    let generations: std::collections::BTreeSet<_> = rows
-        .entries
-        .iter()
-        .map(|e| e.key.as_ref().unwrap().generation)
-        .collect();
-    assert_eq!(generations, [7, 8].into_iter().collect());
+    let latest = latest_target_deposit(&h, "template", &id);
+    let record: Value = serde_json::from_slice(latest.bytes()).unwrap();
+    assert_eq!(record["envelope"]["key"]["generation"], "8");
+    assert_eq!(record["envelope"]["draft"]["name"], "세대 8 원문");
+    assert_eq!(record["envelope"]["attempt"]["submittedGeneration"], "7");
     assert_eq!(
         before,
         fs::read(h.root.join(format!("templates/{id}.json"))).unwrap()
     );
     assert_eq!(release(&h, &p, &deposited, false)["kind"], "control");
-    drop(store);
     h.close_clean();
 }
 
@@ -471,12 +474,32 @@ fn m36_guarded_rich_unknown_bounds_sections_deposit_restore_then_save_close() {
     let h = Harness::at(base, backend::provider(), true);
     let p = h.open();
     let request = |r: Value| h.work(json!({"kind":"document_workspace","project":p,"request":r}));
-    let rows = h.work(json!({"kind":"recovery_page","cursor":null}));
-    let row = &rows["page"]["entries"][0]["row"];
-    let restored=request(json!({"action":"edit_restore","key":row["key"],"deposit_id":row["depositId"],"digest":row["payloadDigest"]}))["value"].clone();
+    let restored = request(json!({"action":"edit_begin","document":id}))["value"].clone();
     let admitted: crate::commands::document_workspace::EditBody =
         serde_json::from_value(raw.clone()).unwrap();
-    assert_eq!(restored["body"], serde_json::to_value(admitted).unwrap());
+    let admitted = serde_json::to_value(admitted).unwrap();
+    let resumed_fields = restored["body"]["fields"].as_array().unwrap();
+    assert_eq!(
+        resumed_fields
+            .iter()
+            .find(|field| field["field"] == number_id)
+            .unwrap(),
+        admitted["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|field| field["field"] == number_id)
+            .unwrap()
+    );
+    // The rich input already equals canonical content. Normal resume keeps that
+    // field instead of forcing an identical write; invalid numeric input remains.
+    assert_eq!(
+        resumed_fields
+            .iter()
+            .find(|field| field["field"] == rich_id)
+            .unwrap()["value"]["intent"],
+        "keep"
+    );
     assert_eq!(
         fs::read(
             h.root
@@ -516,5 +539,420 @@ fn m36_guarded_rich_unknown_bounds_sections_deposit_restore_then_save_close() {
             ["value"]["kind"],
         "released"
     );
+    h.close_clean();
+}
+
+#[test]
+fn latest_template_input_reopens_actual_target_and_conflict_choice_does_not_write() {
+    let h = Harness::new();
+    let p = h.open();
+    let (id, _) = h.template(&p);
+    let view = h.read_template(&p, &id);
+    let status = begin(&h, &p, view["view"].clone());
+    let mut body = content(&h, &p, &status)["body"].clone();
+    body["name"] = "작성 중 이름".into();
+    let checkpoint = submit(&h, &p, &status, "2", &body, "checkpoint");
+    let saved_path = h.root.join(format!("templates/{id}.json"));
+    let before = fs::read(&saved_path).unwrap();
+    assert_eq!(checkpoint["savedGeneration"], "1");
+    assert_eq!(fs::read(&saved_path).unwrap(), before);
+    let deposited = submit(&h, &p, &checkpoint, "2", &body, "deposit");
+    assert!(release(&h, &p, &deposited, false)["error"].is_null());
+    let read = h.read_template(&p, &id);
+    let resumed = begin(&h, &p, read["view"].clone());
+    assert_eq!(content(&h, &p, &resumed)["body"]["name"], "작성 중 이름");
+    assert!(resumed["savedGeneration"].is_null());
+    assert_eq!(fs::read(&saved_path).unwrap(), before);
+    let resumed_body = content(&h, &p, &resumed)["body"].clone();
+    let deposited = submit(
+        &h,
+        &p,
+        &resumed,
+        resumed["generation"].as_str().unwrap(),
+        &resumed_body,
+        "deposit",
+    );
+    assert!(release(&h, &p, &deposited, false)["error"].is_null());
+    let mut current: Value = serde_json::from_slice(&before).unwrap();
+    current["name"] = "다른 저장 이름".into();
+    current["revision"] = (current["revision"].as_u64().unwrap() + 1).into();
+    fs::write(&saved_path, serde_json::to_vec(&current).unwrap()).unwrap();
+    let current_bytes = fs::read(&saved_path).unwrap();
+    let read = h.read_template(&p, &id);
+    let conflict = begin(&h, &p, read["view"].clone());
+    assert_eq!(conflict["phase"], "draft_conflict");
+    // General save/checkpoint requests cannot overwrite a preserved conflict with the current source.
+    let latest_path = h
+        .root
+        .join(format!(".worldbuild/latest-drafts/template-{id}"));
+    let held = fs::read_dir(&latest_path)
+        .unwrap()
+        .map(|row| {
+            let row = row.unwrap();
+            (row.file_name(), fs::read(row.path()).unwrap())
+        })
+        .collect::<Vec<_>>();
+    let shown = content(&h, &p, &conflict)["body"].clone();
+    for action in ["checkpoint", "save"] {
+        let guarded = submit(
+            &h,
+            &p,
+            &conflict,
+            conflict["generation"].as_str().unwrap(),
+            &shown,
+            action,
+        );
+        assert_eq!(guarded["phase"], "draft_conflict");
+        let after = fs::read_dir(&latest_path)
+            .unwrap()
+            .map(|row| {
+                let row = row.unwrap();
+                (row.file_name(), fs::read(row.path()).unwrap())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(after, held);
+        assert_eq!(fs::read(&saved_path).unwrap(), current_bytes);
+    }
+    // Cancel must preserve the exact old input, and must refuse a corrupt proof.
+    let input_path = fs::read_dir(&latest_path)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let original_input = fs::read(&input_path).unwrap();
+    fs::write(&input_path, b"invalid comparison checkpoint").unwrap();
+    let refused = release(&h, &p, &conflict, false);
+    assert!(!refused["error"].is_null(), "{refused}");
+    fs::write(&input_path, &original_input).unwrap();
+    assert!(release(&h, &p, &conflict, false)["error"].is_null());
+    assert_eq!(fs::read(&input_path).unwrap(), original_input);
+    assert_eq!(fs::read(&saved_path).unwrap(), current_bytes);
+    let read = h.read_template(&p, &id);
+    let conflict = begin(&h, &p, read["view"].clone());
+    assert_eq!(conflict["phase"], "draft_conflict");
+    let choices = conflict["comparison"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|change| change["status"] == "conflict")
+        .map(|change| change["id"].clone())
+        .collect::<Vec<_>>();
+    assert!(!choices.is_empty());
+    let chosen = h.work(json!({"kind":"resume_template_draft","project":p,"session":conflict["owner"],"selected":choices}));
+    assert_eq!(chosen["kind"], "template_draft", "{chosen}");
+    assert_eq!(chosen["status"]["phase"], "editing");
+    assert_eq!(fs::read(&saved_path).unwrap(), current_bytes);
+    let status = &chosen["status"];
+    let body = content(&h, &p, status)["body"].clone();
+    assert_eq!(body["name"], "작성 중 이름");
+    let saved = submit(
+        &h,
+        &p,
+        status,
+        status["generation"].as_str().unwrap(),
+        &body,
+        "save",
+    );
+    assert_eq!(saved["phase"], "saved", "{saved}");
+    assert!(release(&h, &p, &saved, false)["error"].is_null());
+    h.close_clean();
+}
+
+#[test]
+fn startup_transition_creates_one_real_template_for_accumulated_uncreated_raw_inputs() {
+    let h = Harness::new();
+    let p = h.open();
+    let status = begin(&h, &p, Value::Null);
+    let fingerprint = status["projectFingerprint"].as_str().unwrap().to_owned();
+    let draft_id = status["draftId"].as_str().unwrap().to_owned();
+    let mut body = content(&h, &p, &status)["body"].clone();
+    body["name"] = "예전 미생성 입력".into();
+    body["fields"] = json!([number()]);
+    body["fields"][0]["default"]["value"]["value"] = "-".into();
+    let deposited = submit(&h, &p, &status, "2", &body, "deposit");
+    assert!(!deposited["receipt"].is_null(), "{deposited}");
+    body["name"] = "마지막 미생성 입력".into();
+    let deposited = submit(&h, &p, &deposited, "3", &body, "deposit");
+    assert!(release(&h, &p, &deposited, false)["error"].is_null());
+    let legacy = h
+        .base
+        .join("locks/edit-recovery")
+        .join(&fingerprint)
+        .join(&draft_id);
+    let before2 = fs::read(legacy.join("2.json")).unwrap();
+    let before3 = fs::read(legacy.join("3.json")).unwrap();
+    let listed = h.work(json!({"kind":"list_templates","project":p}));
+    assert_eq!(listed["kind"], "templates", "{listed}");
+    let rows = listed["templates"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["name"], "마지막 미생성 입력");
+    let id = rows[0]["id"].as_str().unwrap();
+    let path = h.root.join(format!("templates/{id}.json"));
+    let canonical = fs::read(&path).unwrap();
+    let value: Value = serde_json::from_slice(&canonical).unwrap();
+    assert!(value["fields"].as_object().unwrap().is_empty());
+    assert!(!legacy.exists());
+    assert!(!h.root.join(".worldbuild/transition-inputs").exists());
+    let backups = crate::data::project_backup::list_backups(
+        &fingerprint,
+        &h.base.join("locks/transition-backup-storage"),
+        None,
+    )
+    .unwrap();
+    assert_eq!(backups.backups.len(), 1);
+    let copy = PathBuf::from(&backups.backups[0].locator)
+        .join("payload/.worldbuild/transition-inputs")
+        .join(&draft_id);
+    assert_eq!(fs::read(copy.join("2.json")).unwrap(), before2);
+    assert_eq!(fs::read(copy.join("3.json")).unwrap(), before3);
+    let again = h.work(json!({"kind":"list_templates","project":p}));
+    assert_eq!(again["templates"], listed["templates"]);
+    assert_eq!(
+        crate::data::project_backup::list_backups(
+            &fingerprint,
+            &h.base.join("locks/transition-backup-storage"),
+            None
+        )
+        .unwrap()
+        .backups
+        .len(),
+        1
+    );
+    let view = h.read_template(&p, id);
+    let resumed = begin(&h, &p, view["view"].clone());
+    let raw = content(&h, &p, &resumed)["body"].clone();
+    assert_eq!(raw["fields"][0]["default"]["value"]["value"], "-", "{raw}");
+    assert_eq!(fs::read(&path).unwrap(), canonical);
+    let next = (resumed["generation"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap()
+        + 1)
+    .to_string();
+    let saved = submit(&h, &p, &resumed, &next, &raw, "save");
+    assert!(!saved["error"].is_null());
+    assert_eq!(fs::read(&path).unwrap(), canonical);
+    let kept = submit(&h, &p, &saved, &next, &raw, "deposit");
+    assert!(release(&h, &p, &kept, false)["error"].is_null());
+    h.close_clean();
+}
+
+#[test]
+fn latest_template_resume_keeps_new_definition_identities_across_editor_owners() {
+    let h = Harness::new();
+    let p = h.open();
+    let (id, creation_session) = h.template(&p);
+    assert!(h.control(
+        json!({"kind":"session_control","project":p,"session":creation_session,"control":"end"})
+    )["error"]
+        .is_null());
+    let view = h.read_template(&p, &id);
+    let first = begin(&h, &p, view["view"].clone());
+    let mut body = content(&h, &p, &first)["body"].clone();
+    let mut choice = number();
+    choice["id"] = "new:cccccccc-cccc-4ccc-8ccc-cccccccccccc".into();
+    choice["configuration"] = json!({"kind":"single_choice","options":[{"id":"new:dddddddd-dddd-4ddd-8ddd-dddddddddddd","label":"선택","archived":false}]});
+    choice["default"] = json!({"intent":"unset"});
+    let mut group = number();
+    group["id"] = "new:eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee".into();
+    let mut child = number();
+    child["id"] = "new:ffffffff-ffff-4fff-8fff-ffffffffffff".into();
+    group["configuration"] = json!({"kind":"group","members":[child]});
+    group["default"] = json!({"intent":"unset"});
+    body["fields"] = json!([number(), choice, group]);
+    let deposited = submit(&h, &p, &first, "2", &body, "deposit");
+    let identity = deposited["identities"].clone();
+    assert_eq!(identity.as_object().unwrap().len(), 5, "{deposited}");
+    let released = release(&h, &p, &deposited, false);
+    assert!(released["error"].is_null(), "{released}");
+    for _ in 0..2 {
+        let view = h.read_template(&p, &id);
+        let resumed = begin(&h, &p, view["view"].clone());
+        assert_ne!(resumed["owner"], first["owner"]);
+        assert_eq!(resumed["draftId"], first["draftId"]);
+        assert_eq!(resumed["identities"], identity);
+        let resumed_body = content(&h, &p, &resumed)["body"].clone();
+        let deposited = submit(
+            &h,
+            &p,
+            &resumed,
+            resumed["generation"].as_str().unwrap(),
+            &resumed_body,
+            "deposit",
+        );
+        let released = release(&h, &p, &deposited, false);
+        assert!(released["error"].is_null(), "{released}");
+    }
+    let view = h.read_template(&p, &id);
+    let resumed = begin(&h, &p, view["view"].clone());
+    let body = content(&h, &p, &resumed)["body"].clone();
+    let saved = submit(
+        &h,
+        &p,
+        &resumed,
+        resumed["generation"].as_str().unwrap(),
+        &body,
+        "save",
+    );
+    assert!(saved["error"].is_null(), "{saved}");
+    assert!(release(&h, &p, &saved, false)["error"].is_null());
+    let canonical: Value =
+        serde_json::from_slice(&fs::read(h.root.join(format!("templates/{id}.json"))).unwrap())
+            .unwrap();
+    let allocated = identity["new:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+        .as_str()
+        .unwrap();
+    assert!(canonical["fields"].get(allocated).is_some());
+    h.close_clean();
+}
+
+#[test]
+fn latest_partial_template_input_survives_save_and_applies_after_definition_restore() {
+    let h = Harness::new();
+    let p = h.open();
+    let fresh = begin(&h, &p, Value::Null);
+    let mut body = content(&h, &p, &fresh)["body"].clone();
+    body["name"] = "현재 템플릿".into();
+    body["fields"] = json!([number()]);
+    let saved = submit(&h, &p, &fresh, "2", &body, "save");
+    let id = saved["artifact"].as_str().unwrap().to_owned();
+    let field = saved["identities"][number()["id"].as_str().unwrap()]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(release(&h, &p, &saved, false)["error"].is_null());
+    let view = h.read_template(&p, &id);
+    let edit = begin(&h, &p, view["view"].clone());
+    let mut body = content(&h, &p, &edit)["body"].clone();
+    body["name"] = "지금 적용한 이름".into();
+    body["fields"][0]["default"] = json!({"intent":"set","value":{"kind":"number","value":"19"}});
+    let deposited = submit(&h, &p, &edit, "3", &body, "deposit");
+    assert!(release(&h, &p, &deposited, false)["error"].is_null());
+    let path = h.root.join(format!("templates/{id}.json"));
+    let mut current: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    current["fields"][&field]["lifecycle"] = "archived".into();
+    current["fieldOrder"] = json!([]);
+    current["revision"] = 3.into();
+    fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+    for _ in 0..2 {
+        let view = h.read_template(&p, &id);
+        let resumed = begin(&h, &p, view["view"].clone());
+        assert_eq!(resumed["phase"], "editing", "{resumed}");
+        assert_eq!(resumed["remainingInput"], true, "{resumed}");
+        assert!(resumed["comparison"].is_null());
+        let body = content(&h, &p, &resumed)["body"].clone();
+        assert_eq!(body["name"], "지금 적용한 이름");
+        let saved = submit(
+            &h,
+            &p,
+            &resumed,
+            resumed["generation"].as_str().unwrap(),
+            &body,
+            "save",
+        );
+        assert_eq!(saved["phase"], "saved", "{saved}");
+        assert!(release(&h, &p, &saved, false)["error"].is_null());
+        assert_eq!(
+            fs::read_dir(
+                h.root
+                    .join(format!(".worldbuild/latest-drafts/template-{id}"))
+            )
+            .unwrap()
+            .count(),
+            1
+        );
+    }
+    let mut current: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    current["fields"][&field]["lifecycle"] = "active".into();
+    current["fieldOrder"] = json!([field]);
+    current["revision"] = (current["revision"].as_u64().unwrap() + 1).into();
+    fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
+    let view = h.read_template(&p, &id);
+    let resumed = begin(&h, &p, view["view"].clone());
+    assert_eq!(resumed["remainingInput"], false, "{resumed}");
+    let body = content(&h, &p, &resumed)["body"].clone();
+    assert_eq!(
+        body["fields"][0]["default"]["value"]["value"], "19",
+        "{body}"
+    );
+    let saved = submit(
+        &h,
+        &p,
+        &resumed,
+        resumed["generation"].as_str().unwrap(),
+        &body,
+        "save",
+    );
+    assert_eq!(saved["phase"], "saved", "{saved}");
+    assert!(release(&h, &p, &saved, false)["error"].is_null());
+    assert_eq!(
+        fs::read_dir(
+            h.root
+                .join(format!(".worldbuild/latest-drafts/template-{id}"))
+        )
+        .unwrap()
+        .count(),
+        0
+    );
+    h.close_clean();
+}
+
+#[test]
+fn actual_creation_records_baseline_before_any_editor_opens() {
+    let h = Harness::new();
+    let p = h.open();
+    let (id, session) = h.template(&p);
+    let directory = h
+        .root
+        .join(format!(".worldbuild/content-versions/template-{id}"));
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+    let record: Value = serde_json::from_slice(
+        &fs::read(
+            fs::read_dir(&directory)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["version"], 1);
+    assert_eq!(
+        record["content"].as_str().unwrap().as_bytes(),
+        fs::read(h.root.join(format!("templates/{id}.json"))).unwrap()
+    );
+    let ended =
+        h.control(json!({"kind":"session_control","project":p,"session":session,"control":"end"}));
+    assert!(ended["error"].is_null(), "{ended}");
+    let view = h.read_template(&p, &id);
+    let created=h.work(json!({"kind":"create_document","project":p,"view":view["view"],"name":"아직 편집하지 않은 문서"}));
+    assert_eq!(created["disk"], "committed", "{created}");
+    let document = created["artifact"].as_str().unwrap();
+    let directory = h
+        .root
+        .join(format!(".worldbuild/content-versions/document-{document}"));
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+    let record: Value = serde_json::from_slice(
+        &fs::read(
+            fs::read_dir(&directory)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .path(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["version"], 1);
+    assert!(record["template"].is_string());
+    let ended = h.control(
+        json!({"kind":"session_control","project":p,"session":created["session"],"control":"end"}),
+    );
+    assert!(ended["error"].is_null(), "{ended}");
     h.close_clean();
 }

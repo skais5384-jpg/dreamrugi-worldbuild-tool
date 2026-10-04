@@ -106,6 +106,20 @@ it("확정 복제 뒤 읽기 실패는 ID와 성공 사실을 보존하고 조�
   expect(c.snapshot().selection!.content.id).toBe(result.artifact);
   expect(t.writes).toHaveLength(2);
 });
+it("복제 거절 안내는 원본과 제출 입력을 유지하며 다음 조치를 설명한다", async () => {
+  const { c, t, source } = await saved();
+  await c.navigate({ kind: "duplicate" });
+  t.rejectWrite = true;
+  await c.executeTemplateAction();
+  expect(t.templates.size).toBe(1);
+  expect(t.templates.get(source.content.id)).toEqual(source.content);
+  expect(c.snapshot().retainedRefs).toHaveLength(1);
+  expect(c.snapshot().templateAction).toMatchObject({
+    artifact: null,
+    source,
+    message: text("template.duplicateRetained"),
+  });
+});
 it("늦은 복제 결과는 종료 중 선택을 덮지 않고 결과 owner만 인수한다", async () => {
   const { c, t, source } = await saved();
   await c.navigate({ kind: "duplicate" });

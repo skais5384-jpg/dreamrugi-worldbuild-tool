@@ -5,10 +5,12 @@ use super::super::{
     schema::SchemaVersion,
 };
 
-pub(crate) const TEMPLATE_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new_unchecked(7);
-pub(crate) const DOCUMENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new_unchecked(6);
+// This header also marks the bounded draft/version policy. Older applications
+// must reject these artifacts instead of bypassing the new persistence rules.
+pub(crate) const TEMPLATE_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new_unchecked(8);
+pub(crate) const DOCUMENT_SCHEMA_VERSION: SchemaVersion = SchemaVersion::new_unchecked(7);
 
-static TEMPLATE_MIGRATION_STEPS: [MigrationStep; 6] = [
+static TEMPLATE_MIGRATION_STEPS: [MigrationStep; 7] = [
     MigrationStep::new(
         1,
         2,
@@ -51,6 +53,13 @@ static TEMPLATE_MIGRATION_STEPS: [MigrationStep; 6] = [
         validate_template_v6,
         validate_template_v7,
     ),
+    MigrationStep::new(
+        7,
+        8,
+        migrate_template_v8,
+        validate_template_v7,
+        validate_template_v8,
+    ),
 ];
 fn validate_template_version(
     value: &serde_json::Value,
@@ -90,7 +99,7 @@ fn migrate_guide_schema(
     v["schemaVersion"] = 2.into();
     Ok(v)
 }
-static DOCUMENT_MIGRATION_STEPS: [MigrationStep; 5] = [
+static DOCUMENT_MIGRATION_STEPS: [MigrationStep; 6] = [
     MigrationStep::new(
         1,
         2,
@@ -125,6 +134,13 @@ static DOCUMENT_MIGRATION_STEPS: [MigrationStep; 5] = [
         migrate_document_v6,
         validate_document_v5,
         validate_document_v6,
+    ),
+    MigrationStep::new(
+        6,
+        7,
+        migrate_document_v7,
+        validate_document_v6,
+        validate_document_v7,
     ),
 ];
 fn validate_template_v3(
@@ -365,5 +381,28 @@ fn migrate_document_v6(
     mut v: serde_json::Value,
 ) -> Result<serde_json::Value, super::super::migration::MigrationStepError> {
     v["schemaVersion"] = 6.into();
+    Ok(v)
+}
+
+fn validate_template_v8(
+    v: &serde_json::Value,
+) -> Result<(), super::super::migration::MigrationStepError> {
+    validate_template_version(v, 8)
+}
+fn migrate_template_v8(
+    mut v: serde_json::Value,
+) -> Result<serde_json::Value, super::super::migration::MigrationStepError> {
+    v["schemaVersion"] = 8.into();
+    Ok(v)
+}
+fn validate_document_v7(
+    v: &serde_json::Value,
+) -> Result<(), super::super::migration::MigrationStepError> {
+    validate_document_version(v, 7)
+}
+fn migrate_document_v7(
+    mut v: serde_json::Value,
+) -> Result<serde_json::Value, super::super::migration::MigrationStepError> {
+    v["schemaVersion"] = 7.into();
     Ok(v)
 }

@@ -284,7 +284,8 @@ struct SourceFile {
 }
 
 /// layout canonical commit과 문서 file 삭제 사이의 권한/복구 증거를 함께 보유한다.
-/// 생성자는 휴지통 상태와 문서 bytes를 확인하고 delete handle을 연 뒤 intent를 게시한다.
+/// 생성자는 휴지통 상태와 문서 bytes를 확인하고 읽기 guard를 보유한 뒤 intent를 게시한다.
+/// DELETE access는 canonical scan을 방해하므로 layout commit 뒤 같은 객체에만 획득한다.
 pub(crate) struct DocumentPurge {
     intent: Intent,
     document: crate::data::artifact::DocumentId,
@@ -382,7 +383,10 @@ fn inspect_with_evidence(root: &Path) -> Result<Evidence, Error> {
             Err(_) => complete = false,
         }
     }
-    let history = root.join(".worldbuild").join("format-history");
+    // Confirmed and old format versions do not pin attachment bytes. Only live unsaved input does.
+    let history = root
+        .join(".worldbuild")
+        .join(crate::data::repository::drafts::DIRECTORY);
     match fs::symlink_metadata(&history) {
         Ok(metadata) if metadata.is_dir() && !is_reparse(&metadata) => scan_json_tree(
             root,
@@ -1275,6 +1279,91 @@ fn document_layout_state(
     Ok(layout.nodes.get(&document).map(|node| node.state))
 }
 
+/// Called only after a durable purge intent proves the canonical target was removed.
+/// Validate the entire flat target namespace before deleting through owned handles.
+fn purge_target_records(root: &Path, kind: &str, id: &str) -> Result<(), Error> {
+    if !matches!(kind, "template" | "document") || !crate::data::media::valid_id(id) {
+        return Err(Error::new(Category::InvalidInput));
+    }
+    let _root = ProjectDirectory::open_mutable_root(root)?;
+    let base = root.join(".worldbuild");
+    if !exists(&base)? {
+        return Ok(());
+    }
+    let _base = ProjectDirectory::open_mutable_root(&base)?;
+    for namespace in ["content-versions", "latest-drafts", "format-history"] {
+        let parent = base.join(namespace);
+        if !exists(&parent)? {
+            continue;
+        }
+        let _parent = ProjectDirectory::open_mutable_root(&parent)?;
+        let path = parent.join(format!("{kind}-{id}"));
+        if !exists(&path)? {
+            continue;
+        }
+        let guard = ProjectDirectory::open_owned_root(&path)?;
+        let entries = guard.read_dir()?.collect::<Result<Vec<_>, _>>()?;
+        if entries.len() > MAX_SOURCE_FILES {
+            return Err(Error::new(Category::TooLarge));
+        }
+        let mut held = Vec::new();
+        for entry in entries {
+            let name = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| Error::new(Category::Corrupt))?;
+            let pending = name.strip_prefix("pending-").is_some_and(|value| {
+                crate::data::media::valid_id(value)
+                    || value
+                        .strip_suffix(".json")
+                        .is_some_and(crate::data::media::valid_id)
+            });
+            let valid = match namespace {
+                "format-history" => name.strip_suffix(".json").is_some_and(|hash| {
+                    hash.len() == 64
+                        && hash
+                            .bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                }),
+                _ => name
+                    .strip_prefix(if namespace == "content-versions" {
+                        'v'
+                    } else {
+                        'd'
+                    })
+                    .and_then(|n| n.strip_suffix(".json"))
+                    .and_then(|n| n.parse::<u64>().ok())
+                    .is_some_and(|n| {
+                        n > 0
+                            && name
+                                == format!(
+                                    "{}{n:020}.json",
+                                    if namespace == "content-versions" {
+                                        'v'
+                                    } else {
+                                        'd'
+                                    }
+                                )
+                    }),
+            };
+            if !valid && !pending {
+                return Err(Error::new(Category::Corrupt));
+            }
+            let file = native::open_for_discard(&path.join(&name))?;
+            guard.validate_file(&file, &name)?;
+            held.push(file);
+        }
+        // Handles deny changes/deletion by another process while this owned purge runs.
+        for file in &held {
+            native::cleanup(file)?;
+        }
+        drop(held);
+        guard.validate()?;
+        guard.delete_owned()?;
+    }
+    Ok(())
+}
+
 fn recover_document_purge(root: &Path, intent: &Intent) -> Result<(), Error> {
     let document: crate::data::artifact::DocumentId = intent
         .item_id
@@ -1321,9 +1410,11 @@ fn recover_document_purge(root: &Path, intent: &Intent) -> Result<(), Error> {
                 native::cleanup(&file)?;
                 drop(file);
                 guard.validate()?;
-                Ok(())
+                purge_target_records(root, "document", &intent.item_id)
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                purge_target_records(root, "document", &intent.item_id)
+            }
             Err(error) => Err(error.into()),
         },
     }
@@ -1344,7 +1435,7 @@ pub(crate) fn begin_document_purge(root: &Path, id: &str) -> Result<DocumentPurg
     let directory = ProjectDirectory::open_mutable_root(&documents)?;
     let filename = format!("{document}.json");
     let path = documents.join(&filename);
-    let mut file = native::open_for_discard_shared_read(&path)?;
+    let mut file = open_scan_file(&path)?;
     directory.validate_file(&file, &filename)?;
     let bytes = read_opened(&mut file, MAX_SOURCE_BYTES)?;
     let value = crate::data::artifact::decode_document(&bytes)
@@ -1384,6 +1475,13 @@ pub(crate) fn finish_document_purge(
     }
     let filename = format!("{}.json", purge.document);
     purge.directory.validate_file(&purge.file, &filename)?;
+    let deletion = native::open_for_discard_shared_read(&root.join("documents").join(&filename))?;
+    purge.directory.validate_file(&deletion, &filename)?;
+    if crate::data::project_file::directory::file_identity(&purge.file)?
+        != crate::data::project_file::directory::file_identity(&deletion)?
+    {
+        return Err(Error::new(Category::Stale));
+    }
     purge.file.seek(SeekFrom::Start(0))?;
     let bytes = read_opened(&mut purge.file, MAX_SOURCE_BYTES)?;
     let expected = purge
@@ -1394,10 +1492,14 @@ pub(crate) fn finish_document_purge(
     if digest(&bytes) != expected {
         return Err(Error::new(Category::Stale));
     }
-    native::cleanup(&purge.file)?;
+    native::cleanup(&deletion)?;
+    drop(deletion);
     drop(purge.file);
     purge.directory.validate()?;
     process_crash_checkpoint("after_document_delete");
+    if purge_target_records(root, "document", &purge.document.to_string()).is_err() {
+        return Ok(true);
+    }
     Ok(finish_intent(root, &purge.intent).is_err())
 }
 
@@ -2111,7 +2213,7 @@ fn delete_template_file(root: &Path, intent: &Intent) -> Result<(), Error> {
 
 fn recover_template_purge(root: &Path, intent: &Intent) -> Result<(), Error> {
     match delete_template_file(root, intent) {
-        Ok(()) => Ok(()),
+        Ok(()) => purge_target_records(root, "template", &intent.item_id),
         Err(error) => {
             // A needs-lock file may have become read-only again after a
             // failed purge or restart. If the exact original file is still
@@ -2230,6 +2332,9 @@ pub(crate) fn purge_templates(
                 }
             }
             process_crash_checkpoint("after_template_delete");
+            if purge_target_records(root, "template", id).is_err() {
+                return Ok(true);
+            }
             Ok(finish_intent(root, &intent).is_err())
         })();
         match result {

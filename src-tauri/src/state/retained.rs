@@ -69,6 +69,9 @@ pub(super) fn read(state: &Inner, caller: Caller, key: RetainedRef) -> Reply<Res
             .collect(),
         intent: backend::g6_intent(input),
         result: Box::new(result.dto.clone()?),
+        create_retry_safe: matches!(&**input, Work::CreateTemplate { .. })
+            && result.binding.is_none()
+            && result.g6_clearable,
         g6_clearable: result.g6_clearable
             && result.previous.is_none()
             && !state.operations.values().any(|o| {

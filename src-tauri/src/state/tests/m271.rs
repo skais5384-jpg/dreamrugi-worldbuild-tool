@@ -433,6 +433,7 @@ fn m271_name_only_write_preserves_fields_archived_options_unknown_lexemes_and_op
     let h = Harness::new();
     let (template, _) = crate::data::application::composite::tests::guarded_fixture_bytes();
     let id = "99999999-9999-4999-8999-000000000064";
+    let template = current_policy_fixture(&template, &format!("templates/{id}.json"));
     fs::create_dir(h.root.join("templates")).unwrap();
     let path = h.root.join("templates").join(format!("{id}.json"));
     fs::write(&path, &template).unwrap();

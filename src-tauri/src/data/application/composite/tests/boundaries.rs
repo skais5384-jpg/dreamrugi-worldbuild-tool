@@ -494,7 +494,7 @@ fn g9_template_and_document_domain_failures_preserve_original_error_and_correct_
         "unknown-command",
         "document-regression",
         "wrong-kind",
-        "required-unset",
+        "required-invalid-number",
     ] {
         let f = Fixture::new();
         let (mut t, mut d) = fixture_raw();
@@ -514,7 +514,7 @@ fn g9_template_and_document_domain_failures_preserve_original_error_and_correct_
                 field: field(900),
                 label: "changed".into(),
             },
-            "required-unset" => TemplateEditIntent::SetFieldRequired {
+            "required-invalid-number" => TemplateEditIntent::SetFieldRequired {
                 field: field(4),
                 required: true,
             },
@@ -525,7 +525,10 @@ fn g9_template_and_document_domain_failures_preserve_original_error_and_correct_
                 field(4),
                 DocumentValueEdit::single_choice(key(12).parse().unwrap()),
             )],
-            "required-unset" => vec![DocumentEdit::Unset(field(4))],
+            "required-invalid-number" => vec![DocumentEdit::SetValue(
+                field(4),
+                DocumentValueEdit::number("-".into()),
+            )],
             _ => vec![],
         };
         let mut input = load_input(&mut rt, intent, edits);

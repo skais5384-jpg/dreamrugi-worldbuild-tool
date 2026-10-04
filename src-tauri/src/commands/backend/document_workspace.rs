@@ -706,9 +706,20 @@ fn read_response(
         });
     }
     for field in reconciled.orphan_fields() {
-        // Compatible restored definitions already expose the same stored value above.
-        // Keep the snapshot on disk until a normal save; do not show a false orphan row.
-        if field.disposition() == artifact::OrphanFieldDisposition::ReattachableOrphan {
+        // A known definition and its snapshot describe one stored field. Snapshot
+        // creation/preservation must not add a second visible row. Keep genuine
+        // orphans and blocked reattachments, including their diagnostics.
+        if reconciled
+            .known_fields()
+            .iter()
+            .any(|known| known.field_id() == field.field_id())
+            && matches!(
+                field.disposition(),
+                artifact::OrphanFieldDisposition::ReattachableOrphan
+                    | artifact::OrphanFieldDisposition::SnapshotRequired
+                    | artifact::OrphanFieldDisposition::PreservedOrphan
+            )
+        {
             continue;
         }
         fields.push(ReadField {
@@ -716,7 +727,7 @@ fn read_response(
             label: field
                 .display_label()
                 .map(str::to_owned)
-                .unwrap_or_else(|| field.field_id().to_string()),
+                .unwrap_or_else(|| "현재 템플릿에서 이름을 찾을 수 없는 필드".into()),
             state: "Orphan".into(),
             provenance: Some("ExistingValue".into()),
             value: Some(projection::value(field.value())?),
@@ -953,7 +964,7 @@ pub(super) fn finish_session(ctx: &mut Context, binding: &Binding) -> (bool, Box
         Box::new((observation, release, removal)),
     )
 }
-fn write_layout(
+pub(super) fn write_layout(
     ctx: &mut Context,
     job: &Job,
     input: &LayoutWrite,
@@ -1080,6 +1091,26 @@ fn write_layout(
         }
         execution.value().cloned()
     });
+    let baseline = if commit.is_some() {
+        input.create.as_ref().map(|(document, _, _)| {
+            super::creation_baseline(
+                ctx,
+                ArtifactSourceId::Document(document.document_id()),
+                artifact::encode_document(document),
+                &document.updated_at_utc(),
+            )
+        })
+    } else {
+        None
+    };
+    let warnings = if baseline.as_ref().is_some_and(|result| result.is_err()) {
+        vec![WarningDto {
+            category: "content_version_unavailable".into(),
+            field: None,
+        }]
+    } else {
+        vec![]
+    };
     let dto = execution
         .as_ref()
         .map(|e| {
@@ -1091,7 +1122,7 @@ fn write_layout(
                     .map(|(d, _, _)| d.document_id().to_string()),
                 e.diagnostic(),
                 Some(true),
-                vec![],
+                warnings,
             )
         })
         .map_err(|_| Code::SaveRejected.into());
@@ -1132,7 +1163,7 @@ fn write_layout(
             documents,
         ))
     });
-    let mut c = Completed::new((registration, execution, cleanup), dto);
+    let mut c = Completed::new((registration, execution, cleanup, baseline), dto);
     if !released {
         c.binding = Some(binding.clone());
     }
@@ -1243,7 +1274,7 @@ pub(crate) fn execute(
                     Err(error) => Ok(asset_error(error, None, None)),
                 }
             }
-            Request::AssetRead { asset }
+            Request::AssetRead { asset, .. }
             | Request::AssetChunk { asset, .. }
             | Request::AssetOpen { asset } => {
                 // 분할 전송은 검증한 동일 snapshot을 사용한다. 매 64 KiB마다 PNG를 재해독하지 않는다.
@@ -1264,7 +1295,19 @@ pub(crate) fn execute(
                         let (metadata, bytes) = match loaded {
                             Ok(value) => value,
                             Err(error) => {
-                                let context = asset_reference_context(root, asset);
+                                let mut context = asset_reference_context(root, asset);
+                                if context.0.is_none() {
+                                    if let Request::AssetRead { target: Some(target), .. } = request {
+                                        let id = match target.kind.as_str() {
+                                            "document" => target.artifact.parse().ok().map(ArtifactSourceId::Document),
+                                            "template" => target.artifact.parse().ok().map(ArtifactSourceId::Template),
+                                            _ => None,
+                                        };
+                                        if let (Some(id), Ok(repository)) = (id, ArtifactRepository::new(ready)) {
+                                            context.0 = crate::data::repository::versions::known_asset_name(&repository, id, asset).ok().flatten();
+                                        }
+                                    }
+                                }
                                 return Err((error, context));
                             }
                         };
@@ -1334,6 +1377,182 @@ pub(crate) fn execute(
                     Err(e) => Ok(asset_error(e, None, None)),
                 }
             }
+            Request::VersionsList { kind, artifact } => {
+                let id = format_id(kind, artifact)?;
+                let result = ctx
+                    .read(|ready| {
+                        let repository =
+                            ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                        crate::data::repository::versions::list(&repository, id)
+                    })
+                    .map_err(|_| Code::RuntimeRejected)?;
+                match result {
+                    Ok(versions) => Ok(reply(Response::Versions { versions })),
+                    Err(error) => Ok(Completed::reject(error, Code::RepositoryRejected.into())),
+                }
+            }
+            Request::VersionPreview {
+                kind,
+                artifact,
+                version,
+            } => {
+                let id = format_id(kind, artifact)?;
+                let n = version.parse::<u64>().map_err(|_| Code::InvalidInput)?;
+                if n == 0 || n.to_string() != *version {
+                    return Err(Code::InvalidInput.into());
+                }
+                let result = ctx
+                    .read(|ready| {
+                        let repository =
+                            ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                        let snapshot =
+                            crate::data::repository::versions::snapshot(&repository, id, n)?;
+                        let source =
+                            crate::data::repository::versions::observation(&repository, id)?;
+                        let names =
+                            crate::data::repository::versions::asset_names(&repository, id, n)?;
+                        Ok::<_, std::io::Error>((snapshot, source, names))
+                    })
+                    .map_err(|_| Code::RuntimeRejected)?;
+                match result {
+                    Ok(((bytes, metadata), source, asset_names)) => {
+                        let (template, document) = match id {
+                            ArtifactSourceId::Template(_) => {
+                                let template = artifact::decode_template(&bytes)
+                                    .map_err(|_| Code::RepositoryRejected)?;
+                                (Some(projection::template(&template)?), None)
+                            }
+                            ArtifactSourceId::Document(_) => {
+                                let document = artifact::decode_document(&bytes)
+                                    .map_err(|_| Code::RepositoryRejected)?;
+                                let template = artifact::decode_template(
+                                    &metadata.ok_or(Code::RepositoryRejected)?,
+                                )
+                                .map_err(|_| Code::RepositoryRejected)?;
+                                (
+                                    None,
+                                    Some(Box::new(
+                                        super::document_edit::project_artifacts(
+                                            &document, &template,
+                                        )?
+                                        .0,
+                                    )),
+                                )
+                            }
+                            _ => return Err(Code::InvalidInput.into()),
+                        };
+                        Ok(reply(Response::VersionPreview {
+                            version: version.clone(),
+                            source,
+                            asset_names,
+                            template,
+                            document,
+                        }))
+                    }
+                    Err(error) => Ok(Completed::reject(error, Code::RepositoryRejected.into())),
+                }
+            }
+            Request::VersionRestore {
+                kind,
+                artifact,
+                version,
+                source,
+            } => {
+                if template_owner || registry.len() > 0 {
+                    return Err(Code::OwnersRemain.into());
+                }
+                let id = format_id(kind, artifact)?;
+                let n = version.parse::<u64>().map_err(|_| Code::InvalidInput)?;
+                if n == 0 || n.to_string() != *version {
+                    return Err(Code::InvalidInput.into());
+                }
+                let timestamp = timestamp()?;
+                let (binding, registration) =
+                    begin(ctx, job, vec![id.path().map_err(|_| Code::InvalidInput)?])?;
+                let Some(key) = &binding.key else {
+                    let mut completed =
+                        Completed::reject(registration, Code::SessionRejected.into());
+                    completed.binding = Some(binding);
+                    return Ok(completed);
+                };
+                let execution = match ctx.session(key) {
+                    Ok(mut session) => session.restore_version(id, n, source, &timestamp),
+                    Err(error) => {
+                        let (released, cleanup) = finish_session(ctx, &binding);
+                        let mut completed = Completed::reject(
+                            (registration, error, cleanup),
+                            Code::SessionRejected.into(),
+                        );
+                        if !released {
+                            completed.binding = Some(binding);
+                        }
+                        return Ok(completed);
+                    }
+                };
+                let mut dto = execution
+                    .as_ref()
+                    .map(|result| {
+                        write(
+                            binding.id,
+                            Some(artifact.clone()),
+                            result.diagnostic(),
+                            Some(true),
+                            vec![],
+                        )
+                    })
+                    .map_err(|_| Code::SaveRejected.into());
+                let confirmed = execution.as_ref().is_ok_and(|result| {
+                    matches!(
+                        result.diagnostic().disk,
+                        crate::data::application::diagnostics::DiskState::Committed
+                            | crate::data::application::diagnostics::DiskState::NoWrite
+                    )
+                });
+                // No fallible return after registration: cleanup and its binding
+                // must survive a post-write read or version confirmation failure.
+                let observation = confirmed.then(|| {
+                    ctx.read(|ready| {
+                        let repository =
+                            ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                        crate::data::repository::versions::observation(&repository, id)
+                    })
+                });
+                let (released, cleanup) = finish_session(ctx, &binding);
+                let confirmation = if released {
+                    match &observation {
+                        Some(Ok(Ok(expected))) => Some(ctx.read(|ready| {
+                            let repository =
+                                ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                            crate::data::repository::versions::confirm_source(
+                                &repository,
+                                id,
+                                &timestamp,
+                                Some(expected),
+                            )
+                        })),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if observation
+                    .as_ref()
+                    .is_some_and(|result| !matches!(result, Ok(Ok(_))))
+                    || confirmation
+                        .as_ref()
+                        .is_some_and(|result| !matches!(result, Ok(Ok(_))))
+                {
+                    dto = Err(Code::RepositoryRejected.into());
+                }
+                let mut completed = Completed::new(
+                    (registration, execution, observation, cleanup, confirmation),
+                    dto,
+                );
+                if !released {
+                    completed.binding = Some(binding);
+                }
+                Ok(completed)
+            }
             Request::FormatInspect { kind, artifact } => {
                 let id = format_id(kind, artifact)?;
                 let result = ctx
@@ -1399,6 +1618,7 @@ pub(crate) fn execute(
             | Request::EditDeposit { .. }
             | Request::EditRelease { .. }
             | Request::EditRefresh { .. }
+            | Request::EditResume { .. }
             | Request::EditRetry { .. }
             | Request::EditRestore { .. } => {
                 if let Request::EditRestore { key, .. } = request {
@@ -1640,8 +1860,94 @@ pub(crate) fn execute(
                 if refresh_search.unwrap_or(true) {
                     registry.searches.remove(&project);
                 }
-                let (base, documents, unplaced, problem, scan) =
-                    layout_snapshot(ctx, &mut observations)?;
+                let mut full = layout_snapshot(ctx, &mut observations);
+                if let Ok((_, documents, ..)) = &full {
+                    let known = documents
+                        .iter()
+                        .map(|document| document.id.as_str())
+                        .collect::<BTreeSet<_>>();
+                    let ids = ctx
+                        .read(|ready| {
+                            let repository =
+                                ArtifactRepository::new(ready).map_err(std::io::Error::other)?;
+                            crate::data::repository::versions::targets(&repository)
+                        })
+                        .map_err(|error| observed(&mut observations, error, Code::RuntimeRejected))?
+                        .map_err(|error| {
+                            observed(&mut observations, error, Code::RepositoryRejected)
+                        })?;
+                    if ids.iter().any(|id| matches!(id, ArtifactSourceId::Document(document) if !known.contains(document.to_string().as_str()))) {
+                        full = Err(Code::RepositoryRejected.into());
+                    }
+                }
+                let (base, documents, unplaced, problem, scan) = match full {
+                    Ok(full) => full,
+                    Err(error) => {
+                        observations.push(Box::new(error));
+                        let display = ctx
+                            .read(|ready| {
+                                let repository = ArtifactRepository::new(ready)
+                                    .map_err(std::io::Error::other)?;
+                                let documents = repository.display_documents()?;
+                                let ids = documents
+                                    .iter()
+                                    .map(|document| document.id)
+                                    .collect::<BTreeSet<_>>();
+                                let layout = repository
+                                    .load_layout()
+                                    .ok()
+                                    .flatten()
+                                    .map(|loaded| loaded.into_artifact())
+                                    .unwrap_or_else(|| DocumentLayout::flat(ids.iter().copied()));
+                                let unplaced = layout
+                                    .reconcile(&ids)
+                                    .map_err(|error| std::io::Error::other(format!("{error:?}")))?
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect();
+                                let unverified_documents = documents
+                                    .iter()
+                                    .filter(|document| !document.available)
+                                    .map(|document| document.id.to_string())
+                                    .collect();
+                                let summaries = documents
+                                    .iter()
+                                    .map(|document| Summary {
+                                        id: document.id.to_string(),
+                                        template: document.template.clone(),
+                                        name: document.name.clone(),
+                                        english_name: document.english_name.clone(),
+                                        glossary_summary: document.glossary_summary.clone(),
+                                        glossary_excluded: document.glossary_excluded,
+                                    })
+                                    .collect();
+                                Ok::<_, std::io::Error>((
+                                    layout,
+                                    unplaced,
+                                    unverified_documents,
+                                    summaries,
+                                ))
+                            })
+                            .map_err(|error| {
+                                observed(&mut observations, error, Code::RuntimeRejected)
+                            })?
+                            .map_err(|error| {
+                                observed(&mut observations, error, Code::RepositoryRejected)
+                            })?;
+                        return Ok(reply(Response::List {
+                            fingerprint: ctx.project_fingerprint().ok_or(Code::Unavailable)?.into(),
+                            snapshot: job.allocated,
+                            initial: false,
+                            layout: display.0,
+                            unplaced: display.1,
+                            documents: display.3,
+                            issues: Vec::new(),
+                            issue_status: "partial".into(),
+                            unverified_documents: display.2,
+                            problem: Some("SourceUnavailable".into()),
+                        }));
+                    }
+                };
                 registry
                     .snapshots
                     .retain(|_, snapshot| snapshot.project != project);
@@ -2002,6 +2308,8 @@ pub(crate) fn execute(
                     if d.deposit.is_none() {
                         d.deposit = Some(
                             Deposit::freeze(Envelope {
+                                residual: None,
+                                residual_ack: None,
                                 key: Key {
                                     project_fingerprint: d.fingerprint.clone(),
                                     draft_id: d.draft_id.clone(),

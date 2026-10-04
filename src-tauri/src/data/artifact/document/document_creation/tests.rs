@@ -390,8 +390,11 @@ fn explicit_eight_kind_values_are_bound_validated_without_reordering() -> Result
     let source_before = source.clone();
     let source_bytes = encode_template(&source)?;
     assert_eq!(
-        create(&source, "blank-required").unwrap_err().category(),
-        DocumentCreationErrorCategory::RequiredValueUnset
+        create(&source, "blank-required")?
+            .document()
+            .field_values()
+            .len(),
+        source.fields().len()
     );
     let values = source
         .fields()
@@ -1015,7 +1018,7 @@ fn admission_priority_is_source_then_revision_timestamp_and_tombstone() -> Resul
 }
 
 #[test]
-fn active_required_unset_returns_typed_bound_error_without_payload_or_candidate(
+fn active_required_unset_creates_a_document_without_using_historical_defaults(
 ) -> Result<(), Box<dyn Error>> {
     let source = decode_template_value(&template_value(
         [(
@@ -1035,30 +1038,11 @@ fn active_required_unset_returns_typed_bound_error_without_payload_or_candidate(
     ));
     let source_before = source.clone();
     let source_bytes = encode_template(&source)?;
-    let error = create(&source, "private-required-document")
-        .expect_err("required current unset must fail rather than use the initial default");
-    assert_eq!(
-        error.category(),
-        DocumentCreationErrorCategory::RequiredValueUnset
-    );
-    assert_eq!(error.field_id(), Some(field_id(FIELD_TEXT)));
-    assert_eq!(
-        error.bound_validation_category(),
-        Some(FieldValidationErrorCategory::RequiredValueUnset)
-    );
-    assert_eq!(
-        error.bound_validation_location(),
-        Some(FieldValidationLocation::NewDocumentValue)
-    );
-    assert_error_redacted(
-        &error,
-        &[
-            "private-required-document",
-            "required-secret",
-            "historical fallback must not be used",
-            "futureDefault",
-        ],
-    );
+    let outcome = create(&source, "private-required-document")?;
+    let value = &outcome.document().field_values()[&field_id(FIELD_TEXT)];
+    assert!(value.is_unset());
+    assert!(!format!("{outcome:?}").contains("private-required-document"));
+    assert!(!format!("{outcome:?}").contains("required-secret"));
     assert_source_unchanged(&source, &source_before, &source_bytes);
     Ok(())
 }

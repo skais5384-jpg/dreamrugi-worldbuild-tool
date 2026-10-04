@@ -289,7 +289,7 @@ export function DocumentTree({
               state: "active" as const,
               trash: null,
             };
-            const name = names.get(id) ?? id;
+            const name = names.get(id) ?? text("documents.unknownName");
             const svnEntry = svnEntries.get(id.toLowerCase());
             const svnOverlay = svnEntry ? overlayForEntry(svnEntry) : null;
             const path = [name];
@@ -297,7 +297,7 @@ export function DocumentTree({
             let parent = node.parentId;
             while (parent && !ancestors.has(parent)) {
               ancestors.add(parent);
-              path.unshift(names.get(parent) ?? parent);
+              path.unshift(names.get(parent) ?? text("documents.unknownName"));
               parent = list!.layout.nodes[parent]?.parentId ?? null;
             }
             const fullName = path.join(" / ");

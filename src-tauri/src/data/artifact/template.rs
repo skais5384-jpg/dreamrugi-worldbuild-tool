@@ -1257,7 +1257,9 @@ impl TemplateArtifact {
     }
 
     pub(super) fn validate_structure(&self) -> Result<(), ArtifactValidationError> {
-        if ![1, 2, 3, 4, 5, 6, TEMPLATE_SCHEMA_VERSION.get()].contains(&self.schema_version.get()) {
+        if ![1, 2, 3, 4, 5, 6, 7, TEMPLATE_SCHEMA_VERSION.get()]
+            .contains(&self.schema_version.get())
+        {
             return Err(ArtifactValidationError::schema_mismatch());
         }
         if self.artifact_type != ArtifactType::Template {

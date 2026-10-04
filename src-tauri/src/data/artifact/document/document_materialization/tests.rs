@@ -1436,34 +1436,14 @@ fn blockers_return_exact_first_issue_without_candidate_or_payload() -> Result<()
         1,
         TEMPLATE_ID,
     ));
-    let error = materialize_document(
+    let allowed = materialize_document(
         &required_template,
         required_template.revision(),
         &explicit_unset,
         LATER_AT.into(),
-    )
-    .expect_err("required explicit unset must block");
-    assert_eq!(
-        error.category(),
-        DocumentMaterializationErrorCategory::BlockingIssues
-    );
-    assert_eq!(
-        error.issue_category(),
-        Some(DocumentReconciliationIssueCategory::RequiredValueUnset)
-    );
-    assert_eq!(error.field_id(), Some(field_id(TEXT)));
-    assert_eq!(error.issue_count(), 1);
-    assert!(!error.issues_truncated());
-    assert_eq!(
-        error.issue_validation_category(),
-        Some(FieldValidationErrorCategory::RequiredValueUnset)
-    );
-    assert_eq!(
-        error.issue_validation_location(),
-        Some(FieldValidationLocation::ExistingDocumentValue)
-    );
-    assert_error_redacted(&error, &["credential=unset", "credential=document-name"]);
-
+    )?;
+    let final_document = allowed.document().unwrap_or(&explicit_unset);
+    assert!(final_document.field_values()[&field_id(TEXT)].is_unset());
     let missing = decode_document_value(&document_value([], [], 2, TEMPLATE_ID));
     let missing_error = materialize_document(
         &required_template,
@@ -1736,14 +1716,12 @@ fn historical_unset_respects_active_required_and_archived_non_retroactivity(
         3,
         "active",
     ));
-    let error = materialize_document(&required, required.revision(), &document, LATER_AT.into())
-        .expect_err("active required historical unset must block before candidate creation");
-    assert_eq!(
-        error.issue_category(),
-        Some(DocumentReconciliationIssueCategory::RequiredValueUnset)
-    );
-    assert_eq!(error.field_id(), Some(field_id(TEXT)));
-    assert!(error.issue_validation_category().is_none());
+    let allowed = materialize_document(&required, required.revision(), &document, LATER_AT.into())?;
+    assert!(allowed
+        .document()
+        .expect("historical field inserted")
+        .field_values()[&field_id(TEXT)]
+        .is_unset());
     Ok(())
 }
 
@@ -2594,7 +2572,10 @@ fn outcome_and_blocking_error_debug_redact_aggregate_metadata_and_payloads(
         "active",
     ));
     let blocked = decode_document_value(&document_value(
-        [(TEXT, json!({"kind":"unset","secret":"credential=payload"}))],
+        [(
+            TEXT,
+            json!({"kind":"number","value":"1","secret":"credential=payload"}),
+        )],
         [],
         1,
         TEMPLATE_ID,
@@ -2860,7 +2841,7 @@ fn fatal_errors_redact_canaries_from_every_storage_layer_without_shadowing(
     let mut blocked_value = raw_document.clone();
     blocked_value["templateRevision"] = json!(3);
     blocked_value["fieldValues"][TEXT] = json!({
-        "kind":"unset",
+        "kind":"number", "value":"1",
         "futureValueOuter":{"credential":"blocked-value-secret"}
     });
     let mut required_value = raw_template.clone();
@@ -2886,7 +2867,7 @@ fn fatal_errors_redact_canaries_from_every_storage_layer_without_shadowing(
     );
     assert_eq!(
         blocked_error.issue_category(),
-        Some(DocumentReconciliationIssueCategory::RequiredValueUnset)
+        Some(DocumentReconciliationIssueCategory::InvalidKnownFieldValue)
     );
     assert_eq!(
         blocked_error.issue_validation_location(),
@@ -3211,21 +3192,17 @@ fn finalization_required_unset_reports_bound_location_and_rich_text_location_is_
     raw_template["fields"][TEXT]["required"] = json!(true);
     let template = decode_template_value(&raw_template);
     let document = decode_document_value(&document_value([], [], 1, TEMPLATE_ID));
-    let required_error = materialize_document_with_final_corruption_for_test(
+    let allowed = materialize_document_with_final_corruption_for_test(
         &template,
         &document,
         LATER_AT.into(),
         FinalCandidateCorruption::ReplaceWithUnset(field_id(TEXT)),
-    )
-    .expect_err("required unset must fail final reconciliation");
-    assert_eq!(
-        required_error.issue_category(),
-        Some(DocumentReconciliationIssueCategory::RequiredValueUnset)
-    );
-    assert_eq!(
-        required_error.issue_validation_location(),
-        Some(FieldValidationLocation::ExistingDocumentValue)
-    );
+    )?;
+    assert!(allowed
+        .document()
+        .expect("materialized candidate")
+        .field_values()[&field_id(TEXT)]
+        .is_unset());
 
     let rich_error = materialize_document_with_final_corruption_for_test(
         &template,

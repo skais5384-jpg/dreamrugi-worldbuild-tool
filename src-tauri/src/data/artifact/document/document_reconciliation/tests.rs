@@ -1191,10 +1191,6 @@ fn history_boundary_required_and_archived_policies_are_distinct() -> Result<(), 
             .collect::<Vec<_>>(),
         vec![
             (
-                id(TEXT),
-                DocumentReconciliationIssueCategory::RequiredValueUnset
-            ),
-            (
                 id(NUMBER),
                 DocumentReconciliationIssueCategory::MissingKnownFieldValue
             ),
@@ -1309,21 +1305,7 @@ fn existing_values_and_explicit_unset_are_never_replaced_by_defaults() -> Result
             &document.field_values()[&entry.field_id()]
         ));
     }
-    assert_eq!(view.blocking_issues().len(), 1);
-    let issue = view.blocking_issues()[0];
-    assert_eq!(
-        issue.category(),
-        DocumentReconciliationIssueCategory::RequiredValueUnset
-    );
-    assert_eq!(issue.field_id(), id(TEXT));
-    assert_eq!(
-        issue.validation_category(),
-        Some(FieldValidationErrorCategory::RequiredValueUnset)
-    );
-    assert_eq!(
-        issue.validation_location(),
-        Some(FieldValidationLocation::ExistingDocumentValue)
-    );
+    assert!(view.blocking_issues().is_empty());
     assert!(view.materialization_required());
     Ok(())
 }
@@ -2770,7 +2752,7 @@ fn non_empty_blocking_issue_debug_redacts_independent_path_metadata() -> Result<
     raw_template["fields"][TEXT]["label"] = json!("blocking path field");
     let template = decode_template_value(&raw_template);
 
-    let mut unset = json!({"kind":"unset"});
+    let mut unset = json!({"kind":"number","value":"1"});
     unset["futureBlockingWindowsPath"] = json!(windows_path);
     unset["futureBlockingUnixPath"] = json!(unix_path);
     let mut raw_document = document_value([(TEXT, unset)], [], 1, TEMPLATE_ID);
@@ -2784,7 +2766,7 @@ fn non_empty_blocking_issue_debug_redacts_independent_path_metadata() -> Result<
         raw_document["fieldValues"][TEXT]["futureBlockingUnixPath"],
         json!(unix_path)
     );
-    assert_eq!(raw_document["fieldValues"][TEXT]["kind"], json!("unset"));
+    assert_eq!(raw_document["fieldValues"][TEXT]["kind"], json!("number"));
     let document = decode_document_value(&raw_document);
     let template_before = template.clone();
     let document_before = document.clone();
@@ -2797,12 +2779,12 @@ fn non_empty_blocking_issue_debug_redacts_independent_path_metadata() -> Result<
     let issue = view.blocking_issues()[0];
     assert_eq!(
         issue.category(),
-        DocumentReconciliationIssueCategory::RequiredValueUnset
+        DocumentReconciliationIssueCategory::InvalidKnownFieldValue
     );
     assert_eq!(issue.field_id(), id(TEXT));
     assert_eq!(
         issue.validation_category(),
-        Some(FieldValidationErrorCategory::RequiredValueUnset)
+        Some(FieldValidationErrorCategory::FieldValueKindMismatch)
     );
     assert_eq!(
         issue.validation_location(),

@@ -299,18 +299,9 @@ export function ProjectHealth({
               </summary>
               <div className="health-details-body">
                 <p>{text("health.diagnosticsHelp")}</p>
-                {state.app?.support_diagnostics.map((diagnostic) => (
-                  <p
-                    key={`${diagnostic.feature}-${diagnostic.stage}-${diagnostic.causeId ?? "none"}`}
-                  >
-                    {text("supportDiagnostics.youtube", {
-                      stage: diagnostic.stage,
-                      category: diagnostic.category,
-                      cause:
-                        diagnostic.causeId ?? text("supportDiagnostics.none"),
-                    })}
-                  </p>
-                ))}
+                <p>
+                  자세한 확인 기록은 실행 기록과 진단 내보내기에서 볼 수 있어요.
+                </p>
                 <div className="health-export-actions">
                   <Button
                     type="button"

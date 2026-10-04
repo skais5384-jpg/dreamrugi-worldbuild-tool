@@ -321,16 +321,9 @@ fn rich_text_unset_transitions_preserve_only_the_outer_envelope_losslessly() {
         assert!(encode_template(&template).expect("Template unchanged") == template_before);
         let mut required = template_raw();
         required["fields"][key(2)]["required"] = json!(true);
-        let error = failure(
-            &super::template(&required),
-            &original,
-            &clear,
-            Category::InvalidEditValue,
-        );
-        assert_eq!(
-            error.issue().expect("required issue").validation_category(),
-            Some(FieldValidationErrorCategory::RequiredValueUnset)
-        );
+        let blank = save(&super::template(&required), &original, &clear)
+            .expect("clearing a required value preserves its outer envelope");
+        assert!(blank.document().field_values()[&fid(2)].is_unset());
     }
 }
 
@@ -481,7 +474,7 @@ fn final_blocker_count_is_bounded_and_payload_safe() {
             .as_array_mut()
             .expect("order")
             .push(json!(key(i)));
-        raw["fieldValues"][key(i)] = json!({"kind":"unset"});
+        raw["fieldValues"][key(i)] = json!({"kind":"number","value":"1"});
     }
     let result = failure(
         &template(&tr),

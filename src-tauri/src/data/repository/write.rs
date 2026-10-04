@@ -11,6 +11,10 @@ use crate::data::{
 enum ArtifactIntent {
     Create,
     Replace(SourceToken),
+    RestoreObserved {
+        project: ProjectIdentity,
+        expected: Option<(usize, [u8; 32])>,
+    },
 }
 
 /// 필드/생성자/가변 accessor가 없다. M1도 이 결합 전체를 소유하고 분해하지 않는다.
@@ -22,6 +26,7 @@ pub(crate) struct CanonicalArtifactWrite {
     guide_schema_upgrade: bool,
     relation_name_schema_upgrade: bool,
     format_transition: Option<(SchemaVersion, SchemaVersion)>,
+    verified_missing_assets: crate::data::assets::ReferenceKinds,
 }
 
 /// 소비형 builder이므로 두 번째 candidate가 실패하면 부분 plan을 다시 prepare할 수 없다.
@@ -58,8 +63,47 @@ impl CanonicalWritePlan {
             guide_schema_upgrade: false,
             relation_name_schema_upgrade: false,
             format_transition: Some((source.schema(), header.schema_version())),
+            verified_missing_assets: Default::default(),
         });
         Ok(self)
+    }
+    /// Only verified same-target content versions may replace an observed raw
+    /// source. The ordinary transaction keeps its exact bytes for rollback.
+    pub(super) fn restore_observed(
+        mut self,
+        repository: &ArtifactRepository<'_, '_>,
+        id: ArtifactSourceId,
+        bytes: Vec<u8>,
+        observed: Option<&[u8]>,
+        verified_assets: crate::data::assets::ReferenceKinds,
+    ) -> Result<Self, ArtifactWriteError> {
+        let target = id.path().map_err(|_| {
+            ArtifactWriteError::closed(
+                ArtifactWriteCategory::SourceMismatch,
+                ArtifactWriteStage::BindSource,
+                Some(id),
+            )
+        })?;
+        self.writes.push(CanonicalArtifactWrite {
+            id,
+            target,
+            intent: ArtifactIntent::RestoreObserved {
+                project: repository.identity.clone(),
+                expected: observed.map(|bytes| (bytes.len(), Sha256::digest(bytes).into())),
+            },
+            bytes,
+            guide_schema_upgrade: false,
+            relation_name_schema_upgrade: false,
+            format_transition: None,
+            verified_missing_assets: verified_assets,
+        });
+        Ok(self)
+    }
+    pub(super) fn version_assets(mut self, assets: crate::data::assets::ReferenceKinds) -> Self {
+        if let Some(write) = self.writes.last_mut() {
+            write.verified_missing_assets = assets;
+        }
+        self
     }
     pub(crate) fn read_dependency(mut self, source: &SourceToken) -> Self {
         self.dependencies.push(source.clone());
@@ -209,6 +253,7 @@ impl CanonicalWritePlan {
             guide_schema_upgrade: false,
             relation_name_schema_upgrade: false,
             format_transition: None,
+            verified_missing_assets: Default::default(),
         });
         Ok(self)
     }
@@ -225,7 +270,12 @@ impl CanonicalWritePlan {
         let creates: Vec<_> = self
             .writes
             .iter()
-            .filter(|write| matches!(write.intent, ArtifactIntent::Create))
+            .filter(|write| {
+                matches!(
+                    write.intent,
+                    ArtifactIntent::Create | ArtifactIntent::RestoreObserved { expected: None, .. }
+                )
+            })
             .collect();
         if creates.is_empty() {
             return Ok(Vec::new());
@@ -352,15 +402,42 @@ impl CanonicalWritePlan {
         // 모든 정식 쓰기 경로에서 첨부 참조의 실제 bytes를 확인한다. 낮은 수준의
         // 명령이나 형식 복원도 UI 검증을 우회하여 누락 참조를 확정하지 못한다.
         for write in &self.writes {
-            crate::data::assets::validate_document(
+            let mut allowed = write.verified_missing_assets.clone();
+            if let ArtifactIntent::Replace(_) = &write.intent {
+                let directory = write.guard(repository)?;
+                if let Some(original) =
+                    write.read_original(repository.write_project(), &directory)?
+                {
+                    let raw = crate::data::json::parse_strict_json_object(&original).map_err(
+                        |error| {
+                            ArtifactWriteError::io(
+                                write.id,
+                                ArtifactWriteStage::ReadSource,
+                                io::Error::other(error),
+                            )
+                        },
+                    )?;
+                    allowed.extend(crate::data::assets::reference_kinds(&raw).map_err(
+                        |error| {
+                            ArtifactWriteError::io(
+                                write.id,
+                                ArtifactWriteStage::ReadSource,
+                                io::Error::other(error),
+                            )
+                        },
+                    )?);
+                }
+            }
+            crate::data::assets::validate_document_with_missing(
                 repository.write_project().canonical_root(),
                 &write.bytes,
+                &allowed,
             )
-            .map_err(|e| {
+            .map_err(|error| {
                 ArtifactWriteError::io(
                     write.id,
                     ArtifactWriteStage::ReadSource,
-                    io::Error::other(e),
+                    io::Error::other(error),
                 )
             })?;
         }
@@ -387,6 +464,9 @@ impl CanonicalArtifactWrite {
             || (self.relation_name_schema_upgrade && original.get() == 5 && staged.get() == 6)
             || self.format_transition == Some((original, staged))
     }
+    pub(crate) fn restores_observed_source(&self) -> bool {
+        matches!(self.intent, ArtifactIntent::RestoreObserved { .. })
+    }
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -395,8 +475,13 @@ impl CanonicalArtifactWrite {
         &self,
         repository: &ArtifactRepository<'_, '_>,
     ) -> Result<ProjectDirectory, ArtifactWriteError> {
-        if let ArtifactIntent::Replace(source) = &self.intent {
-            if source.project != repository.identity {
+        let bound_project = match &self.intent {
+            ArtifactIntent::Replace(source) => Some(&source.project),
+            ArtifactIntent::RestoreObserved { project, .. } => Some(project),
+            ArtifactIntent::Create => None,
+        };
+        if let Some(project) = bound_project {
+            if *project != repository.identity {
                 return Err(ArtifactWriteError::closed(
                     ArtifactWriteCategory::SourceMismatch,
                     ArtifactWriteStage::BindSource,
@@ -436,7 +521,10 @@ impl CanonicalArtifactWrite {
                         Some(self.id),
                     ));
                 }
-                if matches!(self.intent, ArtifactIntent::Create) {
+                if matches!(
+                    self.intent,
+                    ArtifactIntent::Create | ArtifactIntent::RestoreObserved { expected: None, .. }
+                ) {
                     return Err(ArtifactWriteError::closed(
                         ArtifactWriteCategory::TargetExists,
                         ArtifactWriteStage::ReadSource,
@@ -449,8 +537,12 @@ impl CanonicalArtifactWrite {
                     .validate()
                     .map_err(|e| fail_io(ArtifactWriteStage::Namespace, e))?;
                 return match self.intent {
-                    ArtifactIntent::Create => Ok(None),
-                    ArtifactIntent::Replace(_) => Err(ArtifactWriteError::closed(
+                    ArtifactIntent::Create
+                    | ArtifactIntent::RestoreObserved { expected: None, .. } => Ok(None),
+                    ArtifactIntent::Replace(_)
+                    | ArtifactIntent::RestoreObserved {
+                        expected: Some(_), ..
+                    } => Err(ArtifactWriteError::closed(
                         ArtifactWriteCategory::SourceMissing,
                         ArtifactWriteStage::ReadSource,
                         Some(self.id),
@@ -478,6 +570,21 @@ impl CanonicalArtifactWrite {
     }
 
     fn validate_source(&self, bytes: &[u8]) -> Result<(), ArtifactWriteError> {
+        if let ArtifactIntent::RestoreObserved {
+            expected: Some((length, digest)),
+            ..
+        } = &self.intent
+        {
+            return if bytes.len() == *length && <[u8; 32]>::from(Sha256::digest(bytes)) == *digest {
+                Ok(())
+            } else {
+                Err(ArtifactWriteError::closed(
+                    ArtifactWriteCategory::SourceMismatch,
+                    ArtifactWriteStage::ReadSource,
+                    Some(self.id),
+                ))
+            };
+        }
         let (id, schema) = match self.id {
             ArtifactSourceId::DocumentLayout => {
                 artifact::decode_layout(bytes).map_err(|e| {

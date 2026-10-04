@@ -94,7 +94,12 @@ export type DocumentRequest =
       field: Id;
       image: boolean;
     }
-  | { action: "asset_read" | "asset_open"; asset: Id }
+  | {
+      action: "asset_read";
+      asset: Id;
+      target?: { kind: "document" | "template"; artifact: Id };
+    }
+  | { action: "asset_open"; asset: Id }
   | { action: "asset_chunk"; asset: Id; digest: string; offset: number }
   | { action: "url_open"; url: string }
   | { action: "format_inspect"; kind: "template" | "document"; artifact: Id }
@@ -104,6 +109,20 @@ export type DocumentRequest =
       artifact: Id;
       source: string;
       restore: string | null;
+    }
+  | { action: "versions_list"; kind: "template" | "document"; artifact: Id }
+  | {
+      action: "version_restore";
+      kind: "template" | "document";
+      artifact: Id;
+      version: string;
+      source: string;
+    }
+  | {
+      action: "version_preview";
+      kind: "template" | "document";
+      artifact: Id;
+      version: string;
     }
   | { action: "edit_begin"; document: Id }
   | {
@@ -116,6 +135,7 @@ export type DocumentRequest =
   | { action: "edit_deposit"; owner: Id; generation: string; body: EditBody }
   | { action: "edit_release"; owner: Id; generation: string }
   | { action: "edit_refresh"; owner: Id }
+  | { action: "edit_resume"; owner: Id; selected: string[] }
   | { action: "edit_retry"; owner: Id; generation: string; body: EditBody }
   | {
       action: "edit_restore";
@@ -193,6 +213,22 @@ export type DocumentResponse =
       history: { digest: string; schema: number; content_updated_at: string }[];
     }
   | {
+      kind: "versions";
+      versions: {
+        version: string;
+        recorded_at_utc: string;
+        available: boolean;
+      }[];
+    }
+  | {
+      kind: "version_preview";
+      version: string;
+      source: string;
+      asset_names?: Record<string, string>;
+      template: Template | null;
+      document: DocumentRead | null;
+    }
+  | {
       kind: "editing";
       owner: Id;
       document: Id;
@@ -206,6 +242,8 @@ export type DocumentResponse =
       outcome: ResultDto | null;
       problem: string | null;
       field: Id | null;
+      comparison?: import("./workspace").RecoveryChange[];
+      remaining_input?: boolean;
     }
   | {
       kind: "list";

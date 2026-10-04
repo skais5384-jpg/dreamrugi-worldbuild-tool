@@ -1,5 +1,5 @@
+import { DocumentContent } from "./DocumentContent";
 import { FloatingNotice, FloatingNoticeContent } from "../ui/FloatingNotice";
-import { numberInBounds } from "./numberBounds";
 import { FormatControl } from "./FormatControl";
 import {
   type CSSProperties,
@@ -54,7 +54,6 @@ import {
 import type { Creation } from "../bridge/documents";
 import type { Field } from "../bridge/types";
 import { blockField, PropertyRow } from "./PropertyRow";
-import { ValueRead } from "./FieldValue";
 import { CreationValue } from "./CreationValue";
 import { presentationClass, SectionTitles } from "./Presentation";
 import { DocumentEditor, editLabel } from "./DocumentEditor";
@@ -76,28 +75,6 @@ import {
 } from "./DocumentReferenceValue";
 import { IncomingRelations } from "./IncomingRelations";
 import { DocumentGlossary } from "./DocumentGlossary";
-
-function fieldProblemMessage(
-  reason: string | null | undefined,
-  autoRepairMissingGroup = false,
-) {
-  switch (reason) {
-    case "RequiredValueUnset":
-      return text("documents.valueProblem.RequiredValueUnset");
-    case "MissingKnownFieldValue":
-      return text(
-        autoRepairMissingGroup
-          ? "documents.valueProblem.MissingOptionalGroup"
-          : "documents.valueProblem.MissingKnownFieldValue",
-      );
-    case "InvalidKnownFieldValue":
-      return text("documents.valueProblem.InvalidKnownFieldValue");
-    case "UnknownSelectedOption":
-      return text("documents.valueProblem.UnknownSelectedOption");
-    default:
-      return text("documents.valueUnavailable");
-  }
-}
 
 export function DocumentWorkspace({
   controller,
@@ -185,7 +162,9 @@ export function DocumentWorkspace({
   };
   const focus = useRef(new EditingFocus());
   useEffect(() => {
-    if (!hidden && app.projectId && app.project?.runtime === "Ready")
+    // Templates share this controller's media transport even while the document
+    // pane is hidden. Rebind on project entry before exposing that transport.
+    if (app.projectId && app.project?.runtime === "Ready")
       void controller.load();
   }, [controller, app.projectId, app.project?.runtime, hidden, trash]);
   useEffect(() => {
@@ -290,16 +269,18 @@ export function DocumentWorkspace({
     });
   }
   function tabName(id: string) {
-    const name = byId.get(id)?.name ?? id;
+    const name = byId.get(id)?.name ?? text("documents.unknownName");
     if (list?.documents.filter((d) => d.name === name).length === 1)
       return name;
     const parent = list?.layout.nodes[id]?.parentId;
     return (
       name +
       " · " +
-      (parent ? byId.get(parent)?.name : text("documents.root")) +
+      (parent
+        ? (byId.get(parent)?.name ?? text("documents.unknownName"))
+        : text("documents.root")) +
       " · " +
-      id.slice(0, 8)
+      `문서 ${(list?.documents.findIndex((d) => d.id === id) ?? 0) + 1}`
     );
   }
   return (
@@ -334,10 +315,10 @@ export function DocumentWorkspace({
                 <FloatingNotice intent="warning">
                   <FloatingNoticeContent>
                     {text("documents.layoutProblem")}
-                    <details>
-                      <summary>{text("update.details")}</summary>
-                      <code>{list.problem}</code>
-                    </details>
+                    <p>
+                      입력은 유지됩니다. 실행 기록에서 확인한 뒤 목록을 다시
+                      불러와 주세요.
+                    </p>
                   </FloatingNoticeContent>
                 </FloatingNotice>
               )}
@@ -649,7 +630,7 @@ export function DocumentWorkspace({
                           }}
                           aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight"
                         >
-                          {byId.get(id)?.name ?? id}
+                          {byId.get(id)?.name ?? text("documents.unknownName")}
                           {state.editors[id] && (
                             <span className="document-tab-state">
                               {" "}
@@ -772,6 +753,7 @@ export function DocumentWorkspace({
                                 shell={controller.shell}
                                 kind="document"
                                 artifact={state.read.id}
+                                reference={reference(state.read.id)}
                                 locked={
                                   locked ||
                                   readOnly ||
@@ -916,110 +898,11 @@ export function DocumentWorkspace({
                         <DocumentIssueNotices
                           issues={documentIssues.get(state.read.id) ?? []}
                         />
-                        {state.read.fields.map((f) => (
-                          <PropertyRow
-                            key={f.id}
-                            label={f.label}
-                            block={blockField(
-                              state.read?.template.fields.find(
-                                (field) => field.id === f.id,
-                              )?.kind,
-                            )}
-                            complex
-                            before={
-                              <SectionTitles
-                                template={state.read!.template}
-                                before={f.id}
-                              />
-                            }
-                            presentation={presentationClass(
-                              state.read!.template.presentation,
-                              state.read!.template.fields.find(
-                                (t) => t.id === f.id,
-                              )?.presentation,
-                            )}
-                          >
-                            {f.state !== "Active" && (
-                              <InlineNotice kind="warning">
-                                {text(
-                                  f.state === "Archived"
-                                    ? "field.archived"
-                                    : "documents.orphan",
-                                )}
-                              </InlineNotice>
-                            )}
-                            {f.state !== "Active" &&
-                              onRestoreField &&
-                              state.read?.template.fields.some(
-                                (field) =>
-                                  field.id === f.id &&
-                                  field.lifecycle === "Archived",
-                              ) && (
-                                <Button
-                                  type="button"
-                                  disabled={locked}
-                                  onClick={() =>
-                                    onRestoreField(state.read!.template.id)
-                                  }
-                                >
-                                  {text("archive.openDefinitions")}
-                                </Button>
-                              )}
-                            {f.provenance === "HistoricalInitialDefault" && (
-                              <p>{text("documents.historical")}</p>
-                            )}
-                            {f.value?.kind === "number" &&
-                              !numberInBounds(
-                                f.value.value,
-                                state.read!.template.fields.find(
-                                  (t) => t.id === f.id,
-                                )?.minimum,
-                                state.read!.template.fields.find(
-                                  (t) => t.id === f.id,
-                                )?.maximum,
-                              ) && (
-                                <p role="status">
-                                  {text("field.outsideBounds")}
-                                </p>
-                              )}
-                            {f.value ? (
-                              <ValueRead
-                                value={f.value}
-                                field={state.read?.template.fields.find(
-                                  (t) => t.id === f.id,
-                                )}
-                                options={
-                                  state.read?.template.fields.find(
-                                    (t) => t.id === f.id,
-                                  )?.options ?? []
-                                }
-                                reference={reference(state.read!.id)}
-                              />
-                            ) : (
-                              (() => {
-                                const autoRepair =
-                                  f.problem === "MissingKnownFieldValue" &&
-                                  state.read?.template.fields.some(
-                                    (field) =>
-                                      field.id === f.id &&
-                                      field.kind === "Group" &&
-                                      !field.required &&
-                                      field.lifecycle === "Active",
-                                  );
-                                return (
-                                  <InlineNotice
-                                    kind={autoRepair ? "info" : "warning"}
-                                  >
-                                    {fieldProblemMessage(f.problem, autoRepair)}
-                                  </InlineNotice>
-                                );
-                              })()
-                            )}
-                          </PropertyRow>
-                        ))}
-                        <SectionTitles
-                          template={state.read.template}
-                          before={null}
+                        <DocumentContent
+                          read={state.read}
+                          reference={reference(state.read.id)}
+                          locked={locked}
+                          onRestoreField={onRestoreField}
                         />
                         {!trash && (
                           <IncomingRelations
@@ -1032,9 +915,36 @@ export function DocumentWorkspace({
                         )}
                       </article>
                     )}
-                  {!creation && !state.read && (
-                    <EmptyState>{text("documents.selectDocument")}</EmptyState>
-                  )}
+                  {!creation &&
+                    !state.read &&
+                    (state.ui.active && state.error ? (
+                      <section>
+                        <h2>
+                          {byId.get(state.ui.active)?.name ??
+                            text("field.emptyLabel")}
+                        </h2>
+                        <InlineNotice kind="warning">
+                          {text("format.sourceUnavailable")}
+                        </InlineNotice>
+                        <FormatControl
+                          shell={controller.shell}
+                          kind="document"
+                          artifact={state.ui.active}
+                          reference={reference(state.ui.active)}
+                          locked={
+                            locked ||
+                            readOnly ||
+                            collaborative ||
+                            controller.hasOwners()
+                          }
+                          changed={() => controller.load()}
+                        />
+                      </section>
+                    ) : (
+                      <EmptyState>
+                        {text("documents.selectDocument")}
+                      </EmptyState>
+                    ))}
                   <MediaActiveContext.Provider
                     value={
                       !hidden &&
@@ -1052,7 +962,8 @@ export function DocumentWorkspace({
                             {parent
                               ? text("documents.parent") +
                                 ": " +
-                                (byId.get(parent)?.name ?? parent)
+                                (byId.get(parent)?.name ??
+                                  "이름을 확인할 수 없는 상위 문서")
                               : text("documents.root")}
                           </p>
                           <PropertyRow
@@ -1090,6 +1001,47 @@ export function DocumentWorkspace({
                             {text("documents.begin")}
                           </Button>
                         </>
+                      ) : state.restoredOwner !== state.draft.owner ? (
+                        <div className="actions creation-pending">
+                          {locked ? (
+                            <p role="status">{text("documents.creating")}</p>
+                          ) : (
+                            <>
+                              <InlineNotice kind="warning">
+                                {text(
+                                  state.draft.outcome?.kind === "write" &&
+                                    ["committed", "uncertain"].includes(
+                                      state.draft.outcome.disk,
+                                    )
+                                    ? "documents.createUncertain"
+                                    : "documents.createFailed",
+                                )}
+                              </InlineNotice>
+                              <Button
+                                type="button"
+                                appearance="primary"
+                                disabled={
+                                  readOnly ||
+                                  (state.draft.outcome?.kind === "write" &&
+                                    ["committed", "uncertain"].includes(
+                                      state.draft.outcome.disk,
+                                    ))
+                                }
+                                onClick={() => void controller.retryCreation()}
+                              >
+                                {text("project.retryDefault")}
+                              </Button>
+                              <Button
+                                type="button"
+                                onClick={() =>
+                                  controller.requestCreationClose()
+                                }
+                              >
+                                {text("common.cancel")}
+                              </Button>
+                            </>
+                          )}
+                        </div>
                       ) : (
                         <CreationForm
                           controller={controller}
@@ -1268,8 +1220,23 @@ export function DocumentWorkspace({
           >
             <DialogSurface>
               <DialogBody>
-                <DialogTitle>{text("documentEdit.closeTitle")}</DialogTitle>
-                <DialogContent>{text("documentEdit.closeHelp")}</DialogContent>
+                <DialogTitle>
+                  {text(
+                    state.editPromptKind === "required"
+                      ? "required.closeTitle"
+                      : "documentEdit.closeTitle",
+                  )}
+                </DialogTitle>
+                <DialogContent>
+                  {text(
+                    state.editPromptKind === "required"
+                      ? "required.closeHelp"
+                      : "documentEdit.closeHelp",
+                  )}
+                  {state.requiredPrompt.map((id) => (
+                    <p key={id}>{state.editors[id]?.status.read.name}</p>
+                  ))}
+                </DialogContent>
                 {!!state.editPrompt &&
                   state.editors[state.editPrompt]?.error && (
                     <InlineNotice kind="error">
@@ -1283,18 +1250,34 @@ export function DocumentWorkspace({
                       !!state.editPrompt &&
                       state.editors[state.editPrompt]?.busy
                     }
-                    onClick={() => void controller.depositEditClose()}
+                    onClick={() =>
+                      state.requiredPrompt.length
+                        ? controller.leaveRequiredClose()
+                        : void controller.depositEditClose()
+                    }
                   >
-                    {text("documents.depositClose")}
+                    {text(
+                      state.editPromptKind === "required"
+                        ? "required.leave"
+                        : "documents.depositClose",
+                    )}
                   </Button>
                   <Button
                     type="button"
                     onClick={() => {
-                      controller.cancelEditClose();
-                      focus.current.restore();
+                      if (state.requiredPrompt.length)
+                        void controller.writeRequired();
+                      else {
+                        controller.cancelEditClose();
+                        focus.current.restore();
+                      }
                     }}
                   >
-                    {text("documents.keepEditing")}
+                    {text(
+                      state.editPromptKind === "required"
+                        ? "required.write"
+                        : "documents.keepEditing",
+                    )}
                   </Button>
                 </DialogActions>
               </DialogBody>

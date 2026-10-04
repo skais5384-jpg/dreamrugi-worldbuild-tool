@@ -307,10 +307,12 @@ fn source(
     if b.len() as u64 != size || sha256(&b) != hash {
         return Err(invalid("owned temporary: source bytes changed"));
     }
-    let actual = super::prepare::managed_schema_version(&b)
-        .map_err(|_| invalid("owned temporary: source schema invalid"))?;
-    if schema.is_some_and(|s| s != actual) {
-        return Err(invalid("owned temporary: source schema changed"));
+    if !(phase == Phase::Restore && op.original_raw) {
+        let actual = super::prepare::managed_schema_version(&b)
+            .map_err(|_| invalid("owned temporary: source schema invalid"))?;
+        if schema.is_some_and(|s| s != actual) {
+            return Err(invalid("owned temporary: source schema changed"));
+        }
     }
     Ok((f, b))
 }

@@ -837,6 +837,7 @@ fn preflight_manifest_artifacts(
                 Some(&operation.staged_sha256),
                 operation.staged_schema_version,
                 &staged,
+                false,
             )
             .map_err(|reason| {
                 manual(
@@ -869,6 +870,7 @@ fn preflight_manifest_artifacts(
                 operation.original_sha256.as_deref(),
                 operation.original_schema_version,
                 &backup,
+                operation.original_raw,
             )
             .map_err(|reason| {
                 manual(
@@ -1210,6 +1212,7 @@ fn rollback_operation<H: RecoveryHooks>(
             operation.original_sha256.as_deref(),
             operation.original_schema_version,
             &backup,
+            operation.original_raw,
         )
         .map_err(|reason| {
             manual(
@@ -1976,9 +1979,13 @@ fn verify_bytes(
     expected_hash: Option<&str>,
     expected_schema: Option<super::super::schema::SchemaVersion>,
     bytes: &[u8],
+    raw: bool,
 ) -> Result<(), &'static str> {
     if expected_size != Some(bytes.len() as u64) || expected_hash != Some(sha256(bytes).as_str()) {
         return Err("artifact size or SHA-256 differs from manifest");
+    }
+    if raw {
+        return Ok(());
     }
     let schema =
         managed_schema_version(bytes).map_err(|_| "artifact JSON or schemaVersion is invalid")?;

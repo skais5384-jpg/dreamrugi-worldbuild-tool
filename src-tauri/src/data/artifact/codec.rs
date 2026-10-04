@@ -304,7 +304,7 @@ pub(crate) fn inspect_artifact_header(bytes: &[u8]) -> Result<ArtifactHeader, Ar
 pub(crate) fn decode_template(bytes: &[u8]) -> Result<TemplateArtifact, ArtifactCodecError> {
     let header = inspect_for_decode(bytes, ArtifactType::Template)?;
     // v1은 현재 typed wire로 직접 읽고, 작성 가이드가 추가된 v2부터는 registry로 호환성을 확인한다.
-    if ![1, 2, 3, 4, 5, 6].contains(&header.schema_version().get()) {
+    if ![1, 2, 3, 4, 5, 6, 7].contains(&header.schema_version().get()) {
         ensure_compatible(header, template_migration_registry)?;
     }
     if header.schema_version().get() < 3 {
@@ -338,7 +338,7 @@ pub(crate) fn decode_template(bytes: &[u8]) -> Result<TemplateArtifact, Artifact
 
 pub(crate) fn decode_document(bytes: &[u8]) -> Result<DocumentArtifact, ArtifactCodecError> {
     let header = inspect_for_decode(bytes, ArtifactType::Document)?;
-    if ![1, 2, 3, 4, 5].contains(&header.schema_version().get()) {
+    if ![1, 2, 3, 4, 5, 6].contains(&header.schema_version().get()) {
         ensure_compatible(header, document_migration_registry)?;
     }
     let lossless_source = parse_lossless_source(bytes)?;
