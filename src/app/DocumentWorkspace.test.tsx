@@ -107,6 +107,34 @@ it("keeps missing layout rows addressable without exposing target or ancestor ID
   expect(view.container.textContent).not.toContain(missing);
 });
 
+it("keeps a missing document's editing tab readable without a zero ordinal or lost input", async () => {
+  const f = await setup();
+  await f.controller.open("a");
+  await f.controller.beginEdit("a");
+  f.controller.edits.update("a", (body) => ({
+    ...body,
+    glossarySummary: { intent: "set", value: "유지할 편집 입력" },
+  }));
+  f.controller.edits.entries.a.paused = true;
+  const owner = f.controller.edits.entries.a.status.owner;
+  f.list.documents = f.list.documents.filter((item) => item.id !== "a");
+  f.list.problem = "membership";
+  await f.controller.load();
+  await act(async () => {
+    render(<DocumentWorkspace controller={f.controller} />);
+  });
+  const tab = screen.getByRole("button", {
+    name: text("documents.unknownName") + " · " + text("documents.root"),
+  });
+  expect(tab).not.toHaveAccessibleName(/문서 0/);
+  expect(f.controller.snapshot().ui.tabs).toContain("a");
+  expect(f.controller.edits.entries.a.body.glossarySummary).toEqual({
+    intent: "set",
+    value: "유지할 편집 입력",
+  });
+  expect(f.controller.edits.entries.a.status.owner).toBe(owner);
+});
+
 it("resumes an owner-protected inspection after confirmed editor release without opening health", async () => {
   const f = await setup();
   await f.controller.open("a");

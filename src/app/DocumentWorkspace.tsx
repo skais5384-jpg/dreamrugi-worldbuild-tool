@@ -273,14 +273,14 @@ export function DocumentWorkspace({
     if (list?.documents.filter((d) => d.name === name).length === 1)
       return name;
     const parent = list?.layout.nodes[id]?.parentId;
+    const index = list?.documents.findIndex((d) => d.id === id) ?? -1;
     return (
       name +
       " · " +
       (parent
         ? (byId.get(parent)?.name ?? text("documents.unknownName"))
         : text("documents.root")) +
-      " · " +
-      `문서 ${(list?.documents.findIndex((d) => d.id === id) ?? 0) + 1}`
+      (index >= 0 ? ` · 문서 ${index + 1}` : "")
     );
   }
   return (
