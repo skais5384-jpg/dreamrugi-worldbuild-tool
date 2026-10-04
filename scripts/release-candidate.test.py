@@ -290,11 +290,16 @@ class ReleaseTests(unittest.TestCase):
         required += [posixpath.normpath('src-tauri/' + n) for n in tauri['bundle']['resources']]
         required += ['src-tauri/' + n for n in tauri['bundle']['icon']]
         files.update({n:(r.ROOT / n).read_bytes() for n in required})
-        r.metadata(files, '1.0.0')
-        for version in ['01.0.0','1.0','1.0.0-beta.1','1.0.0+other','2.0.0']:
+        source_version = tauri['version']
+        r.metadata(files, source_version)
+        mismatched_version = str(int(source_version.split('.')[0]) + 1) + '.0.0'
+        for version in ['01.0.0','1.0','1.0.0-beta.1','1.0.0+other',mismatched_version]:
             with self.assertRaises(ValueError): r.metadata(files, version)
-        files['src-tauri/Cargo.lock'] = files['src-tauri/Cargo.lock'].replace(b'name = "worldbuild-tool"\nversion = "1.0.0"', b'name = "worldbuild-tool"\nversion = "0.2.0"')
-        with self.assertRaises(ValueError): r.metadata(files, '1.0.0')
+        own_lock = ('name = "worldbuild-tool"\nversion = "' + source_version + '"').encode()
+        self.assertIn(own_lock, files['src-tauri/Cargo.lock'])
+        wrong_lock = ('name = "worldbuild-tool"\nversion = "' + mismatched_version + '"').encode()
+        files['src-tauri/Cargo.lock'] = files['src-tauri/Cargo.lock'].replace(own_lock, wrong_lock)
+        with self.assertRaises(ValueError): r.metadata(files, source_version)
 
     def test_verified_store_identity_and_same_family_history(self):
         i = dict(source='PartnerCenter', verified=True, historyVerified=True,
